@@ -2,7 +2,6 @@
 // rcrm - A simple file encryption/decryption tool
 // Copyleft (©) 2024-2025 hibays
 
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
@@ -10,48 +9,7 @@ use clap::Parser;
 use dialoguer::Password;
 use indicatif::{ProgressBar, ProgressStyle};
 
-mod base72;
-use base72::b72_decode_rust as b72decode;
-
-mod crypt;
-use crypt::Manager;
-
-// =======================
-// MIME 类型判断（简化版）
-// =======================
-
-fn is_supported_file(path: &Path) -> bool {
-	if path.is_dir() {
-		return false;
-	}
-
-	let ext = path
-		.extension()
-		.and_then(OsStr::to_str)
-		.unwrap_or("")
-		.to_lowercase();
-
-	const SUPPORTED_EXTS: &[&str] = &[
-		"mp4", "avi", "wmv", "mov", "m4v", "rm", "rmvb", "mkv", "jpg", "jpeg", "png", "webp",
-		"ppm", "raw", "avif", "mp3", "wav", "flac", "aac", "ogg",
-	];
-
-	SUPPORTED_EXTS.contains(&ext.as_str())
-}
-
-// =======================
-// 判断是否为加密文件名
-// =======================
-
-fn is_valid_encrypted_file_name(name: &str) -> bool {
-	if !name.starts_with('.') {
-		return false;
-	}
-	if let Ok(decoded) = b72decode(&name.as_bytes()[1..]) {
-		return decoded.len() == 32;
-	}
-	false
-}
+use rcrm::{Manager, is_supported_file, is_valid_encrypted_file_name};
 
 // =======================
 // CLI Args
@@ -113,17 +71,8 @@ impl PadToWidth for std::borrow::Cow<'_, str> {
 	}
 }
 
-// =======================
-// Main Function
-// =======================
-
-fn main() -> io::Result<()> {
-	let args = Args::parse();
-	let dir = PathBuf::from(args.dir).canonicalize()?;
-
-	println!("* Scanning: {}", dir.display());
-
-	let mut queue = vec![dir];
+fn resolve_ne_path_from_dir(path: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+	let mut queue = vec![path.to_path_buf()];
 	let mut nor_videos = Vec::new();
 	let mut enc_videos = Vec::new();
 
@@ -144,6 +93,21 @@ fn main() -> io::Result<()> {
 			}
 		}
 	}
+
+	(nor_videos, enc_videos)
+}
+
+// =======================
+// Main Function
+// =======================
+
+fn main() -> io::Result<()> {
+	let args = Args::parse();
+	let dir = PathBuf::from(args.dir).canonicalize()?;
+
+	println!("* Scanning: {}", dir.display());
+
+	let (nor_videos, enc_videos) = resolve_ne_path_from_dir(&dir);
 
 	if nor_videos.is_empty() && enc_videos.is_empty() {
 		eprintln!("No valid files found.");
@@ -180,7 +144,7 @@ fn main() -> io::Result<()> {
 		.max()
 		.unwrap_or(0);
 
-	let mut manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&password));
+	let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&password));
 
 	let pb = ProgressBar::new(op_videos.len() as u64);
 	pb.set_style(
@@ -222,7 +186,7 @@ fn main() -> io::Result<()> {
 							continue;
 						}
 						pb.println(format!("\t↑ 尝试中: `{:?}`", key));
-						let mut temp_mgr =
+						let temp_mgr =
 							Manager::new(true, true, 2048, is_supported_file, 6, Some(key));
 						if let Ok(name) = temp_mgr.decrypt_file(file) {
 							pb.println(format!("\t↑ 成功: -> \"{}\"", name));
@@ -233,7 +197,7 @@ fn main() -> io::Result<()> {
 					}
 
 					while let Ok(pwd) = get_user_password("\t↑ 请重试-> ", false) {
-						let mut temp_mgr =
+						let temp_mgr =
 							Manager::new(true, true, 2048, is_supported_file, 6, Some(&pwd));
 						match temp_mgr.decrypt_file(file) {
 							Ok(name) => {

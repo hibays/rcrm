@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 
 use argon2::{Algorithm, Argon2, Version};
 use blake2::{Blake2b512, Blake2s256, Digest};
+
+use chacha20::ChaCha20;
 use chacha20::cipher::{KeyIvInit, StreamCipher};
-use chacha20::{ChaCha20, Key, Nonce};
 
 use crate::base72::b72_encode_rust as b72encode;
 
@@ -33,14 +34,13 @@ fn xorshift64s(state: u64) -> u64 {
 	n ^= n << 12;
 	n ^= n >> 25;
 	n ^= n << 27;
-	n.wrapping_mul(0x2545f4914f6cdd1d)
+	n * 0x2545f4914f6cdd1d
 }
 
 // =======================
 // Manager Struct
 // =======================
 
-#[allow(dead_code)]
 pub struct Manager {
 	pub dir_name_crypt: bool,
 	pub file_name_crypt: bool,
@@ -146,7 +146,7 @@ impl Manager {
 			.collect()
 	}
 
-	pub fn encrypt_file(&mut self, file: &Path) -> io::Result<String> {
+	pub fn encrypt_file(&self, file: &Path) -> io::Result<String> {
 		let file_name_b = file
 			.file_name()
 			.unwrap()
@@ -161,10 +161,7 @@ impl Manager {
 		let nonce: [u8; 12] = rand::random();
 
 		// 生成密钥流（基于密钥和 nonce）
-		let mut cipher = ChaCha20::new(
-			Key::from_slice(self._using_key()),
-			Nonce::from_slice(&nonce),
-		);
+		let mut cipher = ChaCha20::new_from_slices(self._using_key(), &nonce).unwrap();
 
 		// 计算 key_hash = BLAKE2b(key + file_size + ca + salt)
 		let mut hasher = Blake2b512::new();
@@ -203,168 +200,150 @@ impl Manager {
 		header.extend(file_name_b_crypt);
 
 		// 加密后数据（根据 calibration_amount）
-		let enc_data =
-			if self.calibration_amount == u32::MAX || file_size < self.calibration_amount as u64 {
-				// 全加密
-				// 读取原文件数据
-				let mut data = Vec::new();
-				f.read_to_end(&mut data)?;
-				cipher.apply_keystream(&mut data);
-				data
-			} else {
-				// 部分加密
-				// 读取原文件数据
-				let mut data = Vec::with_capacity(self.calibration_amount as usize);
-				//f.read(&mut data)?;
-				Read::by_ref(&mut f)
-					.take(self.calibration_amount as u64)
-					.read_to_end(&mut data)
-					.unwrap();
-				cipher.apply_keystream(&mut data);
-				data
-			};
+		if self.calibration_amount == u32::MAX || file_size < self.calibration_amount as u64 {
+			// 全加密
+			let mut enc_data = Vec::new();
+			// 读取原文件数据
+			f.read_to_end(&mut enc_data)?;
 
-		// 写入：header + 加密数据
-		f.seek(SeekFrom::Start(0))?;
-		f.write_all(&header)?;
-		f.write_all(&enc_data)?;
-		f.set_len((header.len() + enc_data.len()) as u64)?;
+			cipher.apply_keystream(&mut enc_data);
+
+			f.seek(SeekFrom::Start(0))?;
+			// 写入：header + 加密数据
+			f.write_all(&header)?;
+			f.write_all(&enc_data)?;
+		} else {
+			// 部分加密
+			// 读取原文件数据
+			let mut enc_data = Vec::with_capacity(self.calibration_amount as usize);
+			//f.read(&mut data)?;
+			Read::by_ref(&mut f)
+				.take(self.calibration_amount as u64)
+				.read_to_end(&mut enc_data)
+				.unwrap();
+			cipher.apply_keystream(&mut enc_data);
+
+			// 写入：header + 加密数据
+			f.seek(SeekFrom::Start(0))?;
+			f.write_all(&header)?;
+			f.write_all(&enc_data[..self.calibration_amount as usize - header.len()])?;
+			f.seek(SeekFrom::End(0))?;
+			f.write_all(&enc_data[self.calibration_amount as usize - header.len()..])?;
+		};
 
 		drop(f);
 
-		// 重命名文件（加密文件名）
-		let new_name = if self.file_name_crypt {
+		if self.file_name_crypt {
+			// 对文件名进行加密
 			let hash = Blake2s256::digest(&file_name_b);
 			let encoded = b72encode(&hash);
-			file.with_file_name(format!(".{}", String::from_utf8_lossy(&encoded)))
-		} else {
-			file.with_file_name(file.file_name().unwrap())
-		};
+			let new_path = file.with_file_name(format!(".{}", String::from_utf8_lossy(&encoded)));
 
-		fs::rename(file, &new_name)?;
-		Ok(new_name.file_name().unwrap().to_string_lossy().into_owned())
+			fs::rename(file, &new_path)?;
+			Ok(new_path.file_name().unwrap().to_string_lossy().into_owned())
+		} else {
+			// 文件名未加密，保持原名
+			Ok(file.file_name().unwrap().to_string_lossy().into_owned())
+		}
 	}
 
-	pub fn decrypt_file(&mut self, file: &Path) -> io::Result<String> {
+	pub fn decrypt_file(&self, file: &Path) -> io::Result<String> {
 		let mut f = File::options().read(true).write(true).open(file)?;
-		let file_size = f.metadata()?.len();
 
-		// 读取前 128 字节尝试解析 header 长度（先不加密）
-		let mut header_probe = vec![0u8; 128];
-		let read = f.read(&mut header_probe)?;
-		if read < 94 {
+		let header_rd = &mut [0u8; 4 + 8 + 4 + 64 + 12 + 2];
+		let read = f.read(header_rd)?;
+		if read < 4 + 8 + 4 + 64 + 12 + 2 {
 			return Err(io::Error::new(
 				io::ErrorKind::InvalidData,
 				"File too small for header",
 			));
 		}
 
-		// 提取 header_len：我们固定 header 至少 94 字节，但支持对齐到 16 字节
-		// 先尝试从前 94 字节中恢复 key_hash_salt 和 nonce
-		let mut fake_nonce = [0u8; 12];
-		let mut fake_salt = [0u8; 4];
-
 		// 假设 header 未加密，提取关键字段
-		let ca_bytes = &header_probe[0..4];
-		let orig_size_bytes = &header_probe[4..12];
-		let key_hash_salt = &header_probe[12..16];
-		let nonce = &header_probe[80..92];
+		let ca_b = &header_rd[0..4];
+		let file_size_b = &header_rd[4..12];
+		let key_hash_salt = &header_rd[12..16];
+		let key_hash = &header_rd[16..80];
 
-		// 检查是否加密：我们尝试用当前 key 解密前 header_len 字节
-		let calibration_amount = u32::from_le_bytes(ca_bytes.try_into().unwrap());
-		let original_size = u64::from_le_bytes(orig_size_bytes.try_into().unwrap());
-
-		// 重新读取整个可能的 header（我们写入时对齐到 16 字节）
-		let mut header = vec![0u8; 256]; // 最大 header 预估
-		f.seek(SeekFrom::Start(0))?;
-		f.read_exact(&mut header[..256])?;
-
-		// 找到实际 header 结束：flag 在 92 字节处
-		let mut header_len = 94;
-		if header[92] == 1 {
-			let name_len = u16::from_le_bytes([header[93], header[94]]) as usize;
-			header_len = 95 + name_len;
-		}
-		// 对齐到 16 字节
-		header_len = (header_len + 15) & !15;
-
-		if header_len > 256 || header_len as u64 > file_size {
-			return Err(io::Error::new(
-				io::ErrorKind::InvalidData,
-				"Invalid header length",
-			));
-		}
-
-		// 截取 header
-		let mut header = header[..header_len].to_vec();
-
-		// 用当前密钥生成 keystream 解密 header
-		let mut cipher =
-			ChaCha20::new(Key::from_slice(self._using_key()), Nonce::from_slice(nonce));
-		let mut keystream = vec![0u8; 1024];
-		cipher.apply_keystream(&mut keystream);
-
-		for i in 0..header_len {
-			header[i] ^= keystream[i % keystream.len()];
-		}
-
-		// 验证 key_hash
+		// Verify key_hash before nonce
 		let mut hasher = Blake2b512::new();
 		hasher.update(self._using_key());
-		hasher.update(orig_size_bytes);
-		hasher.update(ca_bytes);
+		hasher.update(file_size_b);
+		hasher.update(ca_b);
 		hasher.update(key_hash_salt);
-		let computed_hash = hasher.finalize();
-
-		let stored_hash = &header[16..80];
-		if computed_hash[..] != stored_hash[..64] {
+		if key_hash != hasher.finalize()[..64].as_ref() {
 			return Err(io::Error::new(
 				io::ErrorKind::InvalidData,
 				"Uncorrected key!",
 			));
 		}
 
+		let nonce = &header_rd[80..92];
+		let mut cipher = ChaCha20::new_from_slices(self._using_key(), nonce).unwrap();
+
+		// 读取文件名标志和长度
+		let ff = u16::from_le_bytes([header_rd[92], header_rd[93]]);
+		let file_name_crypt = (ff & 1) != 0;
+		let original_file_name_length = (ff >> 1) as usize;
+
 		// 解密文件名（如果加密）
-		let mut orig_file_name = String::new();
-		if header[92] == 1 {
-			let name_len = u16::from_le_bytes([header[93], header[94]]) as usize;
-			let name_start = 95;
-			let mut dec_name = Vec::with_capacity(name_len);
-			for i in 0..name_len {
-				dec_name
-					.push(header[name_start + i] ^ keystream[(header_len + i) % keystream.len()]);
-			}
-			orig_file_name = String::from_utf8(dec_name).map_err(|_| {
+		let orig_file_name = if file_name_crypt && original_file_name_length > 0 {
+			let mut enc_name = vec![0u8; original_file_name_length];
+			f.read_exact(&mut enc_name)?;
+
+			cipher.apply_keystream(&mut enc_name);
+
+			String::from_utf8(enc_name).map_err(|_| {
 				io::Error::new(io::ErrorKind::InvalidData, "Invalid filename encoding")
-			})?;
-		}
+			})?
+		} else {
+			String::new()
+		};
+
+		let calibration_amount = u32::from_le_bytes(ca_b.try_into().unwrap());
+		let file_size = u64::from_le_bytes(file_size_b.try_into().unwrap());
 
 		// 读取并解密数据部分
-		let mut data = Vec::new();
-		f.read_to_end(&mut data)?;
+		let dec_data = if calibration_amount == u32::MAX || file_size < calibration_amount as u64 {
+			// 全解密
+			// Support too small file encrypt in decrypt level
+			let mut data = Vec::new();
+			f.read_to_end(&mut data)?;
 
-		for i in 0..data.len() {
-			data[i] ^= keystream[(header_len + i) % keystream.len()];
-		}
+			cipher.apply_keystream(&mut data);
+			data
+		} else {
+			// 部分解密
+			let mut data = vec![0u8; calibration_amount as usize];
+			Read::by_ref(&mut &f)
+				.take(calibration_amount as u64 - (&f).stream_position()?)
+				.read_to_end(&mut data)?;
+			f.seek(SeekFrom::Start(file_size))?;
 
-		// 截断为原始大小
-		data.truncate(original_size as usize);
+			let mut tail = Vec::new();
+			f.read_to_end(&mut tail)?;
+
+			data.extend(tail);
+
+			cipher.apply_keystream(&mut data);
+			data
+		};
 
 		// 写回文件（从头开始）
 		f.seek(SeekFrom::Start(0))?;
-		f.write_all(&data)?;
-		f.set_len(original_size)?;
+		f.write_all(&dec_data)?;
+		f.set_len(file_size)?;
 
 		drop(f);
 
-		// 重命名回原名
-		let new_path = if orig_file_name.is_empty() {
-			file.with_file_name(file.file_name().unwrap())
+		if file_name_crypt {
+			// 文件名解密回原名
+			let new_path = file.with_file_name(&orig_file_name);
+			fs::rename(file, &new_path)?;
+			Ok(orig_file_name)
 		} else {
-			file.with_file_name(&orig_file_name)
-		};
-
-		fs::rename(file, &new_path)?;
-		Ok(orig_file_name)
+			// 文件名未加密，保持原名
+			Ok(file.file_name().unwrap().to_string_lossy().into_owned())
+		}
 	}
 }

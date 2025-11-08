@@ -1,26 +1,26 @@
-Update report:
+# Update report
 
-1st.2022.5.14.10.15.PM.Saturday
+1. 2022.5.14.10.15.PM.Saturday
 	1) 更新默认calibration_amount值为1024→896
 	2) 这可能使解密以calibration_amount=1024加密的文件时虽提示成功但实际内容错误致最终酿成无以挽回的损失
 	3) 也可能提示解密错误...
-	
-2nd.2022.5.15.0.15.AM.Sunday
+
+2. 2022.5.15.0.15.AM.Sunday
 	1) 增加解码检查, 解出来无 b'ftyp' 的话报错
-	
-3rd.2022.5.21.7.5.PM.Saturday
+
+3. 2022.5.21.7.5.PM.Saturday
 	1) 报错不再打印directory
 	2) 对架构稍作更改
-	
-4th.2022.6.3.3.1.PM.Friday
+
+4. 2022.6.3.3.1.PM.Friday
 	1) 稍对MOVe/dncode进行优化, 不再设置dat变量等
 	2) 增加 xor_ctx.useascii 的setter, 设为False可将加密后数据缩减约18.2%
 	3) 添加不可加密时报错
-	
-5th.2022.6.5.6.17.AM.Sunday
+
+5. 2022.6.5.6.17.AM.Sunday
 	1) 修复解码报错问题
-	
-6th.2022.7.4.8.39.PM.Monday
+
+6. 2022.7.4.8.39.PM.Monday
 	*以下更新不向下兼容* 旧算法请见 `_od_MOVencode`, `_od_MOVdecode`, `_od_main`
 	1) 更新编码机制
 		① 将密码hash值嵌入文件末尾，增加活动性
@@ -30,8 +30,8 @@ Update report:
 	4) 设MOVencode的calibration_amount参数默认值为1024，MOVdecode不再提供该参数
 	4) 更新main函数，增加多用性
 	5) 将 xor_ctx.useascii 的值默认设为 False
-	
-7th.2022.8.3.12.32.PM.Wednesday
+
+7. 2022.8.3.12.32.PM.Wednesday
 	*以下更新不向下兼容* 旧算法请见 `_od2_MOVencode`, `_od2_MOVdecode`, `_od2_main`
 	1) 更改密码算法，增强安全性
 	2) 加密核心改用RC4^+加密算法
@@ -44,17 +44,17 @@ Update report:
 		③ 文件将更名为其哈希值
 	6) 添加复加密验证，若同文件被同一参数加密多次则报 RuntimeError
 
-8th.2022.8.5.11.26.PM.Friday
+8. 2022.8.5.11.26.PM.Friday
 	1) 优化部分函数的实现
-	
-9th.2022.8.20.3.30.PM.Saturday
+
+9. 2022.8.20.3.30.PM.Saturday
 	1) 在所有版本添加对图片文件的支持
 
-10th.2022.12.3.11.5.PM.Saturday
+10. 2022.12.3.11.5.PM.Saturday
 	1) 将 main 函数 dir 参数的默认值从 `path.dirname(path.dirname(__file__))` 改为 `path.abspath('..')` 以修复 `__file__` 在3.8或pypy中不是绝对路径导致的错误
 	2) 添加了人性化的 Seeking Path 提示
 
-10.2th.2023.1.25.9.45.AM.Wednesday
+10.2.2023.1.25.9.45.AM.Wednesday
 	1) 使用自带mimetypes得到更广泛的类型判断(audio,image,video)
 		- note: 对历史版本生效
 		- detail: rename SUPPORTFILES to _SUPPORTFILES
