@@ -54,12 +54,12 @@
 	1) 将 main 函数 dir 参数的默认值从 `path.dirname(path.dirname(__file__))` 改为 `path.abspath('..')` 以修复 `__file__` 在3.8或pypy中不是绝对路径导致的错误
 	2) 添加了人性化的 Seeking Path 提示
 
-10.2.2023.1.25.9.45.AM.Wednesday
+10. 2.2023.1.25.9.45.AM.Wednesday
 	1) 使用自带mimetypes得到更广泛的类型判断(audio,image,video)
 		- note: 对历史版本生效
 		- detail: rename SUPPORTFILES to _SUPPORTFILES
 		
-11th.2023.6.10.0.39.AM.Saturday
+11. 2023.6.10.0.39.AM.Saturday
 	0) !!!完全取消了向前兼容性!!!
 	1) 完全重建架构，不向下兼容。
 	2) 基于新的存储格式，现在加解密的文件io更快
@@ -68,31 +68,33 @@
 	5) 扩充b58到b60使编码更紧凑
 	6) calibration_amount 为 -1 时将加密整个文件
 
-12th.2024.2.13
+12. 2024.2.13
 	0) 此版本不具有向前兼容性!!!
 	1) 默认使用更快的argon2_cffi和更安全的参数
 	2) 扩充b60到b72使编码更紧凑
 	3) 设calibration_amount参数默认值为2048
 	4) 分离模块到thirdmod文件夹
 
-13th.2025.9.7.11.56.PM.Sunday
+13. 2025.9.7.11.56.PM.Sunday
 	0) 此版本不具有向前兼容性!!!
 	1) 更新了base72编码算法及其字符表，修复Windows下以base72重命名时可能触发的错误及解码错误
 	2) 添加了一个命令行参数用以指定扫描路径
 
-14th.2025.10.9.6.13.PM.Thursday
+14. 2025.10.9.6.13.PM.Thursday
 	0) 微调字节操作实现以增加性能
 
-15th.2025.11.10.2.30.AM.Monday
+15. 2025.11.10.2.30.AM.Monday
 	0) 修改文件名加密逻辑，现在文件加密后使用加密名字生成hash cover; Inplace encrypt file_name_b (changelog)
+
 ---
 
 Update report:
 
 使用rust重写整个程序：
 
-15th.2025.10.10.10.15.AM.Friday
+1. 2025.11.10.4.5.AM.Monday
 	0) 完成了rust版本的重写
-	1) 性能上有了显著提升
-	2) 增加了对更多文件类型的支持
-	3) 修复了一些旧版本存在的问题
+	1) 编写了一个简单的命令行接口
+	2) 编写了一个简单的测试
+	3) 在安全性方面做了一些改进
+	4) 本版本不具有向PY兼容性!!!
