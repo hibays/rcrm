@@ -2,14 +2,14 @@
 // rcrm - A simple file encryption/decryption tool
 // Copyleft (©) 2024-2025 hibays
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::{fs, io};
 
 use clap::Parser;
 use dialoguer::Password;
 use indicatif::{ProgressBar, ProgressStyle};
 
-use rcrm::{Manager, is_supported_file, is_valid_encrypted_file_name};
+use rcrm::{Manager, is_supported_file, resolve_ne_path_from_dir};
 
 // =======================
 // CLI Args
@@ -71,32 +71,6 @@ impl PadToWidth for std::borrow::Cow<'_, str> {
 	}
 }
 
-fn resolve_ne_path_from_dir(path: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
-	let mut queue = vec![path.to_path_buf()];
-	let mut nor_videos = Vec::new();
-	let mut enc_videos = Vec::new();
-
-	while let Some(file) = queue.pop() {
-		if file.is_file() {
-			if is_supported_file(&file) {
-				nor_videos.push(file);
-			} else if let Some(name) = file.file_name().and_then(|s| s.to_str())
-				&& is_valid_encrypted_file_name(name)
-			{
-				enc_videos.push(file);
-			}
-		} else if file.is_dir()
-			&& let Ok(entries) = fs::read_dir(&file)
-		{
-			for entry in entries.flatten() {
-				queue.push(entry.path());
-			}
-		}
-	}
-
-	(nor_videos, enc_videos)
-}
-
 // =======================
 // Main Function
 // =======================
@@ -144,7 +118,7 @@ fn main() -> io::Result<()> {
 		.max()
 		.unwrap_or(0);
 
-	let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&password));
+	let mut manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&password));
 
 	let pb = ProgressBar::new(op_videos.len() as u64);
 	pb.set_style(
@@ -181,14 +155,13 @@ fn main() -> io::Result<()> {
 				if e.kind() == io::ErrorKind::InvalidData && e.to_string() == "Uncorrected key!" {
 					pb.println("\t↑ 密码错误!");
 
-					for (idx, key) in &manager.keys {
+					for idx in &manager.list_key_idxs().unwrap() {
 						if idx == Manager::MAGIC_KEY_USING {
 							continue;
 						}
-						pb.println(format!("\t↑ 尝试中: `{:?}`", key));
-						let temp_mgr =
-							Manager::new(true, true, 2048, is_supported_file, 6, Some(key));
-						if let Ok(name) = temp_mgr.decrypt_file(file) {
+						pb.println(format!("\t↑ 尝试中: `{:}`", idx));
+						manager.use_key(idx);
+						if let Ok(name) = manager.decrypt_file(file) {
 							pb.println(format!("\t↑ 成功: -> \"{}\"", name));
 							break;
 						} else {
@@ -197,9 +170,8 @@ fn main() -> io::Result<()> {
 					}
 
 					while let Ok(pwd) = get_user_password("\t↑ 请重试-> ", false) {
-						let temp_mgr =
-							Manager::new(true, true, 2048, is_supported_file, 6, Some(&pwd));
-						match temp_mgr.decrypt_file(file) {
+						manager.use_added_key(&pwd);
+						match manager.decrypt_file(file) {
 							Ok(name) => {
 								pb.println(format!("\t↑ 成功: -> \"{}\"", name));
 								break;

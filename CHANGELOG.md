@@ -83,6 +83,8 @@
 14th.2025.10.9.6.13.PM.Thursday
 	0) 微调字节操作实现以增加性能
 
+15th.2025.11.10.2.30.AM.Monday
+	0) 修改文件名加密逻辑，现在文件加密后使用加密名字生成hash cover; Inplace encrypt file_name_b (changelog)
 ---
 
 Update report:

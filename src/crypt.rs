@@ -50,7 +50,6 @@ pub struct Manager {
 	pub keys: HashMap<u32, Vec<u8>>,
 }
 
-#[allow(dead_code)]
 impl Manager {
 	pub const MAGIC_KEY_USING: &u32 = &0;
 
@@ -100,9 +99,9 @@ impl Manager {
 		hash
 	}
 
-	fn add_key(&mut self, key: &[u8], index: Option<u32>) -> u32 {
+	fn add_key(&mut self, key: &[u8], idx: Option<u32>) -> u32 {
 		let derived = self.derive_key(key);
-		let idx = index.unwrap_or_else(|| crc32fast::hash(key));
+		let idx = idx.unwrap_or_else(|| crc32fast::hash(key));
 
 		if self.keys.contains_key(&idx) {
 			panic!("Index ({}) of key exists!", idx);
@@ -115,29 +114,39 @@ impl Manager {
 		idx
 	}
 
-	fn use_key(&mut self, index: &u32) {
-		if !self.keys.contains_key(index) {
-			panic!("The key indexed '{}' does not exist.", index);
+	pub fn use_key(&mut self, idx: &u32) {
+		if !self.keys.contains_key(idx) {
+			panic!("The indexed key index '{}' does not exist.", idx);
 		}
 		self.keys
-			.insert(*Self::MAGIC_KEY_USING, self.keys[index].clone());
+			.insert(*Self::MAGIC_KEY_USING, self.keys[idx].clone());
 	}
 
-	fn pop_key(&mut self, index: &u32) -> Option<Vec<u8>> {
-		self.keys.remove(index)
+	pub fn drop_key(&mut self, idx: &u32) -> Option<Vec<u8>> {
+		if let Some(val) = self.keys.get_mut(idx) {
+			val.fill(0);
+		};
+		self.keys.remove(idx)
 	}
 
-	fn use_added_key(&mut self, key: &[u8]) {
+	pub fn use_added_key(&mut self, key: &[u8]) -> u32 {
 		let idx = self.add_key(key, None);
 		self.use_key(&idx);
+		idx
 	}
 
-	fn _using_key(&self) -> &[u8] {
+	pub fn list_key_idxs(&self) -> Option<Vec<u32>> {
+		let v: Vec<u32> = self.keys.keys().cloned().collect();
+		if v.is_empty() { None } else { Some(v) }
+	}
+
+	fn get_using_key(&self) -> &[u8] {
 		self.keys
 			.get(Self::MAGIC_KEY_USING)
 			.expect("No current key")
 	}
 
+	#[allow(dead_code)]
 	fn filter(&self, paths: &[PathBuf]) -> Vec<PathBuf> {
 		paths
 			.iter()
@@ -147,12 +156,6 @@ impl Manager {
 	}
 
 	pub fn encrypt_file(&self, file: &Path) -> io::Result<String> {
-		let file_name_b = file
-			.file_name()
-			.unwrap()
-			.to_string_lossy()
-			.into_owned()
-			.into_bytes();
 		let mut f = File::options().read(true).write(true).open(file)?;
 		let file_size = f.metadata()?.len();
 
@@ -160,12 +163,9 @@ impl Manager {
 		let key_hash_salt: [u8; 4] = rand::random();
 		let nonce: [u8; 12] = rand::random();
 
-		// 生成密钥流（基于密钥和 nonce）
-		let mut cipher = ChaCha20::new_from_slices(self._using_key(), &nonce).unwrap();
-
 		// 计算 key_hash = BLAKE2b(key + file_size + ca + salt)
 		let mut hasher = Blake2b512::new();
-		hasher.update(self._using_key());
+		hasher.update(self.get_using_key());
 		hasher.update(file_size.to_le_bytes());
 		hasher.update(self.calibration_amount.to_le_bytes());
 		hasher.update(key_hash_salt);
@@ -186,18 +186,26 @@ impl Manager {
 		header.extend_from_slice(key_hash.as_slice()); // 64
 		header.extend_from_slice(&nonce); // 12
 
-		// 文件名加密标志和内容
-		if self.file_name_crypt {
+		// 生成密钥流（基于密钥和 nonce）
+		let mut cipher = ChaCha20::new_from_slices(self.get_using_key(), &nonce).unwrap();
+
+		// 处理文件名加密
+		// Note: 文件名加密时，会原地修改文件名
+		let file_name_b = if self.file_name_crypt {
+			let mut file_name_b = file
+				.file_name()
+				.unwrap()
+				.to_string_lossy()
+				.into_owned()
+				.into_bytes();
 			header.extend_from_slice(&(((file_name_b.len() as u16) << 1) | 1).to_le_bytes()); // 2
+			cipher.apply_keystream(&mut file_name_b); // Inplace encrypt file name
+			header.extend(&file_name_b);
+			file_name_b
 		} else {
 			header.extend([0u8, 0u8]); // 2
-		}
-
-		let mut file_name_b_crypt = file_name_b.clone();
-		// 加密文件名
-		cipher.apply_keystream(&mut file_name_b_crypt);
-
-		header.extend(file_name_b_crypt);
+			Vec::new() // Note: 未启用文件名加密时，file_name_b 不会被使用，故为空
+		};
 
 		// 加密后数据（根据 calibration_amount）
 		if self.calibration_amount == u32::MAX || file_size < self.calibration_amount as u64 {
@@ -214,9 +222,8 @@ impl Manager {
 			f.write_all(&enc_data)?;
 		} else {
 			// 部分加密
-			// 读取原文件数据
+			// 读取原文件数据进行加密
 			let mut enc_data = Vec::with_capacity(self.calibration_amount as usize);
-			//f.read(&mut data)?;
 			Read::by_ref(&mut f)
 				.take(self.calibration_amount as u64)
 				.read_to_end(&mut enc_data)
@@ -248,7 +255,7 @@ impl Manager {
 	}
 
 	pub fn decrypt_file(&self, file: &Path) -> io::Result<String> {
-		let mut f = File::options().read(true).write(true).open(file)?;
+		let mut f = File::options().read(true).open(file)?;
 
 		let header_rd = &mut [0u8; 4 + 8 + 4 + 64 + 12 + 2];
 		let read = f.read(header_rd)?;
@@ -267,7 +274,7 @@ impl Manager {
 
 		// Verify key_hash before nonce
 		let mut hasher = Blake2b512::new();
-		hasher.update(self._using_key());
+		hasher.update(self.get_using_key());
 		hasher.update(file_size_b);
 		hasher.update(ca_b);
 		hasher.update(key_hash_salt);
@@ -279,7 +286,7 @@ impl Manager {
 		}
 
 		let nonce = &header_rd[80..92];
-		let mut cipher = ChaCha20::new_from_slices(self._using_key(), nonce).unwrap();
+		let mut cipher = ChaCha20::new_from_slices(self.get_using_key(), nonce).unwrap();
 
 		// 读取文件名标志和长度
 		let ff = u16::from_le_bytes([header_rd[92], header_rd[93]]);
@@ -314,9 +321,14 @@ impl Manager {
 			data
 		} else {
 			// 部分解密
-			let mut data = vec![0u8; calibration_amount as usize];
+			let mut data = Vec::with_capacity(calibration_amount as usize);
+			// Note: 这里有一个 Debug 很久的问题，导致解密失败的，即初始化时使用vec![0u8; calibration_amount as usize]
+			// 而不是 Vec::with_capacity(calibration_amount as usize) 时，使用 read_to_end 读取数据
+			// 会导致数据是 [0000... + read_data]（即数据前有 calibration_amount 个 0）
+			// 而不是纯粹的 read_data，从而导致解密失败
+			let curpos = f.stream_position()?;
 			Read::by_ref(&mut &f)
-				.take(calibration_amount as u64 - (&f).stream_position()?)
+				.take(calibration_amount as u64 - curpos)
 				.read_to_end(&mut data)?;
 			f.seek(SeekFrom::Start(file_size))?;
 
@@ -328,13 +340,14 @@ impl Manager {
 			cipher.apply_keystream(&mut data);
 			data
 		};
-
-		// 写回文件（从头开始）
-		f.seek(SeekFrom::Start(0))?;
-		f.write_all(&dec_data)?;
-		f.set_len(file_size)?;
-
 		drop(f);
+
+		// 重写文件为解密后的原始内容
+		let mut wf = File::options().write(true).truncate(false).open(file)?;
+		wf.write_all(&dec_data)?;
+		wf.set_len(file_size)?;
+		wf.flush()?;
+		drop(wf);
 
 		if file_name_crypt {
 			// 文件名解密回原名
