@@ -34,8 +34,10 @@ pub fn is_supported_file(path: &std::path::Path) -> bool {
 		.to_lowercase();
 
 	const SUPPORTED_EXTS: &[&str] = &[
-		"mp4", "avi", "wmv", "mov", "m4v", "rm", "rmvb", "mkv", "jpg", "jpeg", "png", "webp",
-		"ppm", "raw", "avif", "mp3", "wav", "flac", "aac", "ogg",
+		"mp4", "avi", "wmv", "mov", "m4v", "rm", "rmvb", "mkv", // Video
+		"jpg", "jpeg", "png", "webp", "ppm", "raw", "avif", // Image
+		"mp3", "wav", "flac", "aac", "ogg", // Audio
+		"zip", "rar", "7z", // Archive
 	];
 
 	SUPPORTED_EXTS.contains(&ext.as_str())

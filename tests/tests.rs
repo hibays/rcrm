@@ -14,10 +14,6 @@ mod tests {
 		let manager = Manager::new(false, true, 2048, is_supported_file, 6, Some(&key));
 
 		let assets_name = "tests/assets/resources.zip";
-		let file = fs::File::open(assets_name).unwrap();
-
-		let mut archive = zip::ZipArchive::new(file).unwrap();
-
 		let tests_res_dir = PathBuf::from("tests/assets/testres");
 
 		// Step 0: 测试目录存在时，先删除
@@ -25,6 +21,9 @@ mod tests {
 			fs::remove_dir_all(&tests_res_dir).unwrap();
 		}
 
+		// Step 0: 解压测试资源包到测试目录
+		let file = fs::File::open(assets_name).unwrap();
+		let mut archive = zip::ZipArchive::new(file).unwrap();
 		archive.extract("tests/assets/").unwrap();
 
 		// Step 1: 遍历出所有文件
