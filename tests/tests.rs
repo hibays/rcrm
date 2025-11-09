@@ -7,11 +7,11 @@ mod tests {
 	use std::path::PathBuf;
 
 	#[test]
-	fn 加解密一致性_zip() {
+	fn 文件加解密一致性() {
 		//生成16bytes的key
 		let mut key = [0u8; 16];
 		let _ = rand::TryRngCore::try_fill_bytes(&mut rand::rngs::OsRng, &mut key);
-		let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&key));
+		let manager = Manager::new(false, true, 2048, is_supported_file, 6, Some(&key));
 
 		let assets_name = "tests/assets/resources.zip";
 		let file = fs::File::open(assets_name).unwrap();

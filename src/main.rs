@@ -18,7 +18,7 @@ use rcrm::{Manager, is_supported_file, resolve_ne_path_from_dir};
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {
-	#[arg(short, long, default_value_t = String::from(".."))]
+	#[arg(short('d'), long, default_value_t = String::from(".."))]
 	dir: String,
 }
 
