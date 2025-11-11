@@ -15,6 +15,7 @@ crc32fast = "1.5"
 lazy_static = "1.5"
 chacha20 = "0.9"
 mimalloc = "*"
+mime_guess = "2"
 
 [dev-dependencies]
 zip = "6"

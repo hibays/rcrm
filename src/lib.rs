@@ -33,8 +33,14 @@ pub fn is_supported_file(path: &std::path::Path) -> bool {
 		.unwrap_or("")
 		.to_lowercase();
 
+	if let Some(mime) = mime_guess::from_ext(&ext).first()
+		&& (mime.type_() == "video" || mime.type_() == "image" || mime.type_() == "audio")
+	{
+		return true;
+	};
+
 	const SUPPORTED_EXTS: &[&str] = &[
-		"mp4", "avi", "wmv", "mov", "m4v", "rm", "rmvb", "mkv", // Video
+		"mp4", "avi", "wmv", "mov", "m4v", "rm", "rmvb", "mkv", "webm", // Video
 		"jpg", "jpeg", "png", "webp", "ppm", "raw", "avif", // Image
 		"mp3", "wav", "flac", "aac", "ogg", // Audio
 		"zip", "rar", "7z", // Archive
