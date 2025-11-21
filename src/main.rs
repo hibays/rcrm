@@ -79,7 +79,7 @@ fn main() -> io::Result<()> {
 	let args = Args::parse();
 	let dir = PathBuf::from(args.dir).canonicalize()?;
 
-	println!("* Scanning: {}", dir.display());
+	println!("* Scanning: {}", dunce::canonicalize(&dir)?.display());
 
 	let (nor_videos, enc_videos) = resolve_ne_path_from_dir(&dir);
 
@@ -155,6 +155,7 @@ fn main() -> io::Result<()> {
 				if e.kind() == io::ErrorKind::InvalidData && e.to_string() == "Uncorrected key!" {
 					pb.println("\t↑ 密码错误!");
 
+					let mut key_matched_in_prelist = false;
 					for idx in &manager.list_key_idxs().unwrap() {
 						if idx == Manager::MAGIC_KEY_USING {
 							continue;
@@ -163,28 +164,30 @@ fn main() -> io::Result<()> {
 						manager.use_key(idx);
 						if let Ok(name) = manager.decrypt_file(file) {
 							pb.println(format!("\t↑ 成功: -> \"{}\"", name));
+							key_matched_in_prelist = true;
 							break;
 						} else {
 							pb.println("\t↑ 密码错误!");
 						}
 					}
-
-					while let Ok(pwd) = get_user_password("\t↑ 请重试-> ", false) {
-						manager.use_added_key(&pwd);
-						match manager.decrypt_file(file) {
-							Ok(name) => {
-								pb.println(format!("\t↑ 成功: -> \"{}\"", name));
-								break;
-							}
-							Err(_) => {
-								pb.println("\t↑ 密码错误!");
-								if dialoguer::Confirm::new()
-									.with_prompt("\t↑ Proceed?")
-									.interact()
-									.unwrap_or(false)
-								{
-									pb.println("\t↑ Canceled!");
+					if !key_matched_in_prelist {
+						while let Ok(pwd) = get_user_password("\t↑ 请重试-> ", false) {
+							manager.use_added_key(&pwd);
+							match manager.decrypt_file(file) {
+								Ok(name) => {
+									pb.println(format!("\t↑ 成功: -> \"{}\"", name));
 									break;
+								}
+								Err(_) => {
+									pb.println("\t↑ 密码错误!");
+									if dialoguer::Confirm::new()
+										.with_prompt("\t↑ Proceed?")
+										.interact()
+										.unwrap_or(false)
+									{
+										pb.println("\t↑ Canceled!");
+										break;
+									}
 								}
 							}
 						}

@@ -16,6 +16,7 @@ lazy_static = "1.5"
 chacha20 = "0.9"
 mimalloc = "*"
 mime_guess = "2"
+dunce = "1.0.5"
 
 [dev-dependencies]
 zip = "6"
