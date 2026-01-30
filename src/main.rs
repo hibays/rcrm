@@ -144,7 +144,7 @@ fn main() -> io::Result<()> {
 	let pb = ProgressBar::new(op_videos.len() as u64);
 	pb.set_style(
 		ProgressStyle::default_bar()
-			.template("{bar:40.cyan/blue} {pos}/{len} {percent}% {elapsed} {eta}")
+			.template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} {percent}% ({eta})")
 			.unwrap(),
 	);
 
