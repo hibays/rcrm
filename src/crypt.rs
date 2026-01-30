@@ -223,11 +223,14 @@ impl Manager {
 		} else {
 			// 部分加密
 			// 读取原文件数据进行加密
+			/*
 			let mut enc_data = Vec::with_capacity(self.calibration_amount as usize);
 			Read::by_ref(&mut f)
 				.take(self.calibration_amount as u64)
 				.read_to_end(&mut enc_data)
-				.unwrap();
+				.unwrap();*/
+			let mut enc_data = vec![0u8; self.calibration_amount as usize];
+			f.read_exact(&mut enc_data)?;
 			cipher.apply_keystream(&mut enc_data);
 
 			// 写入：header + 加密数据
@@ -321,6 +324,7 @@ impl Manager {
 			data
 		} else {
 			// 部分解密
+			/*
 			let mut data = Vec::with_capacity(calibration_amount as usize);
 			// Note: 这里有一个 Debug 很久的问题，导致解密失败的，即初始化时使用vec![0u8; calibration_amount as usize]
 			// 而不是 Vec::with_capacity(calibration_amount as usize) 时，使用 read_to_end 读取数据
@@ -329,11 +333,14 @@ impl Manager {
 			let curpos = f.stream_position()?;
 			Read::by_ref(&mut &f)
 				.take(calibration_amount as u64 - curpos)
-				.read_to_end(&mut data)?;
+				.read_to_end(&mut data)?;*/
+			let curpos = f.stream_position()? as usize;
+			let mut data = vec![0u8; calibration_amount as usize - curpos];
+			f.read_exact(&mut data)?;
 			f.seek(SeekFrom::Start(file_size))?;
 
-			let mut tail = Vec::new();
-			f.read_to_end(&mut tail)?;
+			let mut tail = vec![0u8; curpos];
+			f.read_exact(&mut tail)?;
 
 			data.extend(tail);
 

@@ -180,8 +180,8 @@ fn main() -> io::Result<()> {
 								}
 								Err(_) => {
 									pb.println("\t↑ 密码错误!");
-									if dialoguer::Confirm::new()
-										.with_prompt("\t↑ Proceed?")
+									if !dialoguer::Confirm::new()
+										.with_prompt("\t↑ Proceed trying?")
 										.interact()
 										.unwrap_or(false)
 									{

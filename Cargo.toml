@@ -14,7 +14,7 @@ clap = { version = "4", features = ["derive"] }
 crc32fast = "1.5"
 lazy_static = "1.5"
 chacha20 = "0.9"
-mimalloc = "*"
+mimalloc = { version = "*", features = ["v3"] }
 mime_guess = "2"
 dunce = "1.0.5"
 
