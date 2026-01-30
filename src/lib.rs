@@ -92,3 +92,40 @@ pub fn resolve_ne_path_from_dir(path: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
 
 	(nor_videos, enc_videos)
 }
+
+// =======================
+// Helper: 递归获取目录下的所有视频文件/加密文件（带进度条）
+// =======================
+
+pub fn resolve_ne_path_from_dir_with_progress(
+	path: &Path,
+	progress_cb: impl Fn(usize),
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+	let mut queue = vec![path.to_path_buf()];
+	let mut nor_videos = Vec::new();
+	let mut enc_videos = Vec::new();
+	let mut scanned_count = 0;
+
+	while let Some(file) = queue.pop() {
+		scanned_count += 1;
+		progress_cb(scanned_count);
+
+		if file.is_file() {
+			if is_supported_file(&file) {
+				nor_videos.push(file);
+			} else if let Some(name) = file.file_name().and_then(|s| s.to_str())
+				&& is_valid_encrypted_file_name(name)
+			{
+				enc_videos.push(file);
+			}
+		} else if file.is_dir()
+			&& let Ok(entries) = fs::read_dir(&file)
+		{
+			for entry in entries.flatten() {
+				queue.push(entry.path());
+			}
+		}
+	}
+
+	(nor_videos, enc_videos)
+}

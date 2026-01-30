@@ -51,7 +51,7 @@ pub struct Manager {
 }
 
 impl Manager {
-	pub const MAGIC_KEY_USING: &u32 = &0;
+	pub const MAGIC_KEY_USING: u32 = 0;
 
 	pub fn new(
 		dir_name_crypt: bool,
@@ -115,11 +115,13 @@ impl Manager {
 	}
 
 	pub fn use_key(&mut self, idx: &u32) {
+		// use_key will clone the key to MAGIC_KEY_USING
+		// and won't drop the original key
 		if !self.keys.contains_key(idx) {
 			panic!("The indexed key index '{}' does not exist.", idx);
 		}
 		self.keys
-			.insert(*Self::MAGIC_KEY_USING, self.keys[idx].clone());
+			.insert(Manager::MAGIC_KEY_USING, self.keys[idx].clone());
 	}
 
 	pub fn drop_key(&mut self, idx: &u32) -> Option<Vec<u8>> {
@@ -129,10 +131,24 @@ impl Manager {
 		self.keys.remove(idx)
 	}
 
+	pub fn drop_all_keys(&mut self) {
+		if let Some(idxs) = self.list_key_idxs() {
+			for idx in idxs {
+				self.drop_key(&idx);
+			}
+		}
+	}
+
 	pub fn use_added_key(&mut self, key: &[u8]) -> u32 {
 		let idx = self.add_key(key, None);
 		self.use_key(&idx);
 		idx
+	}
+
+	pub fn use_provided_key(&mut self, key: &[u8]) {
+		let idx = self.add_key(key, None);
+		self.use_key(&idx);
+		self.drop_key(&idx);
 	}
 
 	pub fn list_key_idxs(&self) -> Option<Vec<u32>> {
@@ -142,7 +158,7 @@ impl Manager {
 
 	fn get_using_key(&self) -> &[u8] {
 		self.keys
-			.get(Self::MAGIC_KEY_USING)
+			.get(&Manager::MAGIC_KEY_USING)
 			.expect("No current key")
 	}
 

@@ -2,6 +2,7 @@
 // rcrm - A simple file encryption/decryption tool
 // Copyleft (©) 2024-2025 hibays
 
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::{fs, io};
 
@@ -9,7 +10,7 @@ use clap::Parser;
 use dialoguer::Password;
 use indicatif::{ProgressBar, ProgressStyle};
 
-use rcrm::{Manager, is_supported_file, resolve_ne_path_from_dir};
+use rcrm::{Manager, is_supported_file, resolve_ne_path_from_dir_with_progress};
 
 // =======================
 // CLI Args
@@ -81,7 +82,25 @@ fn main() -> io::Result<()> {
 
 	println!("* Scanning: {}", dunce::canonicalize(&dir)?.display());
 
-	let (nor_videos, enc_videos) = resolve_ne_path_from_dir(&dir);
+	// 创建不确定进度的进度条用于扫描
+	let scan_pb = ProgressBar::new_spinner();
+	scan_pb.set_style(
+		ProgressStyle::default_spinner()
+			.template("{spinner:.green} Scanning... {pos} files scanned. {decimal_bytes_per_sec}")
+			.unwrap(),
+	);
+	scan_pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+	let scanned_files = Cell::new(0);
+	let (nor_videos, enc_videos) = resolve_ne_path_from_dir_with_progress(&dir, |count| {
+		scan_pb.set_position(count as u64);
+		scanned_files.set(count);
+	});
+
+	scan_pb.finish_with_message(format!(
+		"Scan complete: {} files found",
+		scanned_files.get()
+	));
 
 	if nor_videos.is_empty() && enc_videos.is_empty() {
 		eprintln!("No valid files found.");
@@ -111,14 +130,16 @@ fn main() -> io::Result<()> {
 		}
 	);
 
-	let password = get_user_password("INPUT PASSWORD", is_encode)?;
 	let maxsize = op_videos
 		.iter()
 		.map(|p| p.file_name().unwrap().to_string_lossy().chars().count())
 		.max()
 		.unwrap_or(0);
 
+	let mut password = get_user_password("INPUT PASSWORD", is_encode)?;
 	let mut manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&password));
+	password.fill(0);
+	drop(password);
 
 	let pb = ProgressBar::new(op_videos.len() as u64);
 	pb.set_style(
@@ -156,12 +177,12 @@ fn main() -> io::Result<()> {
 					pb.println("\t↑ 密码错误!");
 
 					let mut key_matched_in_prelist = false;
-					for idx in &manager.list_key_idxs().unwrap() {
+					for idx in manager.list_key_idxs().unwrap() {
 						if idx == Manager::MAGIC_KEY_USING {
 							continue;
 						}
 						pb.println(format!("\t↑ 尝试中: `{:}`", idx));
-						manager.use_key(idx);
+						manager.use_key(&idx);
 						if let Ok(name) = manager.decrypt_file(file) {
 							pb.println(format!("\t↑ 成功: -> \"{}\"", name));
 							key_matched_in_prelist = true;
@@ -171,7 +192,8 @@ fn main() -> io::Result<()> {
 						}
 					}
 					if !key_matched_in_prelist {
-						while let Ok(pwd) = get_user_password("\t↑ 请重试-> ", false) {
+						while let Ok(pwd) = pb.suspend(|| get_user_password("\t↑ 请重试-> ", false))
+						{
 							manager.use_added_key(&pwd);
 							match manager.decrypt_file(file) {
 								Ok(name) => {
@@ -180,11 +202,12 @@ fn main() -> io::Result<()> {
 								}
 								Err(_) => {
 									pb.println("\t↑ 密码错误!");
-									if !dialoguer::Confirm::new()
-										.with_prompt("\t↑ Proceed trying?")
-										.interact()
-										.unwrap_or(false)
-									{
+									if pb.suspend(|| {
+										!dialoguer::Confirm::new()
+											.with_prompt("\t↑ Proceed trying?")
+											.interact()
+											.unwrap_or(false)
+									}) {
 										pb.println("\t↑ Canceled!");
 										break;
 									}
@@ -194,14 +217,15 @@ fn main() -> io::Result<()> {
 					}
 				} else {
 					pb.println(format!("\t↑ {} -> {}", e.kind(), e));
-					if dialoguer::Confirm::new()
-						.with_prompt("\t↑ Would you like to delete it?")
-						.interact()
-						.unwrap_or(false) && dialoguer::Confirm::new()
-						.with_prompt("\t↑ Proceed?")
-						.interact()
-						.unwrap_or(false)
-					{
+					if pb.suspend(|| {
+						dialoguer::Confirm::new()
+							.with_prompt("\t↑ Would you like to delete it?")
+							.interact()
+							.unwrap_or(false) && dialoguer::Confirm::new()
+							.with_prompt("\t↑ Proceed?")
+							.interact()
+							.unwrap_or(false)
+					}) {
 						let _ = fs::remove_file(file);
 						pb.println("\t↑ Deleted!");
 					} else {
@@ -214,6 +238,7 @@ fn main() -> io::Result<()> {
 		pb.inc(1);
 	}
 
+	manager.drop_all_keys();
 	pb.finish_with_message("ALL DONE");
 	Ok(())
 }
