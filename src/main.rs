@@ -10,6 +10,8 @@ use clap::Parser;
 use dialoguer::Password;
 use indicatif::{ProgressBar, ProgressStyle};
 
+use zeroize::Zeroizing;
+
 use rcrm::{Manager, is_supported_file, resolve_ne_path_from_dir_with_progress};
 
 // =======================
@@ -27,21 +29,16 @@ struct Args {
 // Helper: 获取密码
 // =======================
 
-fn get_user_password(prompt: &str, twofa: bool) -> io::Result<Vec<u8>> {
-	let pwd1 = Password::new().with_prompt(prompt).interact()?;
-
+fn get_user_password(prompt: &str, twofa: bool) -> io::Result<Zeroizing<String>> {
+	let pwd = Password::new().with_prompt(prompt);
 	if twofa {
-		let pwd2 = Password::new().with_prompt("      CONFIRM").interact()?;
-
-		if pwd1 != pwd2 {
-			return Err(io::Error::new(
-				io::ErrorKind::InvalidInput,
-				"Passwords do not match",
-			));
-		}
+		Ok(Zeroizing::new(
+			pwd.with_confirmation("       CONFIRM", "Passwords do not match")
+				.interact()?,
+		))
+	} else {
+		Ok(Zeroizing::new(pwd.interact()?))
 	}
-
-	Ok(pwd1.into_bytes())
 }
 
 // =======================
@@ -136,9 +133,15 @@ fn main() -> io::Result<()> {
 		.max()
 		.unwrap_or(0);
 
-	let mut password = get_user_password("INPUT PASSWORD", is_encode)?;
-	let mut manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&password));
-	password.fill(0);
+	let password = get_user_password("INPUT PASSWORD", is_encode)?;
+	let mut manager = Manager::new(
+		true,
+		true,
+		2048,
+		is_supported_file,
+		6,
+		Some(password.as_bytes()),
+	);
 	drop(password);
 
 	let pb = ProgressBar::new(op_videos.len() as u64);
@@ -194,7 +197,8 @@ fn main() -> io::Result<()> {
 					if !key_matched_in_prelist {
 						while let Ok(pwd) = pb.suspend(|| get_user_password("\t↑ 请重试-> ", false))
 						{
-							manager.use_added_key(&pwd);
+							manager.use_added_key(pwd.as_bytes());
+							drop(pwd);
 							match manager.decrypt_file(file) {
 								Ok(name) => {
 									pb.println(format!("\t↑ 成功: -> \"{}\"", name));

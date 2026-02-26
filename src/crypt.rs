@@ -13,6 +13,8 @@ use blake2::{Blake2b512, Blake2s256, Digest};
 use chacha20::ChaCha20;
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 
+use zeroize::{Zeroize, Zeroizing};
+
 use crate::base72::b72_encode_rust as b72encode;
 
 // =======================
@@ -47,7 +49,7 @@ pub struct Manager {
 	pub calibration_amount: u32,
 	pub rule_fn: fn(&Path) -> bool,
 	pub works: usize,
-	pub keys: HashMap<u32, Vec<u8>>,
+	pub keys: HashMap<u32, Zeroizing<[u8; 32]>>,
 }
 
 impl Manager {
@@ -83,7 +85,7 @@ impl Manager {
 		manager
 	}
 
-	fn derive_key(&self, key: &[u8]) -> Vec<u8> {
+	fn derive_key(&self, key: &[u8]) -> Zeroizing<[u8; 32]> {
 		let mut state = self.calibration_amount;
 		let salt_val = xorshift64s(xorshift32(&mut state) as u64) ^ self.calibration_amount as u64;
 		let salt = &salt_val.to_le_bytes()[..8];
@@ -94,8 +96,8 @@ impl Manager {
 			argon2::Params::new(1 << 15, 7, 4, Some(32)).unwrap(),
 		);
 
-		let mut hash = vec![0u8; 32];
-		argon2.hash_password_into(key, salt, &mut hash).unwrap();
+		let mut hash = Zeroizing::new([0u8; 32]);
+		argon2.hash_password_into(key, salt, hash.as_mut()).unwrap();
 		hash
 	}
 
@@ -121,12 +123,12 @@ impl Manager {
 			panic!("The indexed key index '{}' does not exist.", idx);
 		}
 		self.keys
-			.insert(Manager::MAGIC_KEY_USING, self.keys[idx].clone());
+			.insert(Manager::MAGIC_KEY_USING, self.keys[idx].to_owned()); // Note: clone will copy the key
 	}
 
-	pub fn drop_key(&mut self, idx: &u32) -> Option<Vec<u8>> {
+	pub fn drop_key(&mut self, idx: &u32) -> Option<Zeroizing<[u8; 32]>> {
 		if let Some(val) = self.keys.get_mut(idx) {
-			val.fill(0);
+			val.zeroize();
 		};
 		self.keys.remove(idx)
 	}
@@ -146,9 +148,8 @@ impl Manager {
 	}
 
 	pub fn use_provided_key(&mut self, key: &[u8]) {
-		let idx = self.add_key(key, None);
-		self.use_key(&idx);
-		self.drop_key(&idx);
+		self.keys
+			.insert(Manager::MAGIC_KEY_USING, self.derive_key(key));
 	}
 
 	pub fn list_key_idxs(&self) -> Option<Vec<u32>> {
@@ -156,7 +157,7 @@ impl Manager {
 		if v.is_empty() { None } else { Some(v) }
 	}
 
-	fn get_using_key(&self) -> &[u8] {
+	fn get_using_key(&self) -> &Zeroizing<[u8; 32]> {
 		self.keys
 			.get(&Manager::MAGIC_KEY_USING)
 			.expect("No current key")
@@ -203,7 +204,7 @@ impl Manager {
 		header.extend_from_slice(&nonce); // 12
 
 		// 生成密钥流（基于密钥和 nonce）
-		let mut cipher = ChaCha20::new_from_slices(self.get_using_key(), &nonce).unwrap();
+		let mut cipher = ChaCha20::new_from_slices(self.get_using_key().as_ref(), &nonce).unwrap();
 
 		// 处理文件名加密
 		// Note: 文件名加密时，会原地修改文件名
@@ -305,7 +306,7 @@ impl Manager {
 		}
 
 		let nonce = &header_rd[80..92];
-		let mut cipher = ChaCha20::new_from_slices(self.get_using_key(), nonce).unwrap();
+		let mut cipher = ChaCha20::new_from_slices(self.get_using_key().as_ref(), nonce).unwrap();
 
 		// 读取文件名标志和长度
 		let ff = u16::from_le_bytes([header_rd[92], header_rd[93]]);

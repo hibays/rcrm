@@ -17,6 +17,7 @@ chacha20 = "0.9"
 mimalloc = { version = "*", features = ["v3"] }
 mime_guess = "2"
 dunce = "1.0.5"
+zeroize = { version = "1.8.2", features = ["simd"] }
 
 [dev-dependencies]
 zip = "6"
