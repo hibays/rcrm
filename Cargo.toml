@@ -19,6 +19,13 @@ mime_guess = "2"
 dunce = "1.0.5"
 zeroize = { version = "1.8.2", features = ["simd"] }
 
+# FTP(S) server dependencies
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+time = "0.3"
+ctrlc = "3"
+
 [dev-dependencies]
 zip = "6"
 

@@ -163,6 +163,83 @@ impl Manager {
 			.expect("No current key")
 	}
 
+	/// Public accessor for the currently-active derived key.
+	/// Used by the projection layer to decrypt file heads / streams on demand.
+	pub fn using_key(&self) -> &Zeroizing<[u8; 32]> {
+		self.get_using_key()
+	}
+
+	/// Read and verify the header of an encrypted file. Returns the parsed
+	/// header without touching the file body. The file cursor is left
+	/// positioned at the first byte after the header (i.e. at the start of
+	/// the encrypted head part 1 for partial files, or the start of the
+	/// encrypted data for full files).
+	pub fn read_file_header(&self, file: &mut File) -> io::Result<FileHeader> {
+		FileHeader::read_and_verify(file, self.get_using_key().as_ref())
+	}
+
+	/// Decrypt the head (the first `calibration_amount` bytes of the
+	/// original plaintext) of a partially-encrypted file. The file cursor
+	/// must be positioned at the first byte after the header (use
+	/// [`Manager::read_file_header`] first).
+	pub fn decrypt_head(
+		&self,
+		file: &mut File,
+		header: &FileHeader,
+	) -> io::Result<Zeroizing<Vec<u8>>> {
+		header.decrypt_head(file, self.get_using_key().as_ref())
+	}
+
+	/// Try to detect whether `file` is an rcrm-encrypted file by reading and
+	/// verifying its header. Returns `Ok(Some(header))` if encrypted with the
+	/// current key, `Ok(None)` if not encrypted (or wrong key), or `Err` on
+	/// I/O failure. The file cursor is rewound to the start on the `None`
+	/// path so the caller can fall back to plain serving.
+	pub fn try_read_header(&self, file: &mut File) -> io::Result<Option<FileHeader>> {
+		match FileHeader::read_and_verify(file, self.get_using_key().as_ref()) {
+			Ok(h) => Ok(Some(h)),
+			Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+				// Either too small for a header, or key_hash mismatch → not encrypted with our key.
+				// Rewind so the caller can serve the file as plain.
+				let _ = file.seek(SeekFrom::Start(0));
+				Ok(None)
+			}
+			Err(e) => Err(e),
+		}
+	}
+
+	/// Try every key registered in this manager until one verifies the
+	/// file's header. Returns the header and the index of the matching key.
+	/// On success the file cursor is positioned at the first byte after the
+	/// header. If no key matches, returns `InvalidData`.
+	pub fn read_file_header_any_key(&self, file: &mut File) -> io::Result<(FileHeader, u32)> {
+		let mut last_err: Option<io::Error> = None;
+		for (&idx, key) in &self.keys {
+			// Rewind before each attempt.
+			file.seek(SeekFrom::Start(0))?;
+			match FileHeader::read_and_verify(file, key.as_ref()) {
+				Ok(h) => return Ok((h, idx)),
+				Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+					last_err = Some(e);
+					continue;
+				}
+				Err(e) => return Err(e),
+			}
+		}
+		Err(last_err.unwrap_or_else(|| {
+			io::Error::new(
+				io::ErrorKind::InvalidData,
+				"No key registered — cannot open encrypted file",
+			)
+		}))
+	}
+
+	/// Look up a registered key by its index. Used by projection to
+	/// retrieve the matching key for a file after `read_file_header_any_key`.
+	pub fn key_by_idx(&self, idx: u32) -> Option<&Zeroizing<[u8; 32]>> {
+		self.keys.get(&idx)
+	}
+
 	#[allow(dead_code)]
 	fn filter(&self, paths: &[PathBuf]) -> Vec<PathBuf> {
 		paths
@@ -382,5 +459,174 @@ impl Manager {
 			// 文件名未加密，保持原名
 			Ok(file.file_name().unwrap().to_string_lossy().into_owned())
 		}
+	}
+}
+
+// =======================
+// FileHeader: parsed and verified header of an encrypted file
+// =======================
+
+/// Parsed header of an rcrm-encrypted file, with the key_hash already
+/// verified against the supplied manager key.
+///
+/// Layout on disk (little-endian where applicable):
+/// ```text
+/// (04 bytes <I) calibration_amount
+/// (08 bytes <Q) file_size            ← original (plaintext) size
+/// (04 bytes   ) key_hash_salt
+/// (64 bytes   ) key_hash             ← BLAKE2b(key || file_size || ca || salt)
+/// (12 bytes   ) nonce                ← ChaCha20 nonce
+/// (02 bytes <H) file_name_crypt(bit0) || original_file_name_length(bits1..15)
+/// (?? bytes   ) original_file_name(encrypted with the same ChaCha20 keystream)
+/// ```
+#[derive(Clone)]
+pub struct FileHeader {
+	pub calibration_amount: u32,
+	/// Original (plaintext) file size — the virtual size seen by FTP clients.
+	pub file_size: u64,
+	pub key_hash_salt: [u8; 4],
+	pub key_hash: [u8; 64],
+	pub nonce: [u8; 12],
+	pub file_name_crypt: bool,
+	/// Decrypted original filename, if `file_name_crypt` was enabled.
+	pub orig_file_name: Option<String>,
+	/// Total header length in bytes (fixed 94 + variable filename).
+	pub header_len: usize,
+	/// Byte offset into the ChaCha20 keystream where the file *body*
+	/// (the encrypted head) begins. Equals the encrypted filename length
+	/// when name-cryption is enabled (the cipher advances past the
+	/// filename bytes before encrypting the body), otherwise 0.
+	pub keystream_offset: u64,
+}
+
+impl FileHeader {
+	/// Fixed prefix length: ca(4) + file_size(8) + salt(4) + key_hash(64) +
+	/// nonce(12) + flags(2) = 94 bytes.
+	pub const FIXED_LEN: usize = 4 + 8 + 4 + 64 + 12 + 2;
+
+	/// Read the header from `file` and verify `key_hash` against `manager_key`.
+	/// On success the file cursor is positioned at the first byte after the
+	/// header. On `InvalidData` error the cursor position is unspecified.
+	pub fn read_and_verify(file: &mut File, manager_key: &[u8]) -> io::Result<Self> {
+		let mut header_rd = [0u8; Self::FIXED_LEN];
+		let read = file.read(&mut header_rd)?;
+		if read < Self::FIXED_LEN {
+			return Err(io::Error::new(
+				io::ErrorKind::InvalidData,
+				"File too small for header",
+			));
+		}
+
+		let ca_b = &header_rd[0..4];
+		let file_size_b = &header_rd[4..12];
+		let key_hash_salt: [u8; 4] = header_rd[12..16].try_into().unwrap();
+		let key_hash: [u8; 64] = header_rd[16..80].try_into().unwrap();
+
+		// Verify key_hash = BLAKE2b(manager_key || file_size || ca || salt)
+		let mut hasher = Blake2b512::new();
+		hasher.update(manager_key);
+		hasher.update(file_size_b);
+		hasher.update(ca_b);
+		hasher.update(key_hash_salt);
+		if key_hash != hasher.finalize()[..64].as_ref() {
+			return Err(io::Error::new(
+				io::ErrorKind::InvalidData,
+				"Uncorrected key!",
+			));
+		}
+
+		let nonce: [u8; 12] = header_rd[80..92].try_into().unwrap();
+		let ff = u16::from_le_bytes([header_rd[92], header_rd[93]]);
+		let file_name_crypt = (ff & 1) != 0;
+		let original_file_name_length = (ff >> 1) as usize;
+
+		let mut cipher = ChaCha20::new_from_slices(manager_key, &nonce)
+			.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+		let (orig_file_name, keystream_offset, name_len) =
+			if file_name_crypt && original_file_name_length > 0 {
+				let mut enc_name = vec![0u8; original_file_name_length];
+				file.read_exact(&mut enc_name)?;
+				cipher.apply_keystream(&mut enc_name);
+				let name = String::from_utf8(enc_name).map_err(|_| {
+					io::Error::new(io::ErrorKind::InvalidData, "Invalid filename encoding")
+				})?;
+				(
+					Some(name),
+					original_file_name_length as u64,
+					original_file_name_length,
+				)
+			} else {
+				(None, 0u64, 0)
+			};
+
+		let header_len = Self::FIXED_LEN + name_len;
+
+		Ok(FileHeader {
+			calibration_amount: u32::from_le_bytes(ca_b.try_into().unwrap()),
+			file_size: u64::from_le_bytes(file_size_b.try_into().unwrap()),
+			key_hash_salt,
+			key_hash,
+			nonce,
+			file_name_crypt,
+			orig_file_name,
+			header_len,
+			keystream_offset,
+		})
+	}
+
+	/// `true` if the entire file body is encrypted (calibration_amount ==
+	/// u32::MAX, or the file is smaller than calibration_amount).
+	pub fn is_full_encrypted(&self) -> bool {
+		self.calibration_amount == u32::MAX || self.file_size < self.calibration_amount as u64
+	}
+
+	/// Decrypt the head (the first `calibration_amount` bytes of the original
+	/// plaintext) of a partially-encrypted file.
+	///
+	/// `file` must be positioned at the first byte after the header (use
+	/// [`FileHeader::read_and_verify`] first). On return, the cursor is left
+	/// at an unspecified position.
+	pub fn decrypt_head(
+		&self,
+		file: &mut File,
+		manager_key: &[u8],
+	) -> io::Result<Zeroizing<Vec<u8>>> {
+		let c = self.calibration_amount as usize;
+		let h = self.header_len;
+		let vsize = self.file_size;
+
+		// The encrypted head (calibration_amount bytes of the original
+		// plaintext, encrypted with the ChaCha20 keystream starting at
+		// `keystream_offset`) is split on disk into two contiguous regions:
+		//   part1 (C-H bytes) at disk[H..C]
+		//   part2 (H bytes)   at disk[file_size..file_size+H]
+		// (See Manager::encrypt_file for the write sequence.)
+		let part1_len = c.saturating_sub(h);
+		let mut enc_data = Zeroizing::new(vec![0u8; c]);
+
+		// Read part1: currently positioned right after the header.
+		file.read_exact(&mut enc_data[..part1_len])?;
+
+		// Read part2: jump to disk offset `file_size`.
+		file.seek(SeekFrom::Start(vsize))?;
+		file.read_exact(&mut enc_data[part1_len..])?;
+
+		// Decrypt: seek the cipher to `keystream_offset` and apply keystream.
+		let mut cipher = ChaCha20::new_from_slices(manager_key, &self.nonce)
+			.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+		// Advance the cipher past the filename bytes (if any) to reach the
+		// body portion of the keystream.
+		if self.keystream_offset > 0 {
+			// Generate-and-discard `keystream_offset` bytes to advance the
+			// cipher state. apply_keystream on a zero buffer XORs in the
+			// keystream, leaving us with the raw keystream — but we only
+			// care about advancing the position, so use StreamCipherSeek.
+			use chacha20::cipher::StreamCipherSeek;
+			cipher.seek(self.keystream_offset);
+		}
+		cipher.apply_keystream(enc_data.as_mut());
+
+		Ok(enc_data)
 	}
 }

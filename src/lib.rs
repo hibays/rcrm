@@ -8,6 +8,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod base72;
 mod crypt;
+mod project;
+pub mod serve;
 
 use std::{
 	fs,
@@ -16,7 +18,9 @@ use std::{
 
 pub use base72::b72_decode_rust as b72decode;
 
+pub use crypt::FileHeader;
 pub use crypt::Manager;
+pub use project::{ProjectedFile, SessionKey};
 
 // =======================
 // MIME 类型判断（简化版）

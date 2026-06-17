@@ -5,3 +5,5 @@
 /NUL*.o
 
 .claude/
+.omo/
+.local_backup/
