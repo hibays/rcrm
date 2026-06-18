@@ -25,6 +25,7 @@ rustls-pemfile = "2"
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 time = "0.3"
 ctrlc = "3"
+base64 = "0.22"
 
 [dev-dependencies]
 zip = "6"

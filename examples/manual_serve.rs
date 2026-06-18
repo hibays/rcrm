@@ -64,6 +64,7 @@ fn main() {
 		tls_config: Some(tls_cfg),
 		require_tls: false,
 		implicit_tls: false,
+		protocol: rcrm::serve::Protocol::Ftp,
 		max_connections: 8,
 		auth: AuthConfig::no_auth(),
 		idle_timeout: Duration::from_secs(300),

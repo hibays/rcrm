@@ -66,6 +66,15 @@ enum Command {
 		/// with --ftps.
 		#[arg(long, conflicts_with = "ftps")]
 		ftpes: bool,
+		/// WebDAV over plain HTTP. Standard port is 80. Mutually exclusive
+		/// with --ftps, --ftpes, --https.
+		#[arg(long, conflicts_with_all = ["ftps", "ftpes", "https"])]
+		http: bool,
+		/// WebDAV over HTTPS (implicit TLS). Standard port is 443.
+		/// Auto-generates a self-signed cert if --cert/--key are not
+		/// supplied. Mutually exclusive with --ftps, --ftpes, --http.
+		#[arg(long, conflicts_with_all = ["ftps", "ftpes", "http"])]
+		https: bool,
 		/// Path to a PEM certificate chain (implies TLS).
 		#[arg(long)]
 		cert: Option<String>,
@@ -152,6 +161,8 @@ fn main() -> io::Result<()> {
 			port,
 			ftps,
 			ftpes,
+			http,
+			https,
 			cert,
 			key,
 			user,
@@ -163,6 +174,8 @@ fn main() -> io::Result<()> {
 			port,
 			ftps,
 			ftpes,
+			http,
+			https,
 			cert,
 			key,
 			user,
@@ -389,13 +402,15 @@ fn run_serve(
 	port: Option<u16>,
 	ftps: bool,
 	ftpes: bool,
+	http: bool,
+	https: bool,
 	cert: Option<String>,
 	key: Option<String>,
 	user: Option<String>,
 	force: bool,
 	max_connections: usize,
 ) -> io::Result<()> {
-	let root = PathBuf::from(dir).canonicalize()?;
+	let root = dunce::canonicalize(PathBuf::from(dir))?;
 	if !root.is_dir() {
 		return Err(io::Error::new(
 			io::ErrorKind::NotFound,
@@ -403,18 +418,29 @@ fn run_serve(
 		));
 	}
 
-	// --- Resolve TLS mode ---
-	// --cert/--key imply FTPES if neither --ftps nor --ftpes was given.
-	let (implicit_tls, tls_enabled) = match (ftps, ftpes) {
-		(true, false) => (true, true),
-		(false, true) => (false, true),
-		(false, false) if cert.is_some() || key.is_some() => (false, true),
-		(false, false) => (false, false),
-		(true, true) => unreachable!("clap conflicts_with prevents this"),
+	// --- Resolve protocol + TLS mode ---
+	// Priority: --ftps > --ftpes > --https > --http > --cert/--key (→ FTPES)
+	// > plain FTP. clap's conflicts_with_all guarantees at most one of these
+	// is set at a time, except --cert/--key which can accompany any.
+	use rcrm::serve::Protocol;
+	let (protocol, tls_enabled) = match (ftps, ftpes, http, https) {
+		(true, false, false, false) => (Protocol::FtpImplicitTls, true),
+		(false, true, false, false) => (Protocol::Ftp, true),
+		(false, false, true, false) => (Protocol::WebDav, false),
+		(false, false, false, true) => (Protocol::WebDavHttps, true),
+		(false, false, false, false) if cert.is_some() || key.is_some() => (Protocol::Ftp, true),
+		(false, false, false, false) => (Protocol::Ftp, false),
+		_ => unreachable!("clap conflicts_with prevents invalid combinations"),
 	};
+	let implicit_tls = protocol.implicit_tls();
 
-	// Default port: 990 for implicit FTPS, 21 otherwise.
-	let port = port.unwrap_or(if implicit_tls { 990 } else { 21 });
+	// Default port: 990 (Implicit FTPS) / 443 (HTTPS) / 80 (HTTP) / 21 (FTP).
+	let port = port.unwrap_or(match protocol {
+		Protocol::FtpImplicitTls => 990,
+		Protocol::WebDavHttps => 443,
+		Protocol::WebDav => 80,
+		Protocol::Ftp => 21,
+	});
 
 	// --- Parse bind address ---
 	let is_loopback =
@@ -441,10 +467,15 @@ fn run_serve(
 		eprintln!("[serve] WARNING: anyone on the network can read projected files");
 		AuthConfig::no_auth()
 	} else {
-		// User specified — prompt for FTP password interactively.
+		// User specified — prompt for password interactively.
 		let user = user.unwrap();
-		eprintln!("[serve] FTP user: {}", user);
-		let pass = get_user_password("FTP password", false)?;
+		let proto_name = if protocol.is_webdav() {
+			"WebDAV"
+		} else {
+			"FTP"
+		};
+		eprintln!("[serve] {} user: {}", proto_name, user);
+		let pass = get_user_password(&format!("{} password", proto_name), false)?;
 		let auth = AuthConfig::with_credentials(user, pass.as_str());
 		drop(pass);
 		auth
@@ -499,6 +530,35 @@ fn run_serve(
 	// --- Session key (memory encryption for cached heads) ---
 	let session_key = Arc::new(SessionKey::generate());
 
+	// --- Pre-populate projection cache  ---
+	// Decrypt and cache every encrypted file's head eagerly at startup so
+	// the first PROPFIND / directory listing is instant. Without this,
+	// listing a directory with N encrypted files opens + decrypts all N
+	// files on every first request, causing noticeable stutter.
+	let cache = Arc::new(rcrm::serve::FileCache::new());
+	if !enc_files.is_empty() {
+		eprintln!(
+			"[serve] pre-loading {} encrypted file(s) into cache...",
+			enc_files.len()
+		);
+		let pb = ProgressBar::new(enc_files.len() as u64);
+		pb.set_style(
+			ProgressStyle::default_bar()
+				.template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} caching {percent}%")
+				.unwrap(),
+		);
+		for f in &enc_files {
+			match cache.get_or_open(f, &manager, &session_key) {
+				Ok(_) => {}
+				Err(e) => {
+					eprintln!("[serve] warning: failed to cache {}: {}", f.display(), e);
+				}
+			}
+			pb.inc(1);
+		}
+		pb.finish_with_message("Cache pre-load complete");
+	}
+
 	// --- TLS config ---
 	let tls_cfg = if tls_enabled {
 		let cfg = match (&cert, &key) {
@@ -523,9 +583,18 @@ fn run_serve(
 	};
 
 	if implicit_tls {
-		eprintln!("[serve] implicit FTPS mode (control + data always TLS)");
+		eprintln!(
+			"[serve] {} mode (implicit TLS — connection encrypted from byte 0)",
+			if protocol.is_webdav() {
+				"HTTPS WebDAV"
+			} else {
+				"implicit FTPS"
+			}
+		);
 	} else if tls_enabled {
 		eprintln!("[serve] explicit FTPS mode (AUTH TLS upgrade)");
+	} else if protocol.is_webdav() {
+		eprintln!("[serve] plain HTTP WebDAV mode (no TLS)");
 	}
 
 	// --- Build server context ---
@@ -533,10 +602,11 @@ fn run_serve(
 		root: root.clone(),
 		manager: Arc::new(manager),
 		session_key,
-		cache: Arc::new(rcrm::serve::FileCache::new()),
+		cache,
 		tls_config: tls_cfg,
 		require_tls: false,
 		implicit_tls,
+		protocol,
 		max_connections,
 		auth,
 		idle_timeout: Duration::from_secs(300),

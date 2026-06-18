@@ -136,6 +136,11 @@ fn start_server_with_mode(root: std::path::PathBuf, key: &[u8], implicit: bool) 
 		tls_config: Some(tls_cfg),
 		require_tls: false,
 		implicit_tls: implicit,
+		protocol: if implicit {
+			rcrm::serve::Protocol::FtpImplicitTls
+		} else {
+			rcrm::serve::Protocol::Ftp
+		},
 		max_connections: 8,
 		auth: AuthConfig::no_auth(),
 		idle_timeout: Duration::from_secs(60),

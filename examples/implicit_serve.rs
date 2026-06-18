@@ -9,7 +9,6 @@
 //
 // Ctrl+C to stop.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -19,7 +18,7 @@ use rcrm::serve::{AuthConfig, FileCache, Server, ServerContext};
 use rcrm::{Manager, SessionKey, is_supported_file};
 
 fn main() {
-	let dir = PathBuf::from(std::env::temp_dir()).join("rcrm_implicit_serve");
+	let dir = std::env::temp_dir().join("rcrm_implicit_serve");
 	let _ = std::fs::remove_dir_all(&dir);
 	std::fs::create_dir_all(&dir).unwrap();
 
@@ -54,6 +53,7 @@ fn main() {
 		tls_config: Some(tls_cfg),
 		require_tls: false,
 		implicit_tls: true,
+		protocol: rcrm::serve::Protocol::FtpImplicitTls,
 		max_connections: 8,
 		auth: AuthConfig::no_auth(),
 		idle_timeout: Duration::from_secs(300),

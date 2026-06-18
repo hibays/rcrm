@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use rcrm::{Manager, is_supported_file};
 
 fn main() {
-	let dir = PathBuf::from(std::env::temp_dir()).join("rcrm_verify_flow");
+	let dir = std::env::temp_dir().join("rcrm_verify_flow");
 	let _ = std::fs::remove_dir_all(&dir);
 	std::fs::create_dir_all(&dir).unwrap();
 
@@ -87,15 +87,14 @@ fn main() {
 fn verify_all(enc_files: &[PathBuf], manager: &mut Manager) -> Vec<PathBuf> {
 	let mut failed = Vec::new();
 	for p in enc_files {
-		match std::fs::File::open(p) {
-			Ok(mut f) => match manager.read_file_header_any_key(&mut f) {
+		if let Ok(mut f) = std::fs::File::open(p) {
+			match manager.read_file_header_any_key(&mut f) {
 				Ok(_) => {}
 				Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
 					failed.push(p.clone());
 				}
 				Err(_) => {}
-			},
-			Err(_) => {}
+			}
 		}
 	}
 	failed
