@@ -187,20 +187,20 @@ fn main() -> io::Result<()> {
 			};
 			run_serve(
 				&dirs,
-			&bind,
-			port,
-			ftps,
-			ftpes,
-			http,
-			https,
-			cert,
-			key,
-			user,
-			force,
-			max_connections,
-		)
-	},
-	None => run_crypt(vec!["..".to_string()]),
+				&bind,
+				port,
+				ftps,
+				ftpes,
+				http,
+				https,
+				cert,
+				key,
+				user,
+				force,
+				max_connections,
+			)
+		}
+		None => run_crypt(vec!["..".to_string()]),
 	}
 }
 
@@ -691,7 +691,11 @@ fn run_serve(
 
 	eprintln!(
 		"[serve] roots: {}",
-		roots.iter().map(|r| r.display().to_string()).collect::<Vec<_>>().join(", ")
+		roots
+			.iter()
+			.map(|r| r.display().to_string())
+			.collect::<Vec<_>>()
+			.join(", ")
 	);
 	eprintln!("[serve] press Ctrl+C to stop");
 	server.run(shutdown)

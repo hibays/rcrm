@@ -368,7 +368,9 @@ fn handle_get(
 	if is_virtual_root(&req.path, ctx.is_multi_root()) {
 		let mount_entries = virtual_root_entries(&ctx.mounts);
 		let mut html = String::with_capacity(2048);
-		html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>rcrm - Mount Points</title>");
+		html.push_str(
+			"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>rcrm - Mount Points</title>",
+		);
 		html.push_str("<style>body{font-family:monospace;padding:1em}h1{font-size:1.2em}");
 		html.push_str("a{text-decoration:none}a:hover{text-decoration:underline}");
 		html.push_str("</style></head><body><h1>Mount Points</h1><ul>");
@@ -760,7 +762,10 @@ fn resolve_resource(
 	if disk.is_file() {
 		let name = disk.file_name().and_then(|s| s.to_str()).unwrap_or("");
 		if is_valid_encrypted_file_name(name) {
-			if let Ok(pf) = ctx.cache.get_or_open(disk, &ctx.manager, &ctx.session_key, mount_idx) {
+			if let Ok(pf) = ctx
+				.cache
+				.get_or_open(disk, &ctx.manager, &ctx.session_key, mount_idx)
+			{
 				return Resolved::Projected(pf);
 			}
 			return Resolved::NotFound;
@@ -797,7 +802,9 @@ fn try_resolve_virtual(
 		if !is_valid_encrypted_file_name(&name) {
 			continue;
 		}
-		if let Ok(pf) = ctx.cache.get_or_open(&path, &ctx.manager, &ctx.session_key, mount_idx)
+		if let Ok(pf) = ctx
+			.cache
+			.get_or_open(&path, &ctx.manager, &ctx.session_key, mount_idx)
 			&& pf.virtual_name() == req_name
 		{
 			return Some(pf);
@@ -863,7 +870,10 @@ fn list_dir(
 			});
 		} else if is_valid_encrypted_file_name(&name) {
 			// Projected file.
-			match ctx.cache.get_or_open(&path, &ctx.manager, &ctx.session_key, mount_idx) {
+			match ctx
+				.cache
+				.get_or_open(&path, &ctx.manager, &ctx.session_key, mount_idx)
+			{
 				Ok(pf) => {
 					let vname = pf.virtual_name().to_string();
 					let href = format!(

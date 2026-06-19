@@ -231,7 +231,11 @@ pub fn generate_mount_names(paths: &[PathBuf]) -> Vec<Mount> {
 			.and_then(|s| s.to_str())
 			.unwrap_or("root")
 			.to_string();
-		let base = if base.is_empty() { "root".to_string() } else { base };
+		let base = if base.is_empty() {
+			"root".to_string()
+		} else {
+			base
+		};
 		*seen.entry(base).or_insert(0) += 1;
 	}
 
@@ -245,7 +249,11 @@ pub fn generate_mount_names(paths: &[PathBuf]) -> Vec<Mount> {
 				.and_then(|s| s.to_str())
 				.unwrap_or("root")
 				.to_string();
-			let base = if base.is_empty() { "root".to_string() } else { base };
+			let base = if base.is_empty() {
+				"root".to_string()
+			} else {
+				base
+			};
 			let cnt = counts.entry(base.clone()).or_insert(0);
 			*cnt += 1;
 			let name = if *seen.get(&base).unwrap_or(&1) > 1 {
@@ -488,8 +496,8 @@ pub struct ResolvedMount {
 /// resolved within the mount implied by `cwd`.
 ///
 /// Returns `NotFound` if the requested mount or directory does not exist.
-pub fn resolve_disk_path<'a>(
-	mounts: &'a [Mount],
+pub fn resolve_disk_path(
+	mounts: &[Mount],
 	cwd: &str,
 	ftp_path: &str,
 	is_multi: bool,
@@ -518,7 +526,11 @@ pub fn resolve_disk_path<'a>(
 	// Extract mount name from the first segment. If the path is "/" or
 	// empty, we're at the virtual root (no mount selected).
 	let mount_idx = if let Some(first) = segments.first() {
-		match mounts.iter().enumerate().find(|(_, m)| m.mount_name == *first) {
+		match mounts
+			.iter()
+			.enumerate()
+			.find(|(_, m)| m.mount_name == *first)
+		{
 			Some((idx, _)) => {
 				segments.remove(0); // consume mount segment
 				idx
@@ -549,7 +561,10 @@ pub fn resolve_disk_path<'a>(
 		}
 	}
 
-	Ok(ResolvedMount { mount_idx, disk_path: disk })
+	Ok(ResolvedMount {
+		mount_idx,
+		disk_path: disk,
+	})
 }
 
 /// Resolve a relative path when cwd already implies a mount.
@@ -559,39 +574,36 @@ fn resolve_relative_in_cwd(
 	segments: &[&str],
 ) -> io::Result<ResolvedMount> {
 	// Parse cwd to find which mount it's in.
-	let cwd_segs: Vec<&str> = cwd
-		.split('/')
-		.filter(|s| !s.is_empty())
-		.collect();
+	let cwd_segs: Vec<&str> = cwd.split('/').filter(|s| !s.is_empty()).collect();
 
-	if let Some(first) = cwd_segs.first() {
-		if let Some((idx, _)) = mounts.iter().enumerate().find(|(_, m)| m.mount_name == *first) {
-			let mount_root = &mounts[idx].disk_path;
-			let mut disk = mount_root.clone();
-			// Push remaining cwd segments (after mount name).
-			for seg in cwd_segs.iter().skip(1) {
+	if let Some(first) = cwd_segs.first()
+		&& let Some((idx, _)) = mounts
+			.iter()
+			.enumerate()
+			.find(|(_, m)| m.mount_name == *first)
+	{
+		let mount_root = &mounts[idx].disk_path;
+		let mut disk = mount_root.clone();
+		// Push remaining cwd segments (after mount name).
+		for seg in cwd_segs.iter().skip(1) {
+			disk.push(seg);
+		}
+		// Push requested segments.
+		for seg in segments {
+			if *seg == ".." {
+				if disk != *mount_root {
+					disk.pop();
+				}
+			} else {
 				disk.push(seg);
 			}
-			// Push requested segments.
-			for seg in segments {
-				if *seg == ".." {
-					if disk != *mount_root {
-						disk.pop();
-					}
-				} else {
-					disk.push(seg);
-				}
-			}
-			return Ok(ResolvedMount {
-				mount_idx: idx,
-				disk_path: disk,
-			});
 		}
+		return Ok(ResolvedMount {
+			mount_idx: idx,
+			disk_path: disk,
+		});
 	}
-	Err(io::Error::new(
-		io::ErrorKind::NotFound,
-		"not in a mount",
-	))
+	Err(io::Error::new(io::ErrorKind::NotFound, "not in a mount"))
 }
 
 /// Single-root flat resolution (original behaviour).

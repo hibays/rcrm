@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{
-    MountDirEntry, ResolvedMount, ServerContext, disk_to_ftp_path, is_virtual_root,
-    resolve_disk_path, virtual_root_entries,
+	MountDirEntry, ResolvedMount, ServerContext, disk_to_ftp_path, is_virtual_root,
+	resolve_disk_path, virtual_root_entries,
 };
 use rcrm_core::{ProjectedFile, is_supported_file};
 
@@ -470,12 +470,8 @@ impl FtpSession {
 			self.cwd = "/".to_string();
 			return self.send(250, "Directory changed to /");
 		}
-		let resolved: ResolvedMount = resolve_disk_path(
-			&self.ctx.mounts,
-			&self.cwd,
-			arg,
-			self.ctx.is_multi_root(),
-		)?;
+		let resolved: ResolvedMount =
+			resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root())?;
 		if !resolved.disk_path.is_dir() {
 			return self.send(550, "No such directory");
 		}
@@ -702,12 +698,8 @@ impl FtpSession {
 		if !self.authed {
 			return self.send(530, "Not logged in");
 		}
-		let resolved = resolve_disk_path(
-			&self.ctx.mounts,
-			&self.cwd,
-			arg,
-			self.ctx.is_multi_root(),
-		)?;
+		let resolved =
+			resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root())?;
 		let mount_idx = resolved.mount_idx;
 		let target = resolved.disk_path;
 		let dir = if target.is_dir() {
@@ -852,12 +844,8 @@ impl FtpSession {
 			return self.send(530, "TLS required");
 		}
 
-		let resolved = resolve_disk_path(
-			&self.ctx.mounts,
-			&self.cwd,
-			arg,
-			self.ctx.is_multi_root(),
-		)?;
+		let resolved =
+			resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root())?;
 		let mount_idx = resolved.mount_idx;
 		let disk = resolved.disk_path;
 
@@ -934,10 +922,10 @@ impl FtpSession {
 			&& let Some(req_name) = disk.file_name().and_then(|s| s.to_str())
 		{
 			// Fast path: name index.
-			if let Some(b72_path) =
-				self.ctx
-					.cache
-					.resolve_virtual_name(mount_idx, parent, req_name)
+			if let Some(b72_path) = self
+				.ctx
+				.cache
+				.resolve_virtual_name(mount_idx, parent, req_name)
 				&& let Some(pf) = self.ctx.cache.get(&b72_path)
 			{
 				return ResolvedRetr::Projected(pf);
@@ -1014,12 +1002,8 @@ impl FtpSession {
 		if !self.authed {
 			return self.send(530, "Not logged in");
 		}
-		let resolved = resolve_disk_path(
-			&self.ctx.mounts,
-			&self.cwd,
-			arg,
-			self.ctx.is_multi_root(),
-		)?;
+		let resolved =
+			resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root())?;
 		let mount_idx = resolved.mount_idx;
 		let disk = resolved.disk_path;
 		match self.resolve_retr_target(&disk, arg, mount_idx) {
@@ -1036,12 +1020,8 @@ impl FtpSession {
 		if !self.authed {
 			return self.send(530, "Not logged in");
 		}
-		let resolved = resolve_disk_path(
-			&self.ctx.mounts,
-			&self.cwd,
-			arg,
-			self.ctx.is_multi_root(),
-		)?;
+		let resolved =
+			resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root())?;
 		let mount_idx = resolved.mount_idx;
 		let disk = resolved.disk_path;
 		// MDTM uses the on-disk file's mtime (we don't track original mtime).
