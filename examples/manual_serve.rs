@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rcrm::serve::tls as tls_config;
-use rcrm::serve::{AuthConfig, FileCache, Server, ServerContext};
+use rcrm::serve::{AuthConfig, FileCache, Server, ServerContext, generate_mount_names};
 use rcrm::{Manager, SessionKey, is_supported_file};
 
 fn main() {
@@ -57,7 +57,7 @@ fn main() {
 	let tls_cfg = tls_config::build_ephemeral_config().expect("TLS config");
 
 	let ctx = ServerContext {
-		root: dir.clone(),
+		mounts: generate_mount_names(&[dir.clone()]),
 		manager: Arc::new(manager),
 		session_key,
 		cache: Arc::new(FileCache::new()),

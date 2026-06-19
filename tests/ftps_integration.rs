@@ -18,7 +18,7 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct};
 
 use rcrm::serve::tls as tls_config;
-use rcrm::serve::{AuthConfig, FileCache, Server, ServerContext};
+use rcrm::serve::{AuthConfig, FileCache, Server, ServerContext, generate_mount_names};
 use rcrm::{Manager, SessionKey, is_supported_file};
 
 // =======================
@@ -129,7 +129,7 @@ fn start_server_with_mode(root: std::path::PathBuf, key: &[u8], implicit: bool) 
 	let session_key = Arc::new(SessionKey::generate());
 	let tls_cfg = tls_config::build_ephemeral_config().expect("ephemeral cert failed");
 	let ctx = ServerContext {
-		root,
+		mounts: generate_mount_names(&[root]),
 		manager: Arc::new(manager),
 		session_key,
 		cache: Arc::new(FileCache::new()),

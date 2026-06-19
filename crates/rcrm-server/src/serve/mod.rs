@@ -32,11 +32,15 @@ use rcrm_core::{Manager, ProjectedFile, SessionKey, is_valid_encrypted_file_name
 /// created on first access (LIST/RETR/SIZE) and kept for the lifetime of
 /// the server. Only encrypted files (matching the `.<b72>` pattern) are
 /// cached — plain files are served directly from disk.
+///
+/// The `mount_idx` in `name_index` disambiguates virtual names across
+/// different mounts (two encrypted files in different mounts may project
+/// to the same virtual name).
 pub struct FileCache {
 	/// disk path → projected file
 	files: RwLock<HashMap<PathBuf, Arc<ProjectedFile>>>,
-	/// (parent dir, decrypted virtual name) → disk path
-	name_index: RwLock<HashMap<(PathBuf, String), PathBuf>>,
+	/// (mount_idx, parent dir, decrypted virtual name) → disk path
+	name_index: RwLock<HashMap<(usize, PathBuf, String), PathBuf>>,
 }
 
 impl Default for FileCache {
@@ -62,6 +66,9 @@ impl FileCache {
 	/// open it as a `ProjectedFile` (decrypting + caching the head for
 	/// partial files) and store it.
 	///
+	/// `mount_idx` is used to key the name index so that virtual names
+	/// from different mounts don't collide.
+	///
 	/// The expensive file-open + header-decrypt work happens *outside* the
 	/// write lock, so concurrent requests to different files don't block
 	/// each other. The double-check at insert time guards against the race
@@ -71,6 +78,7 @@ impl FileCache {
 		disk_path: &Path,
 		manager: &Manager,
 		session_key: &SessionKey,
+		mount_idx: usize,
 	) -> io::Result<Arc<ProjectedFile>> {
 		// Fast path: read lock.
 		if let Some(pf) = self.files.read().unwrap().get(disk_path) {
@@ -95,15 +103,20 @@ impl FileCache {
 			self.name_index
 				.write()
 				.unwrap()
-				.insert((parent, vname), disk_path.to_path_buf());
+				.insert((mount_idx, parent, vname), disk_path.to_path_buf());
 		}
 		Ok(pf)
 	}
 
-	/// Look up the disk path of an encrypted file by its (parent dir,
-	/// decrypted virtual name). Returns `None` if not indexed.
-	pub fn resolve_virtual_name(&self, parent: &Path, virtual_name: &str) -> Option<PathBuf> {
-		let key = (parent.to_path_buf(), virtual_name.to_string());
+	/// Look up the disk path of an encrypted file by its (mount_idx,
+	/// parent dir, decrypted virtual name). Returns `None` if not indexed.
+	pub fn resolve_virtual_name(
+		&self,
+		mount_idx: usize,
+		parent: &Path,
+		virtual_name: &str,
+	) -> Option<PathBuf> {
+		let key = (mount_idx, parent.to_path_buf(), virtual_name.to_string());
 		self.name_index.read().unwrap().get(&key).cloned()
 	}
 }
@@ -187,11 +200,76 @@ impl Protocol {
 }
 
 // =======================
+// Mount: a single root directory in the virtual filesystem
+// =======================
+
+/// A single root directory mounted into the virtual filesystem.
+/// In single-root mode (`mounts.len() == 1`), the mount name is ignored
+/// and the virtual filesystem is flat (backward-compatible behaviour).
+/// In multi-root mode, each mount appears as a top-level directory named
+/// by `mount_name`.
+#[derive(Clone)]
+pub struct Mount {
+	pub disk_path: PathBuf,
+	/// Virtual directory name at the top level.
+	pub mount_name: String,
+}
+
+/// Generate unique mount names from a list of root paths.
+///
+/// Each mount is named after the last component of its canonical path
+/// (e.g. `/home/user/Videos` → `Videos`). When two mounts would share
+/// the same name, the duplicates are disambiguated with a `_2`, `_3`, …
+/// suffix so every mount has a unique name.
+pub fn generate_mount_names(paths: &[PathBuf]) -> Vec<Mount> {
+	let mut seen: HashMap<String, usize> = HashMap::new();
+
+	// First pass: count occurrences of each base name.
+	for p in paths {
+		let base = p
+			.file_name()
+			.and_then(|s| s.to_str())
+			.unwrap_or("root")
+			.to_string();
+		let base = if base.is_empty() { "root".to_string() } else { base };
+		*seen.entry(base).or_insert(0) += 1;
+	}
+
+	// Second pass: assign unique names.
+	let mut counts: HashMap<String, usize> = HashMap::new();
+	paths
+		.iter()
+		.map(|p| {
+			let base = p
+				.file_name()
+				.and_then(|s| s.to_str())
+				.unwrap_or("root")
+				.to_string();
+			let base = if base.is_empty() { "root".to_string() } else { base };
+			let cnt = counts.entry(base.clone()).or_insert(0);
+			*cnt += 1;
+			let name = if *seen.get(&base).unwrap_or(&1) > 1 {
+				// Collision — disambiguate.
+				format!("{}_{}", base, cnt)
+			} else {
+				base
+			};
+			Mount {
+				disk_path: p.clone(),
+				mount_name: name,
+			}
+		})
+		.collect()
+}
+
+// =======================
 // ServerContext: shared, immutable state for all connections
 // =======================
 
 pub struct ServerContext {
-	pub root: PathBuf,
+	/// Mounted root directories. In single-root mode (len == 1) the
+	/// virtual filesystem is flat for backward compatibility.
+	pub mounts: Vec<Mount>,
 	pub manager: Arc<Manager>,
 	pub session_key: Arc<SessionKey>,
 	pub cache: Arc<FileCache>,
@@ -206,6 +284,28 @@ pub struct ServerContext {
 	pub max_connections: usize,
 	pub auth: AuthConfig,
 	pub idle_timeout: Duration,
+}
+
+impl ServerContext {
+	/// True when more than one mount is configured (mount-point mode).
+	pub fn is_multi_root(&self) -> bool {
+		self.mounts.len() > 1
+	}
+
+	/// The single disk root — only valid when `!is_multi_root()`.
+	pub fn single_root(&self) -> &Path {
+		&self.mounts[0].disk_path
+	}
+
+	/// Look up a mount by its virtual name. Returns `None` if no mount
+	/// has that name (or in single-root mode where mount names are
+	/// invisible).
+	pub fn mount_by_name(&self, name: &str) -> Option<(usize, &Mount)> {
+		self.mounts
+			.iter()
+			.enumerate()
+			.find(|(_, m)| m.mount_name.eq_ignore_ascii_case(name))
+	}
 }
 
 // =======================
@@ -272,9 +372,14 @@ impl Server {
 		// Non-blocking so we can poll the shutdown flag.
 		listener.set_nonblocking(true)?;
 		eprintln!(
-			"[serve] listening on {} (root: {})",
+			"[serve] listening on {} (roots: {})",
 			listener.local_addr()?,
-			self.ctx.root.display()
+			self.ctx
+				.mounts
+				.iter()
+				.map(|m| m.disk_path.display().to_string())
+				.collect::<Vec<_>>()
+				.join(", ")
 		);
 		if self.ctx.tls_config.is_some() {
 			eprintln!("[serve] FTPS enabled (AUTH TLS)");
@@ -359,19 +464,143 @@ fn handle_connection(
 	}
 }
 
-/// Resolve an FTP virtual path (relative to the server root) to a disk
-/// path, normalizing `.` and `..` segments without escaping the root.
-pub fn resolve_disk_path(root: &Path, cwd: &str, ftp_path: &str) -> PathBuf {
-	// Decide whether the path is absolute (FTP-style, leading '/') or
-	// relative to cwd.
+// =======================
+// Path resolution (multi-root aware)
+// =======================
+
+/// Result of resolving a virtual path against the server's mounts.
+#[derive(Clone)]
+pub struct ResolvedMount {
+	/// Which mount (index into `ServerContext.mounts`) the path lives in.
+	pub mount_idx: usize,
+	/// Absolute disk path.
+	pub disk_path: PathBuf,
+}
+
+/// Resolve an FTP virtual path to a `(mount_idx, disk_path)` pair.
+///
+/// **Single-root mode** (`mounts.len() == 1`): the virtual filesystem is
+/// flat — path resolution is identical to the pre-multi-root behaviour
+/// (the mount name is invisible). `mount_idx` is always 0.
+///
+/// **Multi-root mode** (`mounts.len() > 1`): the first segment of an
+/// absolute path is interpreted as a mount name. Relative paths are
+/// resolved within the mount implied by `cwd`.
+///
+/// Returns `NotFound` if the requested mount or directory does not exist.
+pub fn resolve_disk_path<'a>(
+	mounts: &'a [Mount],
+	cwd: &str,
+	ftp_path: &str,
+	is_multi: bool,
+) -> io::Result<ResolvedMount> {
+	if !is_multi {
+		// Single-root: flat virtual filesystem (backward-compatible).
+		let disk = resolve_flat_path(&mounts[0].disk_path, cwd, ftp_path);
+		return Ok(ResolvedMount {
+			mount_idx: 0,
+			disk_path: disk,
+		});
+	}
+
+	// Multi-root: first segment = mount name.
 	let combined = if ftp_path.starts_with('/') {
 		ftp_path.to_string()
 	} else {
 		format!("{}/{}", cwd.trim_end_matches('/'), ftp_path)
 	};
 
-	// Normalize segments manually — do NOT use PathBuf methods that might
-	// allow escaping root.
+	let mut segments: Vec<&str> = combined
+		.split('/')
+		.filter(|s| !s.is_empty() && *s != ".")
+		.collect();
+
+	// Extract mount name from the first segment. If the path is "/" or
+	// empty, we're at the virtual root (no mount selected).
+	let mount_idx = if let Some(first) = segments.first() {
+		match mounts.iter().enumerate().find(|(_, m)| m.mount_name == *first) {
+			Some((idx, _)) => {
+				segments.remove(0); // consume mount segment
+				idx
+			}
+			None => {
+				// First segment doesn't match any mount — the path might
+				// be relative within a mount implied by cwd.
+				return resolve_relative_in_cwd(mounts, cwd, &segments);
+			}
+		}
+	} else {
+		// Path is "/" — virtual root.
+		return Err(io::Error::new(io::ErrorKind::NotFound, "virtual root"));
+	};
+
+	// Build disk path under the resolved mount.
+	let mount_root = &mounts[mount_idx].disk_path;
+	let mut disk = mount_root.clone();
+	for seg in &segments {
+		if *seg == ".." {
+			// Prevent escaping the mount root.
+			if disk == *mount_root {
+				continue;
+			}
+			disk.pop();
+		} else {
+			disk.push(seg);
+		}
+	}
+
+	Ok(ResolvedMount { mount_idx, disk_path: disk })
+}
+
+/// Resolve a relative path when cwd already implies a mount.
+fn resolve_relative_in_cwd(
+	mounts: &[Mount],
+	cwd: &str,
+	segments: &[&str],
+) -> io::Result<ResolvedMount> {
+	// Parse cwd to find which mount it's in.
+	let cwd_segs: Vec<&str> = cwd
+		.split('/')
+		.filter(|s| !s.is_empty())
+		.collect();
+
+	if let Some(first) = cwd_segs.first() {
+		if let Some((idx, _)) = mounts.iter().enumerate().find(|(_, m)| m.mount_name == *first) {
+			let mount_root = &mounts[idx].disk_path;
+			let mut disk = mount_root.clone();
+			// Push remaining cwd segments (after mount name).
+			for seg in cwd_segs.iter().skip(1) {
+				disk.push(seg);
+			}
+			// Push requested segments.
+			for seg in segments {
+				if *seg == ".." {
+					if disk != *mount_root {
+						disk.pop();
+					}
+				} else {
+					disk.push(seg);
+				}
+			}
+			return Ok(ResolvedMount {
+				mount_idx: idx,
+				disk_path: disk,
+			});
+		}
+	}
+	Err(io::Error::new(
+		io::ErrorKind::NotFound,
+		"not in a mount",
+	))
+}
+
+/// Single-root flat resolution (original behaviour).
+fn resolve_flat_path(root: &Path, cwd: &str, ftp_path: &str) -> PathBuf {
+	let combined = if ftp_path.starts_with('/') {
+		ftp_path.to_string()
+	} else {
+		format!("{}/{}", cwd.trim_end_matches('/'), ftp_path)
+	};
 	let mut stack: Vec<String> = Vec::new();
 	for seg in combined.split('/') {
 		if seg.is_empty() || seg == "." {
@@ -383,7 +612,6 @@ pub fn resolve_disk_path(root: &Path, cwd: &str, ftp_path: &str) -> PathBuf {
 			stack.push(seg.to_string());
 		}
 	}
-
 	let mut disk = root.to_path_buf();
 	for seg in stack {
 		disk.push(seg);
@@ -391,22 +619,76 @@ pub fn resolve_disk_path(root: &Path, cwd: &str, ftp_path: &str) -> PathBuf {
 	disk
 }
 
-/// Convert a disk path (under root) back to an FTP virtual path string.
-pub fn disk_to_ftp_path(root: &Path, disk: &Path) -> String {
-	match disk.strip_prefix(root) {
-		Ok(rel) => {
-			let s = rel.to_string_lossy().replace('\\', "/");
-			if s.is_empty() {
-				"/".to_string()
-			} else {
-				format!("/{}", s)
+/// Convert a `(mount_idx, disk_path)` back to an FTP virtual path string.
+///
+/// **Single-root**: equivalent to the old `disk_to_ftp_path` — strips the
+/// single root prefix.
+///
+/// **Multi-root**: prepends the mount name, e.g. `/Videos/sub/file.mp4`.
+pub fn disk_to_ftp_path(mounts: &[Mount], mount_idx: usize, disk: &Path, is_multi: bool) -> String {
+	if !is_multi {
+		// Single-root flat mode.
+		match disk.strip_prefix(&mounts[0].disk_path) {
+			Ok(rel) => {
+				let s = rel.to_string_lossy().replace('\\', "/");
+				if s.is_empty() {
+					"/".to_string()
+				} else {
+					format!("/{}", s)
+				}
 			}
+			Err(_) => "/".to_string(),
 		}
-		Err(_) => "/".to_string(),
+	} else {
+		// Multi-root: prepend mount name.
+		let mount_name = &mounts[mount_idx].mount_name;
+		match disk.strip_prefix(&mounts[mount_idx].disk_path) {
+			Ok(rel) => {
+				let s = rel.to_string_lossy().replace('\\', "/");
+				if s.is_empty() {
+					format!("/{}", mount_name)
+				} else {
+					format!("/{}/{}", mount_name, s)
+				}
+			}
+			Err(_) => format!("/{}", mount_name),
+		}
 	}
+}
+
+/// Build the virtual root listing (only for multi-root mode).
+///
+/// Returns a list of `DirEntry`-like items representing mount points
+/// (directories). In single-root mode, this is never called — the normal
+/// `list_dir` handles `/`.
+pub fn virtual_root_entries(mounts: &[Mount]) -> Vec<MountDirEntry> {
+	mounts
+		.iter()
+		.map(|m| MountDirEntry {
+			virtual_name: m.mount_name.clone(),
+			is_dir: true,
+			size: 0,
+			disk_path: Some(m.disk_path.clone()),
+		})
+		.collect()
+}
+
+/// Lightweight directory entry for the virtual root listing.
+/// `disk_path` is `Some` for mount points, `None` for plain entries.
+pub struct MountDirEntry {
+	pub virtual_name: String,
+	pub is_dir: bool,
+	pub size: u64,
+	pub disk_path: Option<PathBuf>,
 }
 
 /// Check whether `name` looks like an rcrm encrypted filename (`.<b72>`).
 pub fn is_encrypted_name(name: &str) -> bool {
 	is_valid_encrypted_file_name(name)
+}
+
+/// Returns true if the ftp_path refers to the virtual root `/` in
+/// multi-root mode (where `/` shows mount points rather than real files).
+pub fn is_virtual_root(ftp_path: &str, is_multi: bool) -> bool {
+	is_multi && (ftp_path == "/" || ftp_path.is_empty())
 }

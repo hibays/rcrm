@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use rcrm::serve::{AuthConfig, FileCache, Server, ServerContext};
+use rcrm::serve::{AuthConfig, FileCache, Server, ServerContext, generate_mount_names};
 use rcrm::{Manager, SessionKey, is_supported_file};
 
 // =======================
@@ -138,7 +138,7 @@ fn start_server(root: PathBuf, key: &[u8]) -> ServerFixture {
 	let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(key));
 	let session_key = Arc::new(SessionKey::generate());
 	let ctx = ServerContext {
-		root: root.clone(),
+		mounts: generate_mount_names(&[root.clone()]),
 		manager: Arc::new(manager),
 		session_key,
 		cache: Arc::new(FileCache::new()),
@@ -488,7 +488,7 @@ fn ftp_serves_plain_files_without_encryption_password() {
 	let manager = Manager::new(true, true, 2048, is_supported_file, 6, None);
 	let session_key = Arc::new(SessionKey::generate());
 	let ctx = ServerContext {
-		root: dir.clone(),
+		mounts: generate_mount_names(&[dir.clone()]),
 		manager: Arc::new(manager),
 		session_key,
 		cache: Arc::new(FileCache::new()),
@@ -564,7 +564,7 @@ fn ftp_pasv_advertises_correct_ip_on_non_default_loopback() {
 	let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&key));
 	let session_key = Arc::new(SessionKey::generate());
 	let ctx = ServerContext {
-		root: dir.clone(),
+		mounts: generate_mount_names(&[dir.clone()]),
 		manager: Arc::new(manager),
 		session_key,
 		cache: Arc::new(FileCache::new()),

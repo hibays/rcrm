@@ -16,7 +16,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use super::{ServerContext, disk_to_ftp_path, resolve_disk_path};
+use super::{
+    MountDirEntry, ResolvedMount, ServerContext, disk_to_ftp_path, is_virtual_root,
+    resolve_disk_path, virtual_root_entries,
+};
 use rcrm_core::{ProjectedFile, is_supported_file};
 
 // =======================
@@ -463,11 +466,25 @@ impl FtpSession {
 		if !self.authed {
 			return self.send(530, "Not logged in");
 		}
-		let target = resolve_disk_path(&self.ctx.root, &self.cwd, arg);
-		if !target.is_dir() {
+		if is_virtual_root(arg, self.ctx.is_multi_root()) {
+			self.cwd = "/".to_string();
+			return self.send(250, "Directory changed to /");
+		}
+		let resolved: ResolvedMount = resolve_disk_path(
+			&self.ctx.mounts,
+			&self.cwd,
+			arg,
+			self.ctx.is_multi_root(),
+		)?;
+		if !resolved.disk_path.is_dir() {
 			return self.send(550, "No such directory");
 		}
-		self.cwd = disk_to_ftp_path(&self.ctx.root, &target);
+		self.cwd = disk_to_ftp_path(
+			&self.ctx.mounts,
+			resolved.mount_idx,
+			&resolved.disk_path,
+			self.ctx.is_multi_root(),
+		);
 		self.send(250, &format!("Directory changed to {}", self.cwd))
 	}
 
@@ -627,13 +644,42 @@ impl FtpSession {
 			.split_whitespace()
 			.find(|s| !s.starts_with('-'))
 			.unwrap_or("");
-		let target = resolve_disk_path(&self.ctx.root, &self.cwd, path_arg);
+
+		// Multi-root virtual root listing: show mount points.
+		if is_virtual_root(path_arg, self.ctx.is_multi_root())
+			|| (self.ctx.is_multi_root() && path_arg.is_empty() && self.cwd == "/")
+		{
+			let mount_entries: Vec<MountDirEntry> = virtual_root_entries(&self.ctx.mounts);
+			let entries: Vec<DirEntry> = mount_entries
+				.into_iter()
+				.map(|e| DirEntry {
+					disk_path: e.disk_path.unwrap_or_default(),
+					virtual_name: e.virtual_name,
+					is_dir: e.is_dir,
+					size: e.size,
+					mtime: None,
+				})
+				.collect();
+			return self.stream_listing(entries, names_only);
+		}
+
+		let resolved = resolve_disk_path(
+			&self.ctx.mounts,
+			&self.cwd,
+			path_arg,
+			self.ctx.is_multi_root(),
+		)?;
+		let mount_idx = resolved.mount_idx;
+		let target = resolved.disk_path;
 		let dir = if target.is_dir() {
 			target.clone()
 		} else if target.exists() {
 			// Listing a single file — return just that entry.
-			let parent = target.parent().unwrap_or(&self.ctx.root).to_path_buf();
-			let entries = self.list_dir(&parent)?;
+			let parent = target
+				.parent()
+				.unwrap_or(&self.ctx.mounts[mount_idx].disk_path)
+				.to_path_buf();
+			let entries = self.list_dir(&parent, mount_idx)?;
 			let single: Vec<DirEntry> = entries
 				.into_iter()
 				.filter(|e| e.disk_path == target)
@@ -643,7 +689,7 @@ impl FtpSession {
 			return self.send(550, "No such file or directory");
 		};
 
-		match self.list_dir(&dir) {
+		match self.list_dir(&dir, mount_idx) {
 			Ok(entries) => self.stream_listing(entries, names_only),
 			Err(e) => {
 				eprintln!("[ftp:{}] list error: {}", self.addr, e);
@@ -656,13 +702,20 @@ impl FtpSession {
 		if !self.authed {
 			return self.send(530, "Not logged in");
 		}
-		let target = resolve_disk_path(&self.ctx.root, &self.cwd, arg);
+		let resolved = resolve_disk_path(
+			&self.ctx.mounts,
+			&self.cwd,
+			arg,
+			self.ctx.is_multi_root(),
+		)?;
+		let mount_idx = resolved.mount_idx;
+		let target = resolved.disk_path;
 		let dir = if target.is_dir() {
 			target
 		} else {
 			return self.send(550, "No such directory");
 		};
-		match self.list_dir(&dir) {
+		match self.list_dir(&dir, mount_idx) {
 			Ok(entries) => self.stream_mlsd(entries),
 			Err(e) => {
 				eprintln!("[ftp:{}] mlsd error: {}", self.addr, e);
@@ -675,7 +728,7 @@ impl FtpSession {
 	///   * Encrypted (`.<b72>`) files are opened and shown with their
 	///     decrypted virtual name and virtual (original) size.
 	///   * Plain files and subdirectories are shown as-is.
-	fn list_dir(&self, dir: &Path) -> io::Result<Vec<DirEntry>> {
+	fn list_dir(&self, dir: &Path, mount_idx: usize) -> io::Result<Vec<DirEntry>> {
 		let mut out = Vec::new();
 		let rd = std::fs::read_dir(dir)?;
 		for entry in rd.flatten() {
@@ -696,11 +749,12 @@ impl FtpSession {
 				});
 			} else if is_encrypted_name(&name) {
 				// Try to open as projected — if it fails (wrong key), skip.
-				match self
-					.ctx
-					.cache
-					.get_or_open(&path, &self.ctx.manager, &self.ctx.session_key)
-				{
+				match self.ctx.cache.get_or_open(
+					&path,
+					&self.ctx.manager,
+					&self.ctx.session_key,
+					mount_idx,
+				) {
 					Ok(pf) => {
 						out.push(DirEntry {
 							disk_path: path,
@@ -798,11 +852,18 @@ impl FtpSession {
 			return self.send(530, "TLS required");
 		}
 
-		let disk = resolve_disk_path(&self.ctx.root, &self.cwd, arg);
+		let resolved = resolve_disk_path(
+			&self.ctx.mounts,
+			&self.cwd,
+			arg,
+			self.ctx.is_multi_root(),
+		)?;
+		let mount_idx = resolved.mount_idx;
+		let disk = resolved.disk_path;
 
 		// Resolve to a projected file if the name doesn't exist on disk
 		// (i.e. the client requested the decrypted virtual name).
-		let resolved = self.resolve_retr_target(&disk, arg);
+		let resolved = self.resolve_retr_target(&disk, arg, mount_idx);
 
 		let (stream_kind, size) = match resolved {
 			ResolvedRetr::Plain(p) => {
@@ -848,17 +909,18 @@ impl FtpSession {
 		}
 	}
 
-	fn resolve_retr_target(&self, disk: &Path, _arg: &str) -> ResolvedRetr {
+	fn resolve_retr_target(&self, disk: &Path, _arg: &str, mount_idx: usize) -> ResolvedRetr {
 		// If the disk path exists as a regular file, serve it plain (unless
 		// it's a `.<b72>` file, in which case we project it).
 		if disk.is_file() {
 			let name = disk.file_name().and_then(|s| s.to_str()).unwrap_or("");
 			if is_encrypted_name(name) {
-				if let Ok(pf) =
-					self.ctx
-						.cache
-						.get_or_open(disk, &self.ctx.manager, &self.ctx.session_key)
-				{
+				if let Ok(pf) = self.ctx.cache.get_or_open(
+					disk,
+					&self.ctx.manager,
+					&self.ctx.session_key,
+					mount_idx,
+				) {
 					return ResolvedRetr::Projected(pf);
 				}
 				return ResolvedRetr::NotFound;
@@ -872,7 +934,10 @@ impl FtpSession {
 			&& let Some(req_name) = disk.file_name().and_then(|s| s.to_str())
 		{
 			// Fast path: name index.
-			if let Some(b72_path) = self.ctx.cache.resolve_virtual_name(parent, req_name)
+			if let Some(b72_path) =
+				self.ctx
+					.cache
+					.resolve_virtual_name(mount_idx, parent, req_name)
 				&& let Some(pf) = self.ctx.cache.get(&b72_path)
 			{
 				return ResolvedRetr::Projected(pf);
@@ -885,11 +950,12 @@ impl FtpSession {
 					if !is_encrypted_name(&name) {
 						continue;
 					}
-					if let Ok(pf) =
-						self.ctx
-							.cache
-							.get_or_open(&path, &self.ctx.manager, &self.ctx.session_key)
-						&& pf.virtual_name() == req_name
+					if let Ok(pf) = self.ctx.cache.get_or_open(
+						&path,
+						&self.ctx.manager,
+						&self.ctx.session_key,
+						mount_idx,
+					) && pf.virtual_name() == req_name
 					{
 						return ResolvedRetr::Projected(pf);
 					}
@@ -948,8 +1014,15 @@ impl FtpSession {
 		if !self.authed {
 			return self.send(530, "Not logged in");
 		}
-		let disk = resolve_disk_path(&self.ctx.root, &self.cwd, arg);
-		match self.resolve_retr_target(&disk, arg) {
+		let resolved = resolve_disk_path(
+			&self.ctx.mounts,
+			&self.cwd,
+			arg,
+			self.ctx.is_multi_root(),
+		)?;
+		let mount_idx = resolved.mount_idx;
+		let disk = resolved.disk_path;
+		match self.resolve_retr_target(&disk, arg, mount_idx) {
 			ResolvedRetr::Plain(p) => match std::fs::metadata(&p) {
 				Ok(m) => self.send(213, &format!("{}", m.len())),
 				Err(_) => self.send(550, "No such file"),
@@ -963,9 +1036,16 @@ impl FtpSession {
 		if !self.authed {
 			return self.send(530, "Not logged in");
 		}
-		let disk = resolve_disk_path(&self.ctx.root, &self.cwd, arg);
+		let resolved = resolve_disk_path(
+			&self.ctx.mounts,
+			&self.cwd,
+			arg,
+			self.ctx.is_multi_root(),
+		)?;
+		let mount_idx = resolved.mount_idx;
+		let disk = resolved.disk_path;
 		// MDTM uses the on-disk file's mtime (we don't track original mtime).
-		let target = match self.resolve_retr_target(&disk, arg) {
+		let target = match self.resolve_retr_target(&disk, arg, mount_idx) {
 			ResolvedRetr::Plain(p) => p,
 			ResolvedRetr::Projected(pf) => pf.disk_path().to_path_buf(),
 			ResolvedRetr::NotFound => return self.send(550, "No such file"),

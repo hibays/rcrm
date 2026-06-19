@@ -23,7 +23,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 
-use super::{AuthConfig, ServerContext};
+use super::{AuthConfig, ServerContext, is_virtual_root, resolve_disk_path, virtual_root_entries};
 use crate::serve::FileCache;
 use rcrm_core::is_valid_encrypted_file_name;
 
@@ -364,9 +364,44 @@ fn handle_get(
 	head_only: bool,
 	conn_header: &str,
 ) -> io::Result<()> {
-	let disk = resolve_webdav_path(&ctx.root, &req.path);
+	// Virtual root: serve mount-point directory listing.
+	if is_virtual_root(&req.path, ctx.is_multi_root()) {
+		let mount_entries = virtual_root_entries(&ctx.mounts);
+		let mut html = String::with_capacity(2048);
+		html.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>rcrm - Mount Points</title>");
+		html.push_str("<style>body{font-family:monospace;padding:1em}h1{font-size:1.2em}");
+		html.push_str("a{text-decoration:none}a:hover{text-decoration:underline}");
+		html.push_str("</style></head><body><h1>Mount Points</h1><ul>");
+		for entry in &mount_entries {
+			let href = format!("/{}/", xml_escape(&entry.virtual_name));
+			html.push_str(&format!(
+				"<li><a href=\"{}\">{}/</a></li>",
+				href,
+				xml_escape(&entry.virtual_name)
+			));
+		}
+		html.push_str("</ul></body></html>");
+		let bytes = html.into_bytes();
+		write_response(
+			stream,
+			200,
+			"OK",
+			&[
+				("Content-Type", "text/html; charset=utf-8"),
+				("Content-Length", &bytes.len().to_string()),
+				("Connection", conn_header),
+			],
+			&bytes,
+		)?;
+		return Ok(());
+	}
 
-	let resolved = resolve_resource(&disk, &req.path, ctx);
+	let resolved_mount = resolve_disk_path(&ctx.mounts, "/", &req.path, ctx.is_multi_root())
+		.map_err(|_| io::Error::new(io::ErrorKind::NotFound, "path not found"))?;
+	let disk = resolved_mount.disk_path;
+	let mount_idx = resolved_mount.mount_idx;
+
+	let resolved = resolve_resource(&disk, &req.path, ctx, mount_idx);
 	let (content_length, etag_source) = match &resolved {
 		Resolved::Plain(p) => {
 			let meta = std::fs::metadata(p)?;
@@ -391,7 +426,7 @@ fn handle_get(
 			// Browser-friendly directory listing. WebDAV clients use
 			// PROPFIND; browsers and wget use GET. Return a simple HTML
 			// page with file links so browsing from a browser works.
-			let html = build_html_directory_listing(&disk, &req.path, ctx);
+			let html = build_html_directory_listing(&disk, &req.path, ctx, mount_idx);
 			let bytes = html.into_bytes();
 			write_response(
 				stream,
@@ -502,7 +537,48 @@ fn handle_propfind(
 	stream: &mut dyn ReadWrite,
 	conn_header: &str,
 ) -> io::Result<()> {
-	let disk = resolve_webdav_path(&ctx.root, &req.path);
+	// Virtual root: return mount-point listing.
+	if is_virtual_root(&req.path, ctx.is_multi_root()) {
+		let mount_entries = virtual_root_entries(&ctx.mounts);
+		let mut xml = String::with_capacity(2048);
+		xml.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
+		xml.push_str("<D:multistatus xmlns:D=\"DAV:\">");
+		for entry in &mount_entries {
+			let href = format!("/{}/", xml_escape(&entry.virtual_name));
+			xml.push_str("<D:response>");
+			xml.push_str(&format!("<D:href>{}</D:href>", href));
+			xml.push_str("<D:propstat><D:prop>");
+			xml.push_str(&format!(
+				"<D:displayname>{}</D:displayname>",
+				xml_escape(&entry.virtual_name)
+			));
+			xml.push_str("<D:resourcetype><D:collection/></D:resourcetype>");
+			xml.push_str("<D:getcontentlength>0</D:getcontentlength>");
+			xml.push_str("<D:getlastmodified>Thu, 01 Jan 1970 00:00:00 GMT</D:getlastmodified>");
+			xml.push_str("</D:prop>");
+			xml.push_str("<D:status>HTTP/1.1 200 OK</D:status>");
+			xml.push_str("</D:propstat>");
+			xml.push_str("</D:response>");
+		}
+		xml.push_str("</D:multistatus>");
+		let bytes = xml.into_bytes();
+		let headers = [
+			("Content-Type", "application/xml; charset=utf-8".to_string()),
+			("Content-Length", bytes.len().to_string()),
+			("Connection", conn_header.to_string()),
+		];
+		let headers_ref: Vec<(&str, &str)> =
+			headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+		write_response_head(stream, 207, "Multi-Status", &headers_ref)?;
+		stream.write_all(&bytes)?;
+		stream.flush()?;
+		return Ok(());
+	}
+
+	let resolved_mount = resolve_disk_path(&ctx.mounts, "/", &req.path, ctx.is_multi_root())
+		.map_err(|_| io::Error::new(io::ErrorKind::NotFound, "path not found"))?;
+	let disk = resolved_mount.disk_path;
+	let mount_idx = resolved_mount.mount_idx;
 
 	let depth = req
 		.header("depth")
@@ -516,7 +592,7 @@ fn handle_propfind(
 	// If the disk path doesn't exist, it might be a virtual name (decrypted
 	// name of an encrypted file). Try resolving via projection.
 	if !target_exists {
-		if let Some(pf) = try_resolve_virtual(&disk, ctx) {
+		if let Some(pf) = try_resolve_virtual(&disk, ctx, mount_idx) {
 			// Single-file PROPFIND.
 			let entry = DirEntry {
 				virtual_name: pf.virtual_name().to_string(),
@@ -557,7 +633,7 @@ fn handle_propfind(
 
 	if !target_is_dir {
 		// Single file. Could be plain or encrypted.
-		let entry = match resolve_resource(&disk, &req.path, ctx) {
+		let entry = match resolve_resource(&disk, &req.path, ctx, mount_idx) {
 			Resolved::Plain(p) => DirEntry {
 				virtual_name: disk
 					.file_name()
@@ -609,7 +685,7 @@ fn handle_propfind(
 	}
 
 	// Directory listing.
-	let entries = match list_dir(&disk, &req.path, ctx) {
+	let entries = match list_dir(&disk, &req.path, ctx, mount_idx) {
 		Ok(e) => e,
 		Err(e) => {
 			eprintln!("[webdav] list_dir error: {}", e);
@@ -672,14 +748,19 @@ enum Resolved {
 	NotFound,
 }
 
-fn resolve_resource(disk: &Path, _req_path: &str, ctx: &ServerContext) -> Resolved {
+fn resolve_resource(
+	disk: &Path,
+	_req_path: &str,
+	ctx: &ServerContext,
+	mount_idx: usize,
+) -> Resolved {
 	if disk.is_dir() {
 		return Resolved::Directory;
 	}
 	if disk.is_file() {
 		let name = disk.file_name().and_then(|s| s.to_str()).unwrap_or("");
 		if is_valid_encrypted_file_name(name) {
-			if let Ok(pf) = ctx.cache.get_or_open(disk, &ctx.manager, &ctx.session_key) {
+			if let Ok(pf) = ctx.cache.get_or_open(disk, &ctx.manager, &ctx.session_key, mount_idx) {
 				return Resolved::Projected(pf);
 			}
 			return Resolved::NotFound;
@@ -687,7 +768,7 @@ fn resolve_resource(disk: &Path, _req_path: &str, ctx: &ServerContext) -> Resolv
 		return Resolved::Plain(disk.to_path_buf());
 	}
 	// Not on disk — try virtual name resolution.
-	if let Some(pf) = try_resolve_virtual(disk, ctx) {
+	if let Some(pf) = try_resolve_virtual(disk, ctx, mount_idx) {
 		return Resolved::Projected(pf);
 	}
 	Resolved::NotFound
@@ -695,11 +776,15 @@ fn resolve_resource(disk: &Path, _req_path: &str, ctx: &ServerContext) -> Resolv
 
 /// Look for an encrypted (`.<b72>`) file whose decrypted virtual name
 /// matches the last segment of `disk`.
-fn try_resolve_virtual(disk: &Path, ctx: &ServerContext) -> Option<Arc<rcrm_core::ProjectedFile>> {
+fn try_resolve_virtual(
+	disk: &Path,
+	ctx: &ServerContext,
+	mount_idx: usize,
+) -> Option<Arc<rcrm_core::ProjectedFile>> {
 	let parent = disk.parent()?;
 	let req_name = disk.file_name()?.to_str()?;
 	// Fast path: name index.
-	if let Some(b72_path) = ctx.cache.resolve_virtual_name(parent, req_name)
+	if let Some(b72_path) = ctx.cache.resolve_virtual_name(mount_idx, parent, req_name)
 		&& let Some(pf) = ctx.cache.get(&b72_path)
 	{
 		return Some(pf);
@@ -712,7 +797,7 @@ fn try_resolve_virtual(disk: &Path, ctx: &ServerContext) -> Option<Arc<rcrm_core
 		if !is_valid_encrypted_file_name(&name) {
 			continue;
 		}
-		if let Ok(pf) = ctx.cache.get_or_open(&path, &ctx.manager, &ctx.session_key)
+		if let Ok(pf) = ctx.cache.get_or_open(&path, &ctx.manager, &ctx.session_key, mount_idx)
 			&& pf.virtual_name() == req_name
 		{
 			return Some(pf);
@@ -733,7 +818,12 @@ struct DirEntry {
 	href: String,
 }
 
-fn list_dir(dir: &Path, base_href: &str, ctx: &ServerContext) -> io::Result<Vec<DirEntry>> {
+fn list_dir(
+	dir: &Path,
+	base_href: &str,
+	ctx: &ServerContext,
+	mount_idx: usize,
+) -> io::Result<Vec<DirEntry>> {
 	let mut entries = Vec::new();
 
 	// First entry: the directory itself.
@@ -773,7 +863,7 @@ fn list_dir(dir: &Path, base_href: &str, ctx: &ServerContext) -> io::Result<Vec<
 			});
 		} else if is_valid_encrypted_file_name(&name) {
 			// Projected file.
-			match ctx.cache.get_or_open(&path, &ctx.manager, &ctx.session_key) {
+			match ctx.cache.get_or_open(&path, &ctx.manager, &ctx.session_key, mount_idx) {
 				Ok(pf) => {
 					let vname = pf.virtual_name().to_string();
 					let href = format!(
@@ -858,8 +948,13 @@ fn build_propfind_xml(entries: &[DirEntry]) -> String {
 
 /// Simple HTML directory listing for browser access. Not part of the DAV
 /// spec, but browsers send GET on directories, not PROPFIND.
-fn build_html_directory_listing(dir: &Path, url_path: &str, ctx: &ServerContext) -> String {
-	let entries = list_dir(dir, url_path, ctx).unwrap_or_default();
+fn build_html_directory_listing(
+	dir: &Path,
+	url_path: &str,
+	ctx: &ServerContext,
+	mount_idx: usize,
+) -> String {
+	let entries = list_dir(dir, url_path, ctx, mount_idx).unwrap_or_default();
 	let mut out = String::with_capacity(4096);
 	out.push_str("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>");
 	out.push_str(&xml_escape(&format!("Index of {}", url_path)));
@@ -1083,12 +1178,6 @@ fn write_response_head(
 // =======================
 // Path + URL helpers
 // =======================
-
-/// Resolve a WebDAV URL path to a disk path, normalizing `.` and `..`
-/// without escaping root. Reuses the FTP path resolver.
-fn resolve_webdav_path(root: &Path, url_path: &str) -> PathBuf {
-	super::resolve_disk_path(root, "/", url_path)
-}
 
 /// Percent-decode a URL path component.
 fn percent_decode(s: &str) -> String {

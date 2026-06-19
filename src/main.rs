@@ -15,7 +15,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use zeroize::Zeroizing;
 
 use rcrm::serve::tls as tls_config;
-use rcrm::serve::{AuthConfig, Server, ServerContext};
+use rcrm::serve::{AuthConfig, Server, ServerContext, generate_mount_names};
 use rcrm::{Manager, SessionKey, is_supported_file, resolve_ne_path_from_dir_with_progress};
 
 // =======================
@@ -34,19 +34,22 @@ enum Command {
 	/// Encrypt / decrypt files in place (default behaviour when no
 	/// subcommand is given).
 	Crypt {
-		/// Directory to scan. Optional — defaults to "..". Can also be
-		/// supplied as a bare positional argument: `rcrm /path` or
-		/// `rcrm crypt /path`.
+		/// Directory to scan. Repeatable for multiple directories.
+		/// Optional — defaults to "..". Can also be supplied as a bare
+		/// positional argument: `rcrm /path` or `rcrm crypt /path`
+		/// (single-directory only). Use repeated -d for multi-root.
 		#[arg(short('d'), long)]
-		dir: Option<String>,
-		/// Positional directory path (alternative to -d).
+		dir: Vec<String>,
+		/// Positional directory path (alternative to -d, single-dir only).
 		path: Option<String>,
 	},
 	/// Start the projection FTP(S) server.
 	Serve {
-		/// Directory to serve as the FTP root.
-		#[arg(short('d'), long, default_value_t = String::from("."))]
-		dir: String,
+		/// Directory to serve. Repeatable for multiple roots.
+		/// Defaults to "." if omitted. In multi-root mode each root
+		/// appears as a virtual subdirectory named after its base.
+		#[arg(short('d'), long)]
+		dir: Vec<String>,
 		/// Bind address (use 0.0.0.0 to expose to the network).
 		#[arg(long, default_value = "127.0.0.1")]
 		bind: String,
@@ -152,8 +155,16 @@ fn main() -> io::Result<()> {
 	let args = preprocess_args();
 	match args.command {
 		Some(Command::Crypt { dir, path }) => {
-			let dir = dir.or(path).unwrap_or_else(|| "..".to_string());
-			run_crypt(dir)
+			// Merge -d flags + positional path. Positional path only
+			// works for single-directory mode.
+			let mut dirs = dir;
+			if let Some(p) = path {
+				dirs.push(p);
+			}
+			if dirs.is_empty() {
+				dirs.push("..".to_string());
+			}
+			run_crypt(dirs)
 		}
 		Some(Command::Serve {
 			dir,
@@ -168,8 +179,14 @@ fn main() -> io::Result<()> {
 			user,
 			force,
 			max_connections,
-		}) => run_serve(
-			&dir,
+		}) => {
+			let dirs: Vec<String> = if dir.is_empty() {
+				vec![".".to_string()]
+			} else {
+				dir
+			};
+			run_serve(
+				&dirs,
 			&bind,
 			port,
 			ftps,
@@ -181,8 +198,9 @@ fn main() -> io::Result<()> {
 			user,
 			force,
 			max_connections,
-		),
-		None => run_crypt("..".to_string()),
+		)
+	},
+	None => run_crypt(vec!["..".to_string()]),
 	}
 }
 
@@ -218,48 +236,57 @@ fn preprocess_args() -> Args {
 // crypt subcommand (original in-place encrypt/decrypt behaviour)
 // =======================
 
-fn run_crypt(dir: String) -> io::Result<()> {
-	let dir = PathBuf::from(dir).canonicalize()?;
+fn run_crypt(dirs: Vec<String>) -> io::Result<()> {
+	// Canonicalize all directories and scan for files.
+	let mut all_nor: Vec<PathBuf> = Vec::new();
+	let mut all_enc: Vec<PathBuf> = Vec::new();
 
-	println!("* Scanning: {}", dunce::canonicalize(&dir)?.display());
+	for d in &dirs {
+		let dir = PathBuf::from(d).canonicalize()?;
+		println!("* Scanning: {}", dunce::canonicalize(&dir)?.display());
 
-	// 创建不确定进度的进度条用于扫描
-	let scan_pb = ProgressBar::new_spinner();
-	scan_pb.set_style(
-		ProgressStyle::default_spinner()
-			.template("{spinner:.green} Scanning... {pos} files scanned. {decimal_bytes_per_sec}")
-			.unwrap(),
-	);
-	scan_pb.enable_steady_tick(std::time::Duration::from_millis(100));
+		let scan_pb = ProgressBar::new_spinner();
+		scan_pb.set_style(
+			ProgressStyle::default_spinner()
+				.template(
+					"{spinner:.green} Scanning... {pos} files scanned. {decimal_bytes_per_sec}",
+				)
+				.unwrap(),
+		);
+		scan_pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
-	let scanned_files = Cell::new(0);
-	let (nor_videos, enc_videos) = resolve_ne_path_from_dir_with_progress(&dir, |count| {
-		scan_pb.set_position(count as u64);
-		scanned_files.set(count);
-	});
+		let scanned_files = Cell::new(0);
+		let (nor_videos, enc_videos) = resolve_ne_path_from_dir_with_progress(&dir, |count| {
+			scan_pb.set_position(count as u64);
+			scanned_files.set(count);
+		});
 
-	scan_pb.finish_with_message(format!(
-		"Scan complete: {} files found",
-		scanned_files.get()
-	));
+		scan_pb.finish_with_message(format!(
+			"Scan complete: {} files found",
+			scanned_files.get()
+		));
 
-	if nor_videos.is_empty() && enc_videos.is_empty() {
+		all_nor.extend(nor_videos);
+		all_enc.extend(enc_videos);
+	}
+
+	if all_nor.is_empty() && all_enc.is_empty() {
 		eprintln!("No valid files found.");
 		return Ok(());
 	}
 
-	let (is_encode, op_videos) = if !nor_videos.is_empty() {
-		if enc_videos.is_empty() {
-			(true, nor_videos)
+	let (is_encode, op_videos) = if !all_nor.is_empty() {
+		if all_enc.is_empty() {
+			(true, all_nor)
 		} else {
 			let encode = Confirm::new()
 				.with_prompt("Want to encode?")
 				.default(true)
 				.interact()?;
-			(encode, if encode { nor_videos } else { enc_videos })
+			(encode, if encode { all_nor } else { all_enc })
 		}
 	} else {
-		(false, enc_videos)
+		(false, all_enc)
 	};
 
 	println!(
@@ -397,7 +424,7 @@ fn run_crypt(dir: String) -> io::Result<()> {
 
 #[allow(clippy::too_many_arguments)]
 fn run_serve(
-	dir: &str,
+	dirs: &[String],
 	bind: &str,
 	port: Option<u16>,
 	ftps: bool,
@@ -410,13 +437,40 @@ fn run_serve(
 	force: bool,
 	max_connections: usize,
 ) -> io::Result<()> {
-	let root = dunce::canonicalize(PathBuf::from(dir))?;
-	if !root.is_dir() {
-		return Err(io::Error::new(
-			io::ErrorKind::NotFound,
-			format!("serve root '{}' is not a directory", dir),
-		));
+	// Canonicalize all root directories.
+	let roots: Vec<PathBuf> = dirs
+		.iter()
+		.map(|d| {
+			let p = PathBuf::from(d);
+			dunce::canonicalize(&p).map_err(|e| {
+				io::Error::new(
+					io::ErrorKind::NotFound,
+					format!("serve root '{}': {}", d, e),
+				)
+			})
+		})
+		.collect::<io::Result<_>>()?;
+
+	for root in &roots {
+		if !root.is_dir() {
+			return Err(io::Error::new(
+				io::ErrorKind::NotFound,
+				format!("serve root '{}' is not a directory", root.display()),
+			));
+		}
 	}
+
+	// Generate mount names (disambiguated on collision).
+	let mounts = generate_mount_names(&roots);
+	eprintln!(
+		"[serve] {} root(s): {}",
+		mounts.len(),
+		mounts
+			.iter()
+			.map(|m| format!("{} → {}", m.mount_name, m.disk_path.display()))
+			.collect::<Vec<_>>()
+			.join(", ")
+	);
 
 	// --- Resolve protocol + TLS mode ---
 	// Priority: --ftps > --ftpes > --https > --http > --cert/--key (→ FTPES)
@@ -481,7 +535,7 @@ fn run_serve(
 		auth
 	};
 
-	// --- Scan for encrypted files (to know whether a password is needed) ---
+	// --- Scan all roots for encrypted files ---
 	let scan_pb = ProgressBar::new_spinner();
 	scan_pb.set_style(
 		ProgressStyle::default_spinner()
@@ -489,12 +543,19 @@ fn run_serve(
 			.unwrap(),
 	);
 	scan_pb.enable_steady_tick(Duration::from_millis(100));
-	let (_nor_files, enc_files) = resolve_ne_path_from_dir_with_progress(&root, |count| {
-		scan_pb.set_position(count as u64);
-	});
+	let mut all_enc_files: Vec<(usize, PathBuf)> = Vec::new();
+	for (i, root) in roots.iter().enumerate() {
+		let (_nor_files, enc_files) = resolve_ne_path_from_dir_with_progress(root, |count| {
+			scan_pb.set_position(count as u64);
+		});
+		for f in enc_files {
+			all_enc_files.push((i, f));
+		}
+	}
 	scan_pb.finish_with_message(format!(
-		"Scan complete: {} encrypted file(s) found",
-		enc_files.len()
+		"Scan complete: {} encrypted file(s) found across {} root(s)",
+		all_enc_files.len(),
+		roots.len()
 	));
 
 	// --- Encryption password(s) with pre-verification ---
@@ -505,13 +566,14 @@ fn run_serve(
 	// If any file fails (wrong key), prompt for another password and retry
 	// the still-failing files. The server only starts once ALL encrypted
 	// files are verified — matching the `crypt` mode's password behaviour.
-	let manager = if enc_files.is_empty() {
+	let enc_paths: Vec<PathBuf> = all_enc_files.iter().map(|(_, p)| p.clone()).collect();
+	let manager = if enc_paths.is_empty() {
 		eprintln!("[serve] no encrypted files found — serving plain files only");
 		Manager::new(true, true, 2048, is_supported_file, 6, None)
 	} else {
 		eprintln!(
 			"[serve] {} encrypted file(s) require password verification",
-			enc_files.len()
+			enc_paths.len()
 		);
 		let first_pwd = get_user_password("Encryption password", false)?;
 		let mut mgr = Manager::new(
@@ -523,7 +585,7 @@ fn run_serve(
 			Some(first_pwd.as_bytes()),
 		);
 		drop(first_pwd);
-		verify_encryption_passwords(&enc_files, &mut mgr)?;
+		verify_encryption_passwords(&enc_paths, &mut mgr)?;
 		mgr
 	};
 
@@ -536,19 +598,19 @@ fn run_serve(
 	// listing a directory with N encrypted files opens + decrypts all N
 	// files on every first request, causing noticeable stutter.
 	let cache = Arc::new(rcrm::serve::FileCache::new());
-	if !enc_files.is_empty() {
+	if !all_enc_files.is_empty() {
 		eprintln!(
 			"[serve] pre-loading {} encrypted file(s) into cache...",
-			enc_files.len()
+			all_enc_files.len()
 		);
-		let pb = ProgressBar::new(enc_files.len() as u64);
+		let pb = ProgressBar::new(all_enc_files.len() as u64);
 		pb.set_style(
 			ProgressStyle::default_bar()
 				.template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} caching {percent}%")
 				.unwrap(),
 		);
-		for f in &enc_files {
-			match cache.get_or_open(f, &manager, &session_key) {
+		for (mount_idx, f) in &all_enc_files {
+			match cache.get_or_open(f, &manager, &session_key, *mount_idx) {
 				Ok(_) => {}
 				Err(e) => {
 					eprintln!("[serve] warning: failed to cache {}: {}", f.display(), e);
@@ -599,7 +661,7 @@ fn run_serve(
 
 	// --- Build server context ---
 	let ctx = ServerContext {
-		root: root.clone(),
+		mounts,
 		manager: Arc::new(manager),
 		session_key,
 		cache,
@@ -627,7 +689,10 @@ fn run_serve(
 	})
 	.map_err(|e| io::Error::other(format!("ctrlc handler: {}", e)))?;
 
-	eprintln!("[serve] root: {}", root.display());
+	eprintln!(
+		"[serve] roots: {}",
+		roots.iter().map(|r| r.display().to_string()).collect::<Vec<_>>().join(", ")
+	);
 	eprintln!("[serve] press Ctrl+C to stop");
 	server.run(shutdown)
 }

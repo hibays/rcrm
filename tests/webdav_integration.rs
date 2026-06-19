@@ -21,7 +21,7 @@ use std::time::Duration;
 use base64::Engine;
 
 use rcrm::serve::tls as tls_config;
-use rcrm::serve::{AuthConfig, FileCache, Protocol, Server, ServerContext};
+use rcrm::serve::{AuthConfig, FileCache, Protocol, Server, ServerContext, generate_mount_names};
 use rcrm::{Manager, SessionKey, is_supported_file};
 
 // =======================
@@ -61,7 +61,7 @@ fn start_webdav_server(root: PathBuf, key: &[u8], https: bool) -> ServerFixture 
 		None
 	};
 	let ctx = ServerContext {
-		root,
+		mounts: generate_mount_names(&[root]),
 		manager: Arc::new(manager),
 		session_key,
 		cache: Arc::new(FileCache::new()),
@@ -397,7 +397,7 @@ fn webdav_basic_auth_required() {
 	let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&key));
 	let session_key = Arc::new(SessionKey::generate());
 	let ctx = ServerContext {
-		root: dir.clone(),
+		mounts: generate_mount_names(&[dir.clone()]),
 		manager: Arc::new(manager),
 		session_key,
 		cache: Arc::new(FileCache::new()),
