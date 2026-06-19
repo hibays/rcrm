@@ -7,3 +7,6 @@
 .claude/
 .omo/
 .local_backup/
+
+# Note: one test requires it, user should generate it manually
+tests/assets/resources.zip
