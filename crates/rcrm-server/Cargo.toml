@@ -1,0 +1,14 @@
+[package]
+name = "rcrm-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rcrm-core = { path = "../rcrm-core" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+time = "0.3"
+ctrlc = "3"
+base64 = "0.22"
+blake2 = "0.10"

@@ -1,34 +1,31 @@
+[workspace]
+members = ["crates/rcrm-core", "crates/rcrm-server"]
+resolver = "3"
+
 [package]
 name = "rcrm"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-blake2 = "0.10"
-argon2 = "0.5"
-rand = "0.9"
-hex = "0.4"
-indicatif = "0.18"
-dialoguer = "0.12"
+rcrm-core = { path = "crates/rcrm-core" }
+rcrm-server = { path = "crates/rcrm-server" }
 clap = { version = "4", features = ["derive"] }
-crc32fast = "1.5"
-lazy_static = "1.5"
-chacha20 = "0.9"
+dialoguer = "0.12"
+indicatif = "0.18"
 mimalloc = { version = "*", features = ["v3"] }
-mime_guess = "2"
 dunce = "1.0.5"
 zeroize = { version = "1.8.2", features = ["simd"] }
-
-# FTP(S) server dependencies
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-pemfile = "2"
-rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
-time = "0.3"
 ctrlc = "3"
-base64 = "0.22"
 
 [dev-dependencies]
 zip = "6"
+rand = "0.9"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+base64 = "0.22"
+crc32fast = "1.5"
+chacha20 = "0.9"
+zeroize = { version = "1.8.2", features = ["simd"] }
 
 [profile.dev]
 overflow-checks = false

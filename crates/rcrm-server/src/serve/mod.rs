@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use blake2::{Blake2s256, Digest};
 
-use crate::{Manager, ProjectedFile, SessionKey, is_valid_encrypted_file_name};
 use ftp::FtpSession;
+use rcrm_core::{Manager, ProjectedFile, SessionKey, is_valid_encrypted_file_name};
 
 // =======================
 // FileCache: lazy, thread-safe cache of projected encrypted files

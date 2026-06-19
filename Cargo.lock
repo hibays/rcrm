@@ -863,27 +863,51 @@ dependencies = [
 name = "rcrm"
 version = "0.1.0"
 dependencies = [
- "argon2",
  "base64",
- "blake2",
  "chacha20",
  "clap",
  "crc32fast",
  "ctrlc",
  "dialoguer",
  "dunce",
- "hex",
  "indicatif",
- "lazy_static",
  "mimalloc",
+ "rand",
+ "rcrm-core",
+ "rcrm-server",
+ "rustls",
+ "zeroize",
+ "zip",
+]
+
+[[package]]
+name = "rcrm-core"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "blake2",
+ "chacha20",
+ "crc32fast",
+ "dunce",
+ "hex",
+ "lazy_static",
  "mime_guess",
  "rand",
+ "zeroize",
+]
+
+[[package]]
+name = "rcrm-server"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "blake2",
+ "ctrlc",
  "rcgen",
+ "rcrm-core",
  "rustls",
  "rustls-pemfile",
  "time",
- "zeroize",
- "zip",
 ]
 
 [[package]]

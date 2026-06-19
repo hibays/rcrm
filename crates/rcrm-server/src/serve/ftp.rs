@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::{ServerContext, disk_to_ftp_path, resolve_disk_path};
-use crate::{ProjectedFile, is_supported_file};
+use rcrm_core::{ProjectedFile, is_supported_file};
 
 // =======================
 // Control / data stream abstraction
@@ -1127,7 +1127,7 @@ fn epoch_to_ymdhms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
 // =======================
 
 fn is_encrypted_name(name: &str) -> bool {
-	crate::is_valid_encrypted_file_name(name)
+	rcrm_core::is_valid_encrypted_file_name(name)
 }
 
 /// Create a throwaway TcpStream to satisfy the enum when swapping control

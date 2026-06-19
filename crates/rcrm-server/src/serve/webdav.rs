@@ -24,8 +24,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 
 use super::{AuthConfig, ServerContext};
-use crate::is_valid_encrypted_file_name;
 use crate::serve::FileCache;
+use rcrm_core::is_valid_encrypted_file_name;
 
 // =======================
 // HTTP request / response types
@@ -667,7 +667,7 @@ fn handle_propfind(
 
 enum Resolved {
 	Plain(PathBuf),
-	Projected(Arc<crate::ProjectedFile>),
+	Projected(Arc<rcrm_core::ProjectedFile>),
 	Directory,
 	NotFound,
 }
@@ -695,7 +695,7 @@ fn resolve_resource(disk: &Path, _req_path: &str, ctx: &ServerContext) -> Resolv
 
 /// Look for an encrypted (`.<b72>`) file whose decrypted virtual name
 /// matches the last segment of `disk`.
-fn try_resolve_virtual(disk: &Path, ctx: &ServerContext) -> Option<Arc<crate::ProjectedFile>> {
+fn try_resolve_virtual(disk: &Path, ctx: &ServerContext) -> Option<Arc<rcrm_core::ProjectedFile>> {
 	let parent = disk.parent()?;
 	let req_name = disk.file_name()?.to_str()?;
 	// Fast path: name index.
