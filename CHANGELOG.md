@@ -28,8 +28,8 @@
 	2) 基于以上机制，解码时进行key检查，不通过则报KeyError
 	3) 基于以上机制，解码后数据无 b'ftyp' 不再报错
 	4) 设MOVencode的calibration_amount参数默认值为1024，MOVdecode不再提供该参数
-	4) 更新main函数，增加多用性
-	5) 将 xor_ctx.useascii 的值默认设为 False
+	5) 更新main函数，增加多用性
+	6) 将 xor_ctx.useascii 的值默认设为 False
 
 7. 2022.8.3.12.32.PM.Wednesday
 	*以下更新不向下兼容* 旧算法请见 `_od2_MOVencode`, `_od2_MOVdecode`, `_od2_main`
@@ -54,12 +54,12 @@
 	1) 将 main 函数 dir 参数的默认值从 `path.dirname(path.dirname(__file__))` 改为 `path.abspath('..')` 以修复 `__file__` 在3.8或pypy中不是绝对路径导致的错误
 	2) 添加了人性化的 Seeking Path 提示
 
-10. 2.2023.1.25.9.45.AM.Wednesday
+11. 2.2023.1.25.9.45.AM.Wednesday
 	1) 使用自带mimetypes得到更广泛的类型判断(audio,image,video)
 		- note: 对历史版本生效
 		- detail: rename SUPPORTFILES to _SUPPORTFILES
 		
-11. 2023.6.10.0.39.AM.Saturday
+12. 2023.6.10.0.39.AM.Saturday
 	0) !!!完全取消了向前兼容性!!!
 	1) 完全重建架构，不向下兼容。
 	2) 基于新的存储格式，现在加解密的文件io更快
@@ -68,22 +68,22 @@
 	5) 扩充b58到b60使编码更紧凑
 	6) calibration_amount 为 -1 时将加密整个文件
 
-12. 2024.2.13
+13. 2024.2.13
 	0) 此版本不具有向前兼容性!!!
 	1) 默认使用更快的argon2_cffi和更安全的参数
 	2) 扩充b60到b72使编码更紧凑
 	3) 设calibration_amount参数默认值为2048
 	4) 分离模块到thirdmod文件夹
 
-13. 2025.9.7.11.56.PM.Sunday
+14. 2025.9.7.11.56.PM.Sunday
 	0) 此版本不具有向前兼容性!!!
 	1) 更新了base72编码算法及其字符表，修复Windows下以base72重命名时可能触发的错误及解码错误
 	2) 添加了一个命令行参数用以指定扫描路径
 
-14. 2025.10.9.6.13.PM.Thursday
+15. 2025.10.9.6.13.PM.Thursday
 	0) 微调字节操作实现以增加性能
 
-15. 2025.11.10.2.30.AM.Monday
+16. 2025.11.10.2.30.AM.Monday
 	0) 修改文件名加密逻辑，现在文件加密后使用加密名字生成hash cover; Inplace encrypt file_name_b (changelog)
 
 ---
@@ -98,3 +98,16 @@ Update report:
 	2) 编写了一个简单的测试
 	3) 在安全性方面做了一些改进
 	4) 本版本不具有向PY兼容性!!!
+
+2. 2026.7.23.11.50.PM.Thursday
+	0) 此版本不具有向前兼容性!!!
+	1) 将密钥存储从Zeroizing<[u8;32]>迁移到LockedKey<32>(mlock/VirtualLock页面锁定内存, 防swap和coredump)
+	2) SessionKey::generate()现在返回io::Result(mlock可能失败)
+	3) 将base72编译期常量从lazy_static!改为const fn(利用Rust 2024 const-eval)
+	4) 添加log_level模块, 实现运行时可配置的日志级别(log_info!/log_error!/log_debug!)
+	5) 服务器TLS加密从ring provider切换到aws-lc-rs
+	6) 更新rcgen 0.13→0.14, rand 0.9→0.10
+	7) 在release profile中启用codegen-units=1(最大化单函数优化)
+	8) 将默认最大连接数从16提升到32
+	9) 改进WebDAV dispatch错误处理(返回500而不是panic)
+	10) 在WebDAV content-type映射中添加avif格式支持
