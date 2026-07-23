@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+	use rand::TryRng;
 	use rcrm::{
 		Manager, is_supported_file, is_valid_encrypted_file_name, resolve_ne_path_from_dir,
 	};
@@ -10,7 +11,7 @@ mod tests {
 	fn 文件加解密一致性() {
 		//生成16bytes的key
 		let mut key = [0u8; 16];
-		let _ = rand::TryRngCore::try_fill_bytes(&mut rand::rngs::OsRng, &mut key);
+		let _ = rand::rngs::SysRng.try_fill_bytes(&mut key);
 		let manager = Manager::new(false, true, 2048, is_supported_file, 6, Some(&key));
 
 		let assets_name = "tests/assets/resources.zip";

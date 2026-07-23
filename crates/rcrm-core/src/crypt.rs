@@ -13,9 +13,10 @@ use blake2::{Blake2b512, Blake2s256, Digest};
 use chacha20::ChaCha20;
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 use crate::base72::b72_encode_rust as b72encode;
+use crate::locked_page::LockedKey;
 
 // =======================
 // Xorshift RNGs
@@ -49,7 +50,7 @@ pub struct Manager {
 	pub calibration_amount: u32,
 	pub rule_fn: fn(&Path) -> bool,
 	pub works: usize,
-	pub keys: HashMap<u32, Zeroizing<[u8; 32]>>,
+	pub keys: HashMap<u32, LockedKey<32>>,
 }
 
 impl Manager {
@@ -84,8 +85,7 @@ impl Manager {
 
 		manager
 	}
-
-	fn derive_key(&self, key: &[u8]) -> Zeroizing<[u8; 32]> {
+	fn derive_key(&self, key: &[u8]) -> LockedKey<32> {
 		let mut state = self.calibration_amount;
 		let salt_val = xorshift64s(xorshift32(&mut state) as u64) ^ self.calibration_amount as u64;
 		let salt = &salt_val.to_le_bytes()[..8];
@@ -96,9 +96,14 @@ impl Manager {
 			argon2::Params::new(1 << 15, 7, 4, Some(32)).unwrap(),
 		);
 
-		let mut hash = Zeroizing::new([0u8; 32]);
-		argon2.hash_password_into(key, salt, hash.as_mut()).unwrap();
-		hash
+		// Allocate locked memory first, then write Argon2 output directly
+		// into it — the derived key never touches the stack (OpenSSL
+		// OPENSSL_secure_zalloc pattern).
+		let mut lk = LockedKey::<32>::zeroed().expect("mlock/VirtualLock failed for derived key");
+		argon2
+			.hash_password_into(key, salt, lk.as_mut_bytes())
+			.unwrap();
+		lk
 	}
 
 	fn add_key(&mut self, key: &[u8], idx: Option<u32>) -> u32 {
@@ -108,8 +113,11 @@ impl Manager {
 		if self.keys.contains_key(&idx) {
 			panic!("Index ({}) of key exists!", idx);
 		}
-
-		if !self.keys.values().any(|v| v == &derived) {
+		if !self
+			.keys
+			.values()
+			.any(|v| v.as_bytes() == derived.as_bytes())
+		{
 			self.keys.insert(idx, derived);
 		}
 
@@ -117,19 +125,15 @@ impl Manager {
 	}
 
 	pub fn use_key(&mut self, idx: &u32) {
-		// use_key will clone the key to MAGIC_KEY_USING
-		// and won't drop the original key
 		if !self.keys.contains_key(idx) {
 			panic!("The indexed key index '{}' does not exist.", idx);
 		}
 		self.keys
-			.insert(Manager::MAGIC_KEY_USING, self.keys[idx].to_owned()); // Note: clone will copy the key
+			.insert(Manager::MAGIC_KEY_USING, self.keys[idx].clone());
 	}
 
-	pub fn drop_key(&mut self, idx: &u32) -> Option<Zeroizing<[u8; 32]>> {
-		if let Some(val) = self.keys.get_mut(idx) {
-			val.zeroize();
-		};
+	pub fn drop_key(&mut self, idx: &u32) -> Option<LockedKey<32>> {
+		// LockedKey's Drop zeroizes + unlocks the page — no explicit zeroize needed.
 		self.keys.remove(idx)
 	}
 
@@ -157,7 +161,7 @@ impl Manager {
 		if v.is_empty() { None } else { Some(v) }
 	}
 
-	fn get_using_key(&self) -> &Zeroizing<[u8; 32]> {
+	fn get_using_key(&self) -> &LockedKey<32> {
 		self.keys
 			.get(&Manager::MAGIC_KEY_USING)
 			.expect("No current key")
@@ -165,7 +169,7 @@ impl Manager {
 
 	/// Public accessor for the currently-active derived key.
 	/// Used by the projection layer to decrypt file heads / streams on demand.
-	pub fn using_key(&self) -> &Zeroizing<[u8; 32]> {
+	pub fn using_key(&self) -> &LockedKey<32> {
 		self.get_using_key()
 	}
 
@@ -236,7 +240,7 @@ impl Manager {
 
 	/// Look up a registered key by its index. Used by projection to
 	/// retrieve the matching key for a file after `read_file_header_any_key`.
-	pub fn key_by_idx(&self, idx: u32) -> Option<&Zeroizing<[u8; 32]>> {
+	pub fn key_by_idx(&self, idx: u32) -> Option<&LockedKey<32>> {
 		self.keys.get(&idx)
 	}
 
@@ -259,7 +263,7 @@ impl Manager {
 
 		// 计算 key_hash = BLAKE2b(key + file_size + ca + salt)
 		let mut hasher = Blake2b512::new();
-		hasher.update(self.get_using_key());
+		hasher.update(self.get_using_key().as_bytes());
 		hasher.update(file_size.to_le_bytes());
 		hasher.update(self.calibration_amount.to_le_bytes());
 		hasher.update(key_hash_salt);
@@ -371,7 +375,7 @@ impl Manager {
 
 		// Verify key_hash before nonce
 		let mut hasher = Blake2b512::new();
-		hasher.update(self.get_using_key());
+		hasher.update(self.get_using_key().as_bytes());
 		hasher.update(file_size_b);
 		hasher.update(ca_b);
 		hasher.update(key_hash_salt);
@@ -415,7 +419,7 @@ impl Manager {
 			f.read_to_end(&mut data)?;
 
 			cipher.apply_keystream(&mut data);
-			data
+			Zeroizing::new(data)
 		} else {
 			// 部分解密
 			/*
@@ -439,13 +443,14 @@ impl Manager {
 			data.extend(tail);
 
 			cipher.apply_keystream(&mut data);
-			data
+			Zeroizing::new(data)
 		};
 		drop(f);
 
 		// 重写文件为解密后的原始内容
 		let mut wf = File::options().write(true).truncate(false).open(file)?;
 		wf.write_all(&dec_data)?;
+		drop(dec_data);
 		wf.set_len(file_size)?;
 		wf.flush()?;
 		drop(wf);

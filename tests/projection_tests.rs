@@ -37,10 +37,10 @@ fn deterministic_content(len: usize, seed: u8) -> Vec<u8> {
 
 #[test]
 fn session_key_roundtrip() {
-	let sk = SessionKey::generate();
+	let sk = SessionKey::generate().expect("mlock failed");
 	let plaintext = deterministic_content(4096, 42);
 	let nonce: [u8; 12] = rand::random();
-	let ciphertext = sk.encrypt(&plaintext, &nonce);
+	let ciphertext = sk.encrypt(&plaintext, &nonce).unwrap();
 	// Ciphertext must differ from plaintext (extremely high probability).
 	assert_ne!(&ciphertext[..], &plaintext[..]);
 	// Round-trip recovers plaintext.
@@ -50,12 +50,12 @@ fn session_key_roundtrip() {
 
 #[test]
 fn session_key_distinct_nonces_produce_distinct_ciphertexts() {
-	let sk = SessionKey::generate();
+	let sk = SessionKey::generate().expect("mlock failed");
 	let plaintext = deterministic_content(256, 7);
 	let n1: [u8; 12] = rand::random();
 	let n2: [u8; 12] = rand::random();
-	let c1 = sk.encrypt(&plaintext, &n1);
-	let c2 = sk.encrypt(&plaintext, &n2);
+	let c1 = sk.encrypt(&plaintext, &n1).unwrap();
+	let c2 = sk.encrypt(&plaintext, &n2).unwrap();
 	assert_ne!(c1, c2);
 }
 
@@ -81,7 +81,7 @@ fn partial_projection_reads_original_content() {
 	// Sanity: the file was renamed to a .b72 hash.
 	assert!(rcrm::is_valid_encrypted_file_name(&new_name));
 
-	let session_key = SessionKey::generate();
+	let session_key = SessionKey::generate().expect("mlock failed");
 	let pf = ProjectedFile::open(&enc_path, &manager, &session_key).expect("open failed");
 
 	// Virtual size must equal the original plaintext size.
@@ -153,7 +153,7 @@ fn full_projection_reads_original_content() {
 	let new_name = manager.encrypt_file(&path).expect("encrypt failed");
 	let enc_path = dir.join(&new_name);
 
-	let session_key = SessionKey::generate();
+	let session_key = SessionKey::generate().expect("mlock failed");
 	let pf = ProjectedFile::open(&enc_path, &manager, &session_key).expect("open failed");
 
 	assert_eq!(pf.virtual_size(), original.len() as u64);
@@ -193,7 +193,7 @@ fn wrong_key_rejected() {
 	let new_name = manager1.encrypt_file(&path).unwrap();
 	let enc_path = dir.join(&new_name);
 
-	let session_key = SessionKey::generate();
+	let session_key = SessionKey::generate().expect("mlock failed");
 	let result = ProjectedFile::open(&enc_path, &manager2, &session_key);
 	assert!(result.is_err(), "open with wrong key should fail");
 
@@ -231,7 +231,7 @@ fn multi_key_projection() {
 	let mut manager = make_manager(&key1);
 	manager.use_added_key(&key2);
 
-	let session_key = SessionKey::generate();
+	let session_key = SessionKey::generate().expect("mlock failed");
 	let pf1 = ProjectedFile::open(&enc1, &manager, &session_key).expect("open enc1");
 	let pf2 = ProjectedFile::open(&enc2, &manager, &session_key).expect("open enc2");
 
@@ -267,7 +267,7 @@ fn projection_does_not_modify_disk() {
 	let before = std::fs::read(&enc_path).unwrap();
 
 	// Open and read through the projection.
-	let session_key = SessionKey::generate();
+	let session_key = SessionKey::generate().expect("mlock failed");
 	let pf = ProjectedFile::open(&enc_path, &manager, &session_key).unwrap();
 	let mut buf = vec![0u8; 4096];
 	let _ = pf.read_at(0, &mut buf, &session_key).unwrap();
@@ -295,8 +295,8 @@ fn read_header_any_key_finds_matching_key() {
 
 	let path1 = dir.join("a.mp4");
 	let path2 = dir.join("b.mp4");
-	std::fs::write(&path1, &deterministic_content(4096, 1)).unwrap();
-	std::fs::write(&path2, &deterministic_content(4096, 2)).unwrap();
+	std::fs::write(&path1, deterministic_content(4096, 1)).unwrap();
+	std::fs::write(&path2, deterministic_content(4096, 2)).unwrap();
 
 	let key1 = deterministic_content(32, 1);
 	let key2 = deterministic_content(32, 2);
@@ -358,7 +358,7 @@ fn read_header_any_key_returns_invalid_data_on_wrong_key() {
 	std::fs::create_dir_all(&dir).unwrap();
 
 	let path = dir.join("file.mp4");
-	std::fs::write(&path, &deterministic_content(4096, 1)).unwrap();
+	std::fs::write(&path, deterministic_content(4096, 1)).unwrap();
 
 	let key1 = deterministic_content(32, 1);
 	let key2 = deterministic_content(32, 2);

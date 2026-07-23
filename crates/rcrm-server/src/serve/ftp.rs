@@ -183,10 +183,11 @@ impl FtpSession {
 					true, // Implicit FTPS → data connections default to encrypted
 				),
 				Err(e) => {
-					eprintln!(
+					rcrm_core::log_info!(
 						"[ftp:{}] implicit FTPS handshake failed: {}. \
 						 Client may be using plain FTP or FTPES instead of implicit FTPS.",
-						addr, e
+						addr,
+						e
 					);
 					// Return a closed dummy stream — handle() will detect
 					// `implicit_tls && !use_tls` and exit immediately.
@@ -234,7 +235,7 @@ impl FtpSession {
 					break;
 				}
 				Err(e) => {
-					eprintln!("[ftp:{}] read error: {}", self.addr, e);
+					rcrm_core::log_error!("[ftp:{}] read error: {}", self.addr, e);
 					break;
 				}
 			};
@@ -248,8 +249,7 @@ impl FtpSession {
 				Some((v, a)) => (v.to_uppercase(), a.trim().to_string()),
 				None => (line.to_uppercase(), String::new()),
 			};
-
-			eprintln!("[ftp:{}] CMD {} {}", self.addr, verb, arg);
+			rcrm_core::log_info!("[ftp:{}] CMD {} {}", self.addr, verb, arg);
 
 			let quit = match verb.as_str() {
 				"USER" => self.cmd_user(&arg),
@@ -291,7 +291,7 @@ impl FtpSession {
 				if e.kind() == io::ErrorKind::UnexpectedEof {
 					break;
 				}
-				eprintln!("[ftp:{}] handler error: {}", self.addr, e);
+				rcrm_core::log_error!("[ftp:{}] handler error: {}", self.addr, e);
 				break;
 			}
 		}
@@ -304,8 +304,8 @@ impl FtpSession {
 
 	fn send(&mut self, code: u16, msg: &str) -> io::Result<()> {
 		let line = format!("{} {}\r\n", code, msg);
-		eprintln!("[ftp:{}] RSP {} {}", self.addr, code, msg);
 		self.control.write_all(line.as_bytes())?;
+		rcrm_core::log_info!("[ftp:{}] RSP {} {}", self.addr, code, msg);
 		self.control.flush()
 	}
 
@@ -326,12 +326,6 @@ impl FtpSession {
 				out.push_str(&format!("{}-{}\r\n", code, line));
 			}
 		}
-		eprintln!(
-			"[ftp:{}] RSP {} (multi: {} lines)",
-			self.addr,
-			code,
-			lines.len()
-		);
 		self.control.write_all(out.as_bytes())?;
 		self.control.flush()
 	}
@@ -688,7 +682,7 @@ impl FtpSession {
 		match self.list_dir(&dir, mount_idx) {
 			Ok(entries) => self.stream_listing(entries, names_only),
 			Err(e) => {
-				eprintln!("[ftp:{}] list error: {}", self.addr, e);
+				rcrm_core::log_error!("[ftp:{}] list error: {}", self.addr, e);
 				self.send(550, "Failed to list directory")
 			}
 		}
@@ -710,7 +704,7 @@ impl FtpSession {
 		match self.list_dir(&dir, mount_idx) {
 			Ok(entries) => self.stream_mlsd(entries),
 			Err(e) => {
-				eprintln!("[ftp:{}] mlsd error: {}", self.addr, e);
+				rcrm_core::log_error!("[ftp:{}] mlsd error: {}", self.addr, e);
 				self.send(550, "Failed to list directory")
 			}
 		}
@@ -801,7 +795,7 @@ impl FtpSession {
 		match result {
 			Ok(_) => self.send(226, "Transfer complete"),
 			Err(e) => {
-				eprintln!("[ftp:{}] list transfer error: {}", self.addr, e);
+				rcrm_core::log_error!("[ftp:{}] list transfer error: {}", self.addr, e);
 				self.send(426, "Transfer aborted")
 			}
 		}
@@ -828,7 +822,7 @@ impl FtpSession {
 		match result {
 			Ok(_) => self.send(226, "Transfer complete"),
 			Err(e) => {
-				eprintln!("[ftp:{}] mlsd transfer error: {}", self.addr, e);
+				rcrm_core::log_error!("[ftp:{}] mlsd transfer error: {}", self.addr, e);
 				self.send(426, "Transfer aborted")
 			}
 		}
@@ -891,7 +885,7 @@ impl FtpSession {
 		match result {
 			Ok(sent) => self.send(226, &format!("Transfer complete ({} bytes sent)", sent)),
 			Err(e) => {
-				eprintln!("[ftp:{}] retr transfer error: {}", self.addr, e);
+				rcrm_core::log_error!("[ftp:{}] retr transfer error: {}", self.addr, e);
 				self.send(426, "Transfer aborted")
 			}
 		}

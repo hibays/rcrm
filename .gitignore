@@ -1,5 +1,18 @@
 /target
 
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.nomedia
+
 /testres
 
 /NUL*.o
@@ -10,3 +23,17 @@
 
 # Note: one test requires it, user should generate it manually
 tests/assets/resources.zip
+
+crates/rcrm-gui/android/app/src/main/jniLibs/
+
+.reasonix/
+AGENTS.md
+
+crates/rcrm-gui/android/build/reports/problems
+crates/rcrm-gui/android/.kotlin/sessions/
+
+crates/rcrm-gui/test/decode_testdata
+crates/rcrm-flutter-bridge/tests/testdata
+
+# Local cargo mirror config (machine-specific)
+.cargo/config.toml

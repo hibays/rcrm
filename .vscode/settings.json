@@ -1,5 +1,8 @@
 {
 	"editor.formatOnSave": true,
+	"[dart]": {
+		"editor.formatOnSave": false,
+	},
 	"code-runner.executorMap": {
 		"rust": "cargo r -- $fileNameWithoutExt"
 	}

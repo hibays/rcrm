@@ -19,6 +19,9 @@ use std::path::{Path, PathBuf};
 
 use chacha20::ChaCha20;
 use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
+
+use crate::locked_page::LockedKey;
+use rand::TryRng;
 use zeroize::Zeroizing;
 
 use crate::crypt::{FileHeader, Manager};
@@ -27,36 +30,35 @@ use crate::crypt::{FileHeader, Manager};
 // SessionKey: encrypts cached plaintext heads in memory
 // =======================
 
-/// Ephemeral symmetric key generated once at server startup and held in a
-/// `Zeroizing` wrapper. Used to encrypt every cached decrypted head so that
-/// a memory dump does not reveal plaintext file content. The key itself is
-/// not derivable from anything on disk — it lives only in process memory
-/// and is wiped on drop.
+/// Ephemeral symmetric key generated once at server startup, held in
+/// page-locked memory so it cannot be swapped to disk.
 pub struct SessionKey {
-	key: Zeroizing<[u8; 32]>,
+	key: LockedKey<32>,
 }
 
 impl SessionKey {
-	pub fn generate() -> Self {
-		let mut key = Zeroizing::new([0u8; 32]);
-		rand::TryRngCore::try_fill_bytes(&mut rand::rngs::OsRng, key.as_mut())
-			.expect("OsRng failed");
-		SessionKey { key }
+	pub fn generate() -> io::Result<Self> {
+		let mut key = LockedKey::<32>::zeroed()?;
+		rand::rngs::SysRng
+			.try_fill_bytes(key.as_mut_bytes())
+			.expect("SysRng failed");
+		Ok(SessionKey { key })
 	}
 
 	/// Encrypt `plaintext` with a fresh per-entry `nonce`. The ciphertext is
 	/// the same length as the plaintext (ChaCha20 is a stream cipher).
-	pub fn encrypt(&self, plaintext: &[u8], nonce: &[u8; 12]) -> Vec<u8> {
-		let mut cipher = ChaCha20::new_from_slices(self.key.as_ref(), nonce).unwrap();
+	pub fn encrypt(&self, plaintext: &[u8], nonce: &[u8; 12]) -> io::Result<Vec<u8>> {
+		let mut cipher = ChaCha20::new_from_slices(self.key.as_bytes(), nonce)
+			.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 		let mut out = plaintext.to_vec();
 		cipher.apply_keystream(&mut out);
-		out
+		Ok(out)
 	}
 
 	/// Decrypt `ciphertext` into a `Zeroizing` buffer so the plaintext is
 	/// wiped from memory as soon as the caller drops it.
 	pub fn decrypt(&self, ciphertext: &[u8], nonce: &[u8; 12]) -> io::Result<Zeroizing<Vec<u8>>> {
-		let mut cipher = ChaCha20::new_from_slices(self.key.as_ref(), nonce)
+		let mut cipher = ChaCha20::new_from_slices(self.key.as_bytes(), nonce)
 			.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 		let mut out = Zeroizing::new(ciphertext.to_vec());
 		cipher.apply_keystream(out.as_mut());
@@ -79,7 +81,7 @@ enum ProjectedKind {
 	/// each read using ChaCha20's seekable keystream. The matching manager
 	/// key is cloned here so `read_at` is self-contained (does not need a
 	/// `&Manager` reference).
-	Full { key: Zeroizing<[u8; 32]> },
+	Full { key: LockedKey<32> },
 	/// Only the first `calibration_amount` bytes are encrypted. The
 	/// decrypted head is cached here, encrypted at rest with the session
 	/// key. The remainder of the file is read directly from disk (it was
@@ -113,7 +115,7 @@ impl ProjectedFile {
 				.ok_or_else(|| io::Error::other("key vanished"))?;
 			let head = header.decrypt_head(&mut file, key.as_ref())?;
 			let head_nonce: [u8; 12] = rand::random();
-			let encrypted_head = session_key.encrypt(head.as_ref(), &head_nonce);
+			let encrypted_head = session_key.encrypt(head.as_ref(), &head_nonce)?;
 			ProjectedKind::Partial {
 				encrypted_head,
 				head_nonce,

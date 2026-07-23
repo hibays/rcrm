@@ -75,7 +75,7 @@ impl ServerCertVerifier for NoVerifier {
 }
 
 fn build_client_config() -> Arc<ClientConfig> {
-	let provider = Arc::new(rustls::crypto::ring::default_provider());
+	let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
 	let config = ClientConfig::builder_with_provider(provider)
 		.with_safe_default_protocol_versions()
 		.expect("safe default versions")
@@ -126,7 +126,7 @@ fn start_implicit_tls_server(root: std::path::PathBuf, key: &[u8]) -> ServerFixt
 
 fn start_server_with_mode(root: std::path::PathBuf, key: &[u8], implicit: bool) -> ServerFixture {
 	let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(key));
-	let session_key = Arc::new(SessionKey::generate());
+	let session_key = Arc::new(SessionKey::generate().expect("mlock failed"));
 	let tls_cfg = tls_config::build_ephemeral_config().expect("ephemeral cert failed");
 	let ctx = ServerContext {
 		mounts: generate_mount_names(&[root]),

@@ -5,43 +5,35 @@
 // Copyleft (©) 2025 hibays
 //
 
-use lazy_static::lazy_static;
+const B72_ENCODE_TAB: [u8; 72] =
+	*b"0123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ_-+=()[]{}@,;";
 
-lazy_static! {
-	// Base72 字母表
-	static ref B72_ENCODE_TAB: [u8; 72] = [
-		b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9',
-		b'a', b'b', b'c', b'd', b'e', b'f', b'g', b'h', b'i', b'j',
-		b'k', b'm', b'n', b'o', b'p', b'q', b'r', b's', b't', b'u',
-		b'v', b'w', b'x', b'y', b'z', b'A', b'B', b'C', b'D', b'E',
-		b'F', b'G', b'H', b'J', b'K', b'L', b'M', b'N', b'P', b'Q',
-		b'R', b'S', b'T', b'U', b'V', b'W', b'X', b'Y', b'Z', b'_',
-		b'-', b'+', b'=', b'(', b')', b'[', b']', b'{', b'}', b'@',
-		b',', b';'
-	];
+/// Fast decode table: 256 entries indexed by ASCII value.
+const B72_DECODE_TAB: [u8; 256] = {
+	let mut tab = [0xFF; 256];
+	let mut i = 0;
+	while i < 72 {
+		tab[B72_ENCODE_TAB[i] as usize] = i as u8;
+		i += 1;
+	}
+	tab
+};
 
-	// 快速解码表（256 长度数组，直接通过 ASCII 值索引）
-	static ref B72_DECODE_TAB: [u8; 256] = {
-		let mut tab = [0xFF; 256];
-		for (i, &c) in B72_ENCODE_TAB.iter().enumerate() {
-			tab[c as usize] = i as u8;
+/// Pre-computed two-char encoding table (72×72 combinations).
+const B72_ENCODE_TAB2: [[u8; 2]; 72 * 72] = {
+	let mut tab = [[0u8; 2]; 72 * 72];
+	let mut i = 0;
+	while i < 72 {
+		let c1 = B72_ENCODE_TAB[i];
+		let mut j = 0;
+		while j < 72 {
+			tab[i * 72 + j] = [c1, B72_ENCODE_TAB[j]];
+			j += 1;
 		}
-		tab
-	};
-
-	// 预生成双字符编码表（72x72 组合）
-	static ref B72_ENCODE_TAB2: [[u8; 2]; 72*72] = {
-		let mut tab: [[u8; 2]; 72*72] = [[0; 2]; 72*72];
-		let mut index = 0;
-		for &c1 in B72_ENCODE_TAB.iter() {
-			for &c2 in B72_ENCODE_TAB.iter() {
-				tab[index] = [c1, c2];
-				index += 1;
-			}
-		}
-		tab
-	};
-}
+		i += 1;
+	}
+	tab
+};
 
 /// Minimal base72 char count for a partial chunk of k bytes (k = 0..=10):
 /// ceil(8*k / log2(72)). Full 10-byte chunks use 13 (the k=10 entry).
@@ -154,7 +146,9 @@ mod tests {
 	// Deterministic LCG so the test needs no rand dependency.
 	fn fill(seed: &mut u64, buf: &mut [u8]) {
 		for b in buf.iter_mut() {
-			*seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+			*seed = seed
+				.wrapping_mul(6364136223846793005)
+				.wrapping_add(1442695040888963407);
 			*b = (*seed >> 33) as u8;
 		}
 	}
@@ -176,7 +170,8 @@ mod tests {
 				let dec = b72_decode_rust(&enc)
 					.unwrap_or_else(|e| panic!("decode failed for len {len}: {e}"));
 				assert_eq!(
-					dec, original,
+					dec,
+					original,
 					"round-trip mismatch at len {len}: enc={:?}",
 					String::from_utf8_lossy(&enc)
 				);
@@ -198,8 +193,12 @@ mod tests {
 		}
 		assert_eq!(seen.len(), 72);
 		// Ambiguous characters must be absent.
-		for bad in [b'l', b'I', b'O'] {
-			assert!(!seen.contains(&bad), "ambiguous char {} present", bad as char);
+		for bad in *b"lIO" {
+			assert!(
+				!seen.contains(&bad),
+				"ambiguous char {} present",
+				bad as char
+			);
 		}
 	}
 
@@ -240,7 +239,9 @@ mod tests {
 	fn roundtrip_many_random_lengths() {
 		let mut seed = 0xa5a5_5a5a_0f0f_f0f0u64;
 		fn next(seed: &mut u64) -> u64 {
-			*seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+			*seed = seed
+				.wrapping_mul(6364136223846793005)
+				.wrapping_add(1442695040888963407);
 			*seed
 		}
 		// 5000 random variable-length payloads (length 0..=300).
@@ -249,8 +250,8 @@ mod tests {
 			let mut v = vec![0u8; len];
 			fill(&mut seed, &mut v);
 			let enc = b72_encode_rust(&v);
-			let dec = b72_decode_rust(&enc)
-				.unwrap_or_else(|e| panic!("decode failed (len {len}): {e}"));
+			let dec =
+				b72_decode_rust(&enc).unwrap_or_else(|e| panic!("decode failed (len {len}): {e}"));
 			assert_eq!(dec, v, "round-trip mismatch at random len {len}");
 			let expect = 13 * (len / 10) + CHARS_FOR_BYTES[len % 10];
 			assert_eq!(enc.len(), expect, "char count wrong at random len {len}");

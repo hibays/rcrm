@@ -98,7 +98,7 @@ enum Command {
 		#[arg(long)]
 		force: bool,
 		/// Max simultaneous connections.
-		#[arg(long, default_value_t = 16)]
+		#[arg(long, default_value_t = 32)]
 		max_connections: usize,
 	},
 }
@@ -590,7 +590,7 @@ fn run_serve(
 	};
 
 	// --- Session key (memory encryption for cached heads) ---
-	let session_key = Arc::new(SessionKey::generate());
+	let session_key = Arc::new(SessionKey::generate()?);
 
 	// --- Pre-populate projection cache  ---
 	// Decrypt and cache every encrypted file's head eagerly at startup so

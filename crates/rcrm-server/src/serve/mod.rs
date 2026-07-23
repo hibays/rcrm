@@ -275,8 +275,7 @@ pub fn generate_mount_names(paths: &[PathBuf]) -> Vec<Mount> {
 // =======================
 
 pub struct ServerContext {
-	/// Mounted root directories. In single-root mode (len == 1) the
-	/// virtual filesystem is flat for backward compatibility.
+	/// Mounted root directories.
 	pub mounts: Vec<Mount>,
 	pub manager: Arc<Manager>,
 	pub session_key: Arc<SessionKey>,
@@ -379,7 +378,7 @@ impl Server {
 	pub fn serve(self, listener: TcpListener, shutdown: Arc<AtomicBool>) -> io::Result<()> {
 		// Non-blocking so we can poll the shutdown flag.
 		listener.set_nonblocking(true)?;
-		eprintln!(
+		rcrm_core::log_info!(
 			"[serve] listening on {} (roots: {})",
 			listener.local_addr()?,
 			self.ctx
@@ -390,10 +389,10 @@ impl Server {
 				.join(", ")
 		);
 		if self.ctx.tls_config.is_some() {
-			eprintln!("[serve] FTPS enabled (AUTH TLS)");
+			rcrm_core::log_info!("[serve] FTPS enabled (AUTH TLS)");
 		}
 		if self.ctx.require_tls {
-			eprintln!("[serve] TLS required — plaintext AUTH rejected");
+			rcrm_core::log_info!("[serve] TLS required — plaintext AUTH rejected");
 		}
 
 		let active = Arc::new(AtomicUsize::new(0));
@@ -402,7 +401,7 @@ impl Server {
 			match listener.accept() {
 				Ok((stream, addr)) => {
 					if active.load(Ordering::Relaxed) >= self.ctx.max_connections {
-						eprintln!("[serve] {} rejected: too many connections", addr);
+						rcrm_core::log_info!("[serve] {} rejected: too many connections", addr);
 						drop(stream);
 						continue;
 					}
@@ -423,14 +422,14 @@ impl Server {
 					std::thread::sleep(Duration::from_millis(50));
 				}
 				Err(e) => {
-					eprintln!("[serve] accept error: {}", e);
+					rcrm_core::log_error!("[serve] accept error: {}", e);
 					std::thread::sleep(Duration::from_millis(100));
 				}
 			}
 		}
 
 		// Drain remaining connections (best-effort).
-		eprintln!(
+		rcrm_core::log_info!(
 			"[serve] shutting down, waiting for {} active connection(s)",
 			active.load(Ordering::Relaxed)
 		);

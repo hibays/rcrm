@@ -42,11 +42,11 @@ fn main() {
 	drop(manager);
 
 	let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(password));
-	let session_key = Arc::new(SessionKey::generate());
+	let session_key = Arc::new(SessionKey::generate().expect("mlock failed"));
 	let tls_cfg = tls_config::build_ephemeral_config().expect("TLS config");
 
 	let ctx = ServerContext {
-		mounts: generate_mount_names(&[dir.clone()]),
+		mounts: generate_mount_names(std::slice::from_ref(&dir)),
 		manager: Arc::new(manager),
 		session_key,
 		cache: Arc::new(FileCache::new()),

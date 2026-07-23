@@ -80,10 +80,11 @@ pub fn handle_session(
 		match tls_stream.flush() {
 			Ok(_) => {}
 			Err(e) => {
-				eprintln!(
+				rcrm_core::log_info!(
 					"[webdav:{}] HTTPS handshake failed: {}. \
 					 Client may be using plain HTTP instead of HTTPS.",
-					addr, e
+					addr,
+					e
 				);
 				return Ok(());
 			}
@@ -101,13 +102,26 @@ pub fn handle_session(
 			Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
 			Err(e) if e.kind() == io::ErrorKind::TimedOut => break,
 			Err(e) => {
-				eprintln!("[webdav:{}] read error: {}", addr, e);
+				rcrm_core::log_error!("[webdav:{}] read error: {}", addr, e);
 				break;
 			}
 		};
-		eprintln!("[webdav:{}] {} {}", addr, req.method, req.path);
+		rcrm_core::log_info!("[webdav:{}] {} {}", addr, req.method, req.path);
 
-		let keep_alive = dispatch(&req, &ctx, stream.as_mut(), &addr)?;
+		let keep_alive = match dispatch(&req, &ctx, stream.as_mut(), &addr) {
+			Ok(ka) => ka,
+			Err(e) => {
+				rcrm_core::log_error!("[webdav:{}] dispatch error: {}", addr, e);
+				let _ = write_response(
+					&mut *stream,
+					500,
+					"Internal Server Error",
+					&[("Content-Type", "text/plain"), ("Connection", "close")],
+					e.to_string().as_bytes(),
+				);
+				break;
+			}
+		};
 		if !keep_alive {
 			break;
 		}
@@ -237,7 +251,7 @@ fn dispatch(
 			],
 			body,
 		)?;
-		eprintln!("[webdav:{}] 401 Unauthorized", addr);
+		rcrm_core::log_info!("[webdav:{}] 401 Unauthorized", addr);
 		return Ok(keep_alive);
 	}
 
@@ -260,7 +274,7 @@ fn dispatch(
 				],
 				body,
 			)?;
-			eprintln!("[webdav:{}] 403 {} (read-only)", addr, method);
+			rcrm_core::log_info!("[webdav:{}] 403 {} (read-only)", addr, method);
 			Ok(())
 		}
 		// Unknown methods.
@@ -276,7 +290,7 @@ fn dispatch(
 				],
 				body,
 			)?;
-			eprintln!("[webdav:{}] 501 {}", addr, method);
+			rcrm_core::log_info!("[webdav:{}] 501 {}", addr, method);
 			Ok(())
 		}
 	};
@@ -690,7 +704,7 @@ fn handle_propfind(
 	let entries = match list_dir(&disk, &req.path, ctx, mount_idx) {
 		Ok(e) => e,
 		Err(e) => {
-			eprintln!("[webdav] list_dir error: {}", e);
+			rcrm_core::log_error!("[webdav] list_dir error: {}", e);
 			let body = b"<html><body>500 Internal Server Error</body></html>";
 			write_response(
 				stream,
@@ -730,7 +744,7 @@ fn handle_propfind(
 	let headers = [
 		("Content-Type", "application/xml; charset=utf-8".to_string()),
 		("Content-Length", bytes.len().to_string()),
-		("Connection", "keep-alive".to_string()),
+		("Connection", conn_header.to_string()),
 	];
 	let headers_ref: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
 	write_response_head(stream, 207, "Multi-Status", &headers_ref)?;
@@ -851,7 +865,10 @@ fn list_dir(
 		let path = entry.path();
 		let meta = match entry.metadata() {
 			Ok(m) => m,
-			Err(_) => continue,
+			Err(e) => {
+				rcrm_core::log_error!("[webdav] metadata error for {}: {}", path.display(), e);
+				continue;
+			}
 		};
 		let name = entry.file_name().to_string_lossy().into_owned();
 
@@ -889,7 +906,9 @@ fn list_dir(
 						href,
 					});
 				}
-				Err(_) => continue, // wrong key / corrupt — hide
+				Err(_) => {
+					continue; // wrong key / corrupt — hide
+				}
 			}
 		} else {
 			let href = format!(
@@ -944,7 +963,7 @@ fn build_propfind_xml(entries: &[DirEntry]) -> String {
 		if !e.is_dir {
 			out.push_str(&format!(
 				"<D:getcontenttype>{}</D:getcontenttype>",
-				content_type_name(&e.virtual_name)
+				content_type_for(Path::new(&e.virtual_name))
 			));
 		}
 		out.push_str("</D:prop>");
@@ -1275,6 +1294,7 @@ fn content_type_name(ext: &str) -> String {
 		"png" => "image/png",
 		"webp" => "image/webp",
 		"gif" => "image/gif",
+		"avif" => "image/avif",
 		// Text / other
 		"txt" => "text/plain; charset=utf-8",
 		"html" | "htm" => "text/html; charset=utf-8",

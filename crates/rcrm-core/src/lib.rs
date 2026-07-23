@@ -5,6 +5,8 @@
 mod base72;
 pub mod crypt;
 mod file_util;
+mod locked_page;
+pub mod log_level;
 pub mod project;
 
 pub use base72::b72_decode_rust as b72decode;

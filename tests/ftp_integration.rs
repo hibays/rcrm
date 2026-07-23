@@ -136,9 +136,9 @@ impl Drop for ServerFixture {
 
 fn start_server(root: PathBuf, key: &[u8]) -> ServerFixture {
 	let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(key));
-	let session_key = Arc::new(SessionKey::generate());
+	let session_key = Arc::new(SessionKey::generate().expect("mlock failed"));
 	let ctx = ServerContext {
-		mounts: generate_mount_names(&[root.clone()]),
+		mounts: generate_mount_names(std::slice::from_ref(&root)),
 		manager: Arc::new(manager),
 		session_key,
 		cache: Arc::new(FileCache::new()),
@@ -486,9 +486,9 @@ fn ftp_serves_plain_files_without_encryption_password() {
 	// Build a manager with NO key, exactly as run_serve does when
 	// enc_files.is_empty().
 	let manager = Manager::new(true, true, 2048, is_supported_file, 6, None);
-	let session_key = Arc::new(SessionKey::generate());
+	let session_key = Arc::new(SessionKey::generate().expect("mlock failed"));
 	let ctx = ServerContext {
-		mounts: generate_mount_names(&[dir.clone()]),
+		mounts: generate_mount_names(std::slice::from_ref(&dir)),
 		manager: Arc::new(manager),
 		session_key,
 		cache: Arc::new(FileCache::new()),
@@ -562,9 +562,9 @@ fn ftp_pasv_advertises_correct_ip_on_non_default_loopback() {
 
 	let key = deterministic_content(32, 71);
 	let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&key));
-	let session_key = Arc::new(SessionKey::generate());
+	let session_key = Arc::new(SessionKey::generate().expect("mlock failed"));
 	let ctx = ServerContext {
-		mounts: generate_mount_names(&[dir.clone()]),
+		mounts: generate_mount_names(std::slice::from_ref(&dir)),
 		manager: Arc::new(manager),
 		session_key,
 		cache: Arc::new(FileCache::new()),

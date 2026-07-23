@@ -5,9 +5,16 @@ edition = "2024"
 
 [dependencies]
 rcrm-core = { path = "../rcrm-core" }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = [
+	"aws_lc_rs",
+	"std",
+	"tls12",
+] }
 rustls-pemfile = "2"
-rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+rcgen = { version = "0.14", default-features = false, features = [
+	"aws_lc_rs",
+	"pem",
+] }
 time = "0.3"
 ctrlc = "3"
 base64 = "0.22"

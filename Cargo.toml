@@ -20,8 +20,13 @@ ctrlc = "3"
 
 [dev-dependencies]
 zip = "6"
-rand = "0.9"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rand = "0.10"
+rustls = { version = "0.23", default-features = false, features = [
+	"aws_lc_rs",
+	"prefer-post-quantum",
+	"std",
+	"tls12",
+] }
 base64 = "0.22"
 crc32fast = "1.5"
 chacha20 = "0.9"
@@ -33,3 +38,5 @@ overflow-checks = false
 [profile.release]
 overflow-checks = false
 lto = true
+# Maximize per-function optimization (default 16 units = less optimization)
+codegen-units = 1

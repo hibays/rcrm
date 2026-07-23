@@ -7,8 +7,7 @@
 //     certificate (zero-config, regenerated on every startup) or a
 //     user-supplied PEM cert+key pair loaded from disk.
 //   * `build_server_config()` — assembles a `rustls::ServerConfig` using
-//     the `ring` crypto provider (no C compiler required, works on
-//     Windows out of the box).
+//     the `aws-lc-rs` crypto provider.
 
 use std::io;
 use std::path::Path;
@@ -111,13 +110,13 @@ pub fn load_pem_cert_and_key(
 // =======================
 
 /// Build a `rustls::ServerConfig` from a certificate chain and private
-/// key, using the `ring` crypto provider and TLS 1.2 + 1.3. No client
+/// key, using the `aws-lc-rs` crypto provider and TLS 1.2 + 1.3. No client
 /// authentication is required.
 pub fn build_server_config(
 	certs: Vec<CertificateDer<'static>>,
 	key: PrivateKeyDer<'static>,
 ) -> io::Result<Arc<ServerConfig>> {
-	let provider = Arc::new(rustls::crypto::ring::default_provider());
+	let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
 	let config = ServerConfig::builder_with_provider(provider)
 		.with_safe_default_protocol_versions()
 		.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?

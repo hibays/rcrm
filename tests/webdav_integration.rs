@@ -54,7 +54,7 @@ impl Drop for ServerFixture {
 
 fn start_webdav_server(root: PathBuf, key: &[u8], https: bool) -> ServerFixture {
 	let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(key));
-	let session_key = Arc::new(SessionKey::generate());
+	let session_key = Arc::new(SessionKey::generate().expect("mlock failed"));
 	let tls_cfg = if https {
 		Some(tls_config::build_ephemeral_config().expect("TLS config"))
 	} else {
@@ -191,7 +191,7 @@ fn webdav_propfind_lists_decrypted_names() {
 	std::fs::create_dir_all(&dir).unwrap();
 
 	let path = dir.join("movie.mp4");
-	std::fs::write(&path, &deterministic_content(8192, 1)).unwrap();
+	std::fs::write(&path, deterministic_content(8192, 1)).unwrap();
 
 	let key = deterministic_content(32, 9);
 	let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&key));
@@ -395,9 +395,9 @@ fn webdav_basic_auth_required() {
 
 	let key = deterministic_content(32, 41);
 	let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&key));
-	let session_key = Arc::new(SessionKey::generate());
+	let session_key = Arc::new(SessionKey::generate().expect("mlock failed"));
 	let ctx = ServerContext {
-		mounts: generate_mount_names(&[dir.clone()]),
+		mounts: generate_mount_names(std::slice::from_ref(&dir)),
 		manager: Arc::new(manager),
 		session_key,
 		cache: Arc::new(FileCache::new()),
@@ -570,7 +570,7 @@ fn build_no_verify_client_config() -> Arc<rustls::ClientConfig> {
 		}
 	}
 
-	let provider = Arc::new(rustls::crypto::ring::default_provider());
+	let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
 	let config = rustls::ClientConfig::builder_with_provider(provider)
 		.with_safe_default_protocol_versions()
 		.unwrap()
