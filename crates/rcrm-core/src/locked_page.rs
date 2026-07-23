@@ -6,6 +6,7 @@
 // Windows:     VirtualAlloc(MEM_COMMIT|RESERVE) + VirtualLock
 
 use std::io;
+use zeroize::Zeroize;
 
 // ── Platform-specific allocation ────────────────────────
 
@@ -182,9 +183,7 @@ impl<const N: usize> AsRef<[u8; N]> for LockedKey<N> {
 impl<const N: usize> Drop for LockedKey<N> {
 	fn drop(&mut self) {
 		// Zeroize
-		unsafe {
-			std::ptr::write_bytes(self.ptr, 0, N);
-		}
+		self.as_mut_bytes().zeroize();
 		// Unlock + free
 		unsafe {
 			imp::free_locked(self.ptr, self.page_len);
