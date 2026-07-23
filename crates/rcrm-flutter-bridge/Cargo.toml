@@ -1,0 +1,33 @@
+[package]
+name = "rcrm-flutter-bridge"
+version = "0.1.0"
+edition = "2024"
+description = "C-ABI FFI bridge exposing rcrm-core + rcrm-server to Flutter via dart:ffi"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[features]
+mobile-decode = ["dep:rav1d", "dep:jxl-oxide"]
+
+[dependencies]
+rcrm-core = { path = "../rcrm-core" }
+rcrm-server = { path = "../rcrm-server" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+parking_lot = "0.12"
+zeroize = { version = "1.8.2", features = ["simd"] }
+dunce = "1.0.5"
+rand = "0.10"
+zune-jpeg = "0.5"
+# Use git version to aviod asm build error (v1.1.0) on android.
+# Android/iOS (ARM .S via -Bsymbolic for .so)
+rav1d = { git = "https://github.com/memorysafety/rav1d", rev = "2a734dc9cd52190146796fb24b29a8c7e3d2af1e", optional = true }
+jxl-oxide = { version = "0.12", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+	"Win32_System_Threading",
+	"Win32_Foundation",
+] }

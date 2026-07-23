@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/rcrm-core", "crates/rcrm-server"]
+members = [
+	"crates/rcrm-core",
+	"crates/rcrm-server",
+	"crates/rcrm-flutter-bridge",
+]
 resolver = "3"
 
 [package]
