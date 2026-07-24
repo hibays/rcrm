@@ -29,102 +29,7 @@ pub fn decode_avif(data: &[u8], target_width: u32) -> Option<Box<DecodeBuf>> {
 }
 
 pub fn decode_jxl(data: &[u8], target_width: u32) -> Option<Box<DecodeBuf>> {
-	use jxl_oxide::JxlImage;
-	let reader = std::io::Cursor::new(data);
-	let image = JxlImage::builder().read(reader).ok()?;
-	let render = image.render_frame(0).ok()?;
-	let fb = render.image_all_channels();
-	let w = fb.width() as u32;
-	let h = fb.height() as u32;
-	let rgba = floats_to_rgba8(fb.buf(), w, h, fb.channels());
-	finish_decode(rgba, w, h, target_width)
-}
-
-pub fn finish_decode(rgba: Vec<u8>, mut w: u32, mut h: u32, tw: u32) -> Option<Box<DecodeBuf>> {
-	let mut rgba = rgba;
-	if tw > 0 && tw < w {
-		let s = tw as f64 / w as f64;
-		let nh = (h as f64 * s) as u32;
-		if nh > 0 {
-			rgba = bilinear_downscale(&rgba, w, h, tw, nh);
-			w = tw;
-			h = nh;
-		}
-	}
-	let n = rgba.len();
-	let (p, _, _) = rgba.into_raw_parts();
-	Some(Box::new(DecodeBuf {
-		width: w,
-		height: h,
-		channels: 4, // RGBA
-		data_len: n,
-		data: p,
-	}))
-}
-
-pub fn bilinear_downscale(src: &[u8], sw: u32, sh: u32, dw: u32, dh: u32) -> Vec<u8> {
-	let ss = sw as usize * 4;
-	let ds = dw as usize * 4;
-	let mut dst = vec![0u8; ds * dh as usize];
-	let sx = sw as f64 / dw as f64;
-	let sy = sh as f64 / dh as f64;
-	for dy in 0..dh {
-		let fy_ = ((dy as f64 + 0.5) * sy - 0.5).clamp(0.0, (sh - 1) as f64);
-		let fy = (fy_ - fy_.floor()) as f32;
-		let y0 = fy_ as u32;
-		let y1 = (y0 + 1).min(sh - 1);
-		let r0 = y0 as usize * ss;
-		let r1 = y1 as usize * ss;
-		for dx in 0..dw {
-			let fx_ = ((dx as f64 + 0.5) * sx - 0.5).clamp(0.0, (sw - 1) as f64);
-			let fx = (fx_ - fx_.floor()) as f32;
-			let x0 = fx_ as u32;
-			let x1 = (x0 + 1).min(sw - 1);
-			let x0o = x0 as usize * 4;
-			let x1o = x1 as usize * 4;
-			let di = dy as usize * ds + dx as usize * 4;
-			for c in 0..4 {
-				let t = src[r0 + x0o + c] as f32
-					+ (src[r0 + x1o + c] as f32 - src[r0 + x0o + c] as f32) * fx;
-				let b = src[r1 + x0o + c] as f32
-					+ (src[r1 + x1o + c] as f32 - src[r1 + x0o + c] as f32) * fx;
-				dst[di + c] = (t + (b - t) * fy) as u8;
-			}
-		}
-	}
-	dst
-}
-
-fn floats_to_rgba8(f: &[f32], w: u32, h: u32, ch: usize) -> Vec<u8> {
-	let n = (w as usize) * (h as usize);
-	let mut o = Vec::with_capacity(n * 4);
-	let u = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-	match ch {
-		1 => {
-			for &g in f {
-				let v = u(g);
-				o.extend_from_slice(&[v, v, v, 255]);
-			}
-		}
-		2 => {
-			for p in f.chunks_exact(2) {
-				let v = u(p[0]);
-				o.extend_from_slice(&[v, v, v, u(p[1])]);
-			}
-		}
-		3 => {
-			for t in f.chunks_exact(3) {
-				o.extend_from_slice(&[u(t[0]), u(t[1]), u(t[2]), 255]);
-			}
-		}
-		4 => {
-			for q in f.chunks_exact(4) {
-				o.extend_from_slice(&[u(q[0]), u(q[1]), u(q[2]), u(q[3])]);
-			}
-		}
-		_ => o.resize(n * 4, 0),
-	}
-	o
+	crate::jxl::decode(data, target_width)
 }
 
 #[cfg(test)]
@@ -197,7 +102,7 @@ mod tests {
 
 	#[test]
 	fn compare_adonis_vs_ffmpeg() {
-		cmp_ffmpeg("avif/adonis.avif", "Adonis GBRP");
+		cmp_ffmpeg_avif("avif/adonis.avif", "Adonis GBRP");
 	}
 	#[test]
 	fn decode_big_gbrp_valid() {
@@ -218,17 +123,34 @@ mod tests {
 
 	#[test]
 	fn compare_gbrp_vs_ffmpeg() {
-		cmp_ffmpeg("avif/jqis5.avif", "GBRP");
+		cmp_ffmpeg_avif("avif/jqis5.avif", "GBRP");
 	}
 
 	#[test]
 	fn compare_yuv_vs_ffmpeg() {
-		cmp_ffmpeg("avif/test_yuv.avif", "YUV");
+		cmp_ffmpeg_avif("avif/test_yuv.avif", "YUV");
 	}
 
-	fn cmp_ffmpeg(path: &str, label: &str) {
+	#[test]
+	fn compare_jxl_vs_ffmpeg() {
+		cmp_ffmpeg_jxl("jxl/4x-IMG_20250716_002259_095.jxl", "JXL");
+	}
+
+	fn cmp_ffmpeg_avif(path: &str, label: &str) {
 		let data = test_read(path);
 		let buf = decode_avif(&data, 0).expect("decode");
+		check_vs_ffmpeg(path, label, &buf);
+		unsafe { free_decode_buf(Box::into_raw(buf)) };
+	}
+
+	fn cmp_ffmpeg_jxl(path: &str, label: &str) {
+		let data = test_read(path);
+		let buf = decode_jxl(&data, 0).expect("decode jxl");
+		check_vs_ffmpeg(path, label, &buf);
+		unsafe { free_decode_buf(Box::into_raw(buf)) };
+	}
+
+	fn check_vs_ffmpeg(path: &str, label: &str, buf: &DecodeBuf) {
 		let rgba = unsafe { std::slice::from_raw_parts(buf.data, buf.data_len) };
 		let (w, h) = (buf.width as usize, buf.height as usize);
 		assert_eq!(buf.channels, 4, "{label}: not RGBA");
@@ -256,7 +178,6 @@ mod tests {
 			for x in 0..w {
 				let ff_i = (y * w + x) * 3;
 				let ri = (y * w + x) * 4;
-				// RGBA vs ffmpeg rgb24
 				sum[0] += (rgba[ri] as i16 - ff[ff_i] as i16).unsigned_abs() as u64;
 				sum[1] += (rgba[ri + 1] as i16 - ff[ff_i + 1] as i16).unsigned_abs() as u64;
 				sum[2] += (rgba[ri + 2] as i16 - ff[ff_i + 2] as i16).unsigned_abs() as u64;
@@ -269,24 +190,5 @@ mod tests {
 			avg[0], avg[1], avg[2]
 		);
 		assert!(ta < 2.0, "{label} diff {ta:.2}");
-		unsafe { free_decode_buf(Box::into_raw(buf)) };
-	}
-
-	#[test]
-	fn decode_jxl_small() {
-		let data = test_read(
-			"jxl/Chungking.Express.1994.CHINESE.2160p.UHD.BluRay.x265.10bit.HDR.DDP5.1-RARBG.mkv_snapshot_00.41.05_[2023.11.19_14.06.32].jxl",
-		);
-		let buf = decode_jxl(&data, 0).expect("decode jxl");
-		assert!(buf.width > 0);
-		unsafe { free_decode_buf(Box::into_raw(buf)) };
-	}
-
-	#[test]
-	fn decode_jxl_downscale() {
-		let data = test_read("jxl/4x-IMG_20250716_002259_095.jxl");
-		let buf = decode_jxl(&data, 400).expect("jxl downscale");
-		assert_eq!(buf.width, 400);
-		unsafe { free_decode_buf(Box::into_raw(buf)) };
 	}
 }

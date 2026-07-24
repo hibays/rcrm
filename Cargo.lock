@@ -1504,6 +1504,7 @@ version = "0.1.0"
 dependencies = [
  "dunce",
  "jxl-oxide",
+ "jxl-render",
  "libc",
  "parking_lot",
  "rand",

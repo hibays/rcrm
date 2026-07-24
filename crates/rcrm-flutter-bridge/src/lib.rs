@@ -22,6 +22,8 @@
 mod avif;
 #[cfg(feature = "mobile-decode")]
 mod decode;
+#[cfg(feature = "mobile-decode")]
+mod jxl;
 
 mod crypt_ops;
 mod server;
