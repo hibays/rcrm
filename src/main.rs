@@ -100,7 +100,39 @@ enum Command {
 		/// Max simultaneous connections.
 		#[arg(long, default_value_t = 32)]
 		max_connections: usize,
+		/// Log level for server connection/request logs. silent = no
+		/// per-connection output, error = errors only, info = info + errors
+		/// (default), debug = everything.
+		#[arg(long, value_enum, default_value_t = LogLevel::Info)]
+		log_level: LogLevel,
 	},
+}
+
+// =======================
+// Log level
+// =======================
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum LogLevel {
+	/// No per-connection output (errors are still suppressed too).
+	Silent,
+	/// Errors only.
+	Error,
+	/// Info + errors (default).
+	Info,
+	/// Everything including per-request debug lines.
+	Debug,
+}
+
+impl LogLevel {
+	fn to_level(self) -> u8 {
+		match self {
+			LogLevel::Silent => 0,
+			LogLevel::Error => 1,
+			LogLevel::Info => 2,
+			LogLevel::Debug => 3,
+		}
+	}
 }
 
 // =======================
@@ -179,6 +211,7 @@ fn main() -> io::Result<()> {
 			user,
 			force,
 			max_connections,
+			log_level,
 		}) => {
 			let dirs: Vec<String> = if dir.is_empty() {
 				vec![".".to_string()]
@@ -198,6 +231,7 @@ fn main() -> io::Result<()> {
 				user,
 				force,
 				max_connections,
+				log_level,
 			)
 		}
 		None => run_crypt(vec!["..".to_string()]),
@@ -436,7 +470,11 @@ fn run_serve(
 	user: Option<String>,
 	force: bool,
 	max_connections: usize,
+	log_level: LogLevel,
 ) -> io::Result<()> {
+	// Apply the requested log level to server connection/request logs.
+	rcrm_core::log_level::set(log_level.to_level());
+
 	// Canonicalize all root directories.
 	let roots: Vec<PathBuf> = dirs
 		.iter()
