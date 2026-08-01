@@ -397,9 +397,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 4),
       child: Row(
         children: [
-          // Deeper neutral than Silver (#AAAAAA is too light for section
-          // markers). Matches the settings section headers.
-          Icon(icon, size: 22, color: const Color(0xFF8A8A8A)),
+          // Section marker in the orange theme color.
+          Icon(icon, size: 22, color: RCrmColors.primary),
           const SizedBox(width: 10),
           Text(
             title,
