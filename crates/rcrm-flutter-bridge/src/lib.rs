@@ -327,7 +327,16 @@ pub unsafe extern "C" fn rcrm_decode_avif_async(
 ) {
 	// Zero-copy: take ownership of the Dart calloc buffer via from_raw_parts.
 	// Rust's Vec::drop will free it when the spawned thread finishes.
-	// data.is_null() || len == 0 is checked above, so from_raw_parts is safe.
+	// A null/zero-length input is rejected up front — Vec::from_raw_parts
+	// requires a non-null, valid allocation of `len` bytes, and dereferencing
+	// a null (or trusting a length that doesn't match the allocation) is UB.
+	if data.is_null() || len == 0 {
+		// Still resolve the Dart completer via the callback with a null result.
+		if let Some(cb) = callback {
+			unsafe { cb(std::ptr::null_mut(), ctx) };
+		}
+		return;
+	}
 	let bytes = unsafe { Vec::from_raw_parts(data as *mut u8, len, len) };
 	// `ctx` is an opaque integer (request ID) from Dart — never dereferenced,
 	// simply passed through. Cast to usize so the closure is Send.
@@ -365,7 +374,14 @@ pub unsafe extern "C" fn rcrm_decode_jxl_async(
 	callback: Option<DecodeCallback>,
 	ctx: *mut std::ffi::c_void,
 ) {
-	// Zero-copy: same as rcrm_decode_avif_async.
+	// Zero-copy: same as rcrm_decode_avif_async. Reject null/empty up front
+	// so Vec::from_raw_parts never runs on a null or mismatched allocation.
+	if data.is_null() || len == 0 {
+		if let Some(cb) = callback {
+			unsafe { cb(std::ptr::null_mut(), ctx) };
+		}
+		return;
+	}
 	let bytes = unsafe { Vec::from_raw_parts(data as *mut u8, len, len) };
 	let ctx_raw = ctx as usize;
 	std::thread::spawn(move || {
@@ -469,4 +485,64 @@ pub unsafe extern "C" fn rcrm_encode_thumb_webp(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcrm_free_webp_buf(ptr: *mut webp::WebpBuf) {
 	unsafe { webp::free_webp_buf(ptr) }
+}
+
+// =======================
+// Tests — mobile async decode null-guard
+// =======================
+
+#[cfg(all(test, feature = "mobile-decode"))]
+mod tests {
+	use std::sync::atomic::{AtomicUsize, Ordering};
+
+	// Callback state, shared with the C-ABI callback below.
+	static CALLBACK_CALLED: AtomicUsize = AtomicUsize::new(0);
+	static CALLBACK_RESULT_NULL: AtomicUsize = AtomicUsize::new(0);
+
+	unsafe extern "C" fn on_decode(
+		result: *mut crate::decode::DecodeBuf,
+		ctx: *mut std::ffi::c_void,
+	) {
+		// ctx is the request id passed through.
+		let _ = ctx;
+		CALLBACK_CALLED.fetch_add(1, Ordering::SeqCst);
+		if result.is_null() {
+			CALLBACK_RESULT_NULL.fetch_add(1, Ordering::SeqCst);
+		}
+	}
+
+	/// The null-guard added to the async FFI must reject a null / zero-length
+	/// buffer BEFORE Vec::from_raw_parts (which is UB on a null pointer), while
+	/// still resolving the Dart completer via the callback with a null result.
+	#[test]
+	fn async_decode_rejects_null_input() {
+		unsafe {
+			crate::rcrm_decode_avif_async(
+				std::ptr::null(),
+				0,
+				0,
+				Some(on_decode),
+				std::ptr::null_mut(),
+			);
+			crate::rcrm_decode_jxl_async(
+				std::ptr::null(),
+				0,
+				0,
+				Some(on_decode),
+				std::ptr::null_mut(),
+			);
+		}
+		// Callbacks fire on spawned threads; give them a moment to run.
+		std::thread::sleep(std::time::Duration::from_millis(200));
+		assert_eq!(
+			CALLBACK_CALLED.load(Ordering::SeqCst),
+			2,
+			"both callbacks must fire"
+		);
+		assert_eq!(
+			CALLBACK_RESULT_NULL.load(Ordering::SeqCst),
+			2,
+			"null input must yield a null result (no crash / no UB)"
+		);
+	}
 }
