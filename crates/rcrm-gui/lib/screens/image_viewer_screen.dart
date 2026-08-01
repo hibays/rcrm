@@ -48,8 +48,6 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
   static final _isDesktop = !Platform.isAndroid && !Platform.isIOS;
   bool _popped = false;
   bool _navAnimating = false;
-  bool get _currentZoomed =>
-      _ctrlFor(_currentIndex).value.getMaxScaleOnAxis() > 1.01;
 
   final Map<int, TransformationController> _controllers = {};
   TransformationController _ctrlFor(int i) =>
@@ -209,9 +207,16 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
               ),
               child: PageView.builder(
                 controller: _pageController,
-                physics: Platform.isAndroid || Platform.isIOS || _currentZoomed
-                    ? const NeverScrollableScrollPhysics()
-                    : const PageScrollPhysics(),
+                physics: const NeverScrollableScrollPhysics(),
+                // CRITICAL: the page offset is driven manually via jumpTo.
+                // With the default pageSnapping, PageView wraps the physics in
+                // PageScrollPhysics and every jumpTo starts a snap-back spring
+                // toward the nearest page. While the finger holds still at a
+                // partial swipe, that spring fights the finger — the page
+                // visibly slides back (position race / flicker). Disabling it
+                // makes jumpTo end idle; release snapping is handled by
+                // _onInteractionEnd.
+                pageSnapping: false,
                 itemCount: widget.items.length,
                 onPageChanged: (index) {
                   setState(() {
@@ -378,7 +383,12 @@ class _ViewerPageState extends State<_ViewerPage>
   VideoController? _liveVC;
   bool _showFullRes = false;
   bool _isZoomed = false;
-  double _pageDragOffset = 0;
+  // Page-drag tracking in global coordinates: [_dragStartGlobal] anchors the
+  // finger position at gesture start; [_dragStartOffset] is the page offset at
+  // that moment. Null means the current gesture is not a page drag (zoomed,
+  // multi-touch, or ended).
+  Offset? _dragStartGlobal;
+  double _dragStartOffset = 0;
 
   @override
   void initState() {
@@ -404,39 +414,65 @@ class _ViewerPageState extends State<_ViewerPage>
   }
 
   void _onInteractionStart(ScaleStartDetails d) {
+    // Zoomed or multi-touch: the gesture belongs to zoom/pan, never the page.
     if (_isZoomed || d.pointerCount > 1) {
-      _pageDragOffset = -1;
+      _dragStartGlobal = null;
       return;
     }
-    _pageDragOffset = widget.pageController.offset;
+    // Anchor the drag in GLOBAL screen coordinates. The page's own movement
+    // (from jumpTo) can never contaminate the measured finger delta, which
+    // avoids the position race when the finger holds still at a partial page.
+    _dragStartGlobal = d.focalPoint;
+    _dragStartOffset = widget.pageController.offset;
   }
 
   void _onInteractionUpdate(ScaleUpdateDetails d) {
-    if (_pageDragOffset < 0 || _isZoomed || d.pointerCount > 1) return;
-    _pageDragOffset -= d.focalPointDelta.dx;
-    _pageDragOffset = _pageDragOffset.clamp(
+    if (_isZoomed) {
+      _dragStartGlobal = null;
+      return;
+    }
+    if (d.pointerCount != 1) {
+      // Pinch: hand control to zoom. Re-anchor if it returns to one finger
+      // (the focal point jumps when a finger lands or lifts).
+      _dragStartGlobal = null;
+      return;
+    }
+    final start = _dragStartGlobal;
+    if (start == null) {
+      _dragStartGlobal = d.focalPoint;
+      _dragStartOffset = widget.pageController.offset;
+      return;
+    }
+    final target = (_dragStartOffset - (d.focalPoint.dx - start.dx)).clamp(
       0.0,
       widget.pageController.position.maxScrollExtent,
     );
-    widget.pageController.jumpTo(_pageDragOffset);
+    if ((target - widget.pageController.offset).abs() > 0.01) {
+      widget.pageController.jumpTo(target);
+    }
   }
 
   void _onInteractionEnd(ScaleEndDetails d) {
+    final wasPageDrag = _dragStartGlobal != null;
+    _dragStartGlobal = null;
     // When zoomed, never trigger page change — just spring back.
-    if (_pageDragOffset < 0 || _isZoomed) {
-      _pageDragOffset = 0;
+    if (!wasPageDrag || _isZoomed) {
       return;
     }
     final pageWidth = widget.pageController.position.viewportDimension;
     if (pageWidth <= 0) {
-      _pageDragOffset = 0;
       return;
     }
-    final currentPage = (widget.pageController.page ?? 0).round();
+    // Baseline page comes from where the drag STARTED, not the live
+    // `pageController.page`. Mid-drag the offset can sit at e.g. 60% of a
+    // page, where `page.round()` rounds UP to the next page and flips the
+    // direction of `delta` — a large swipe would snap back instead of
+    // turning the page.
+    final startPage = (_dragStartOffset / pageWidth).round();
     final maxPage = (widget.pageController.position.maxScrollExtent / pageWidth)
         .round();
     final offset = widget.pageController.offset;
-    final delta = offset - currentPage * pageWidth;
+    final delta = offset - startPage * pageWidth;
 
     final velocity = d.velocity.pixelsPerSecond.dx;
     final vxAbs = velocity.abs();
@@ -450,12 +486,12 @@ class _ViewerPageState extends State<_ViewerPage>
       } else {
         goNext = velocity < 0; // finger moving left → next page
       }
-      final target = goNext ? currentPage + 1 : currentPage - 1;
+      final target = goNext ? startPage + 1 : startPage - 1;
       final clamped = target.clamp(0, maxPage);
-      if (clamped == currentPage) {
+      if (clamped == startPage) {
         // At edge — user tried to swipe past bounds; spring back in place.
         widget.pageController.animateToPage(
-          currentPage,
+          startPage,
           duration: const Duration(milliseconds: 250),
           curve: Curves.easeOut,
         );
@@ -467,14 +503,13 @@ class _ViewerPageState extends State<_ViewerPage>
         );
       }
     } else {
-      // Spring back to current page.
+      // Spring back to the page we started on.
       widget.pageController.animateToPage(
-        currentPage,
+        startPage,
         duration: const Duration(milliseconds: 250),
         curve: Curves.easeOut,
       );
     }
-    _pageDragOffset = 0;
   }
 
   Future<void> _detectAnimation() async {
@@ -560,7 +595,7 @@ class _ViewerPageState extends State<_ViewerPage>
 
   double get _dist => _dismissOffset.distance;
   double get _t => (_dist / _threshold).clamp(0.0, 1.0);
-  double get _threshold => MediaQuery.of(context).size.height * 0.25;
+  double get _threshold => MediaQuery.of(context).size.height * 0.17;
 
   Timer? _liveDoneTimer;
   bool _liveReady = false;

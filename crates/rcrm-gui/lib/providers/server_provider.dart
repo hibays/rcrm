@@ -1,6 +1,6 @@
 // providers/server_provider.dart
 import 'dart:async';
-import 'dart:io' show HandshakeException, TlsException;
+import 'dart:io' show HandshakeException;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../ffi/rust_bridge.dart';
@@ -9,6 +9,7 @@ import '../services/settings_service.dart';
 import '../services/thumbnail_service.dart';
 import '../services/net.dart';
 import '../services/webdav_client.dart';
+import '../services/cast_https_relay.dart';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -81,22 +82,25 @@ class ServerNotifier extends Notifier<ServerState> {
   Future<void> connectCloud(
     String url,
     String username,
-    String password, {
-    bool allowBadCert = false,
-  }) async {
+    String password,
+  ) async {
     if (state.status == ServerStatus.running) return;
     if (!_bridge.isLoaded) _bridge.load();
+    // Clear any certificate from a previous attempt so BAD_CERT below can only
+    // be produced by THIS connection's rejection.
+    CertTrust.lastRejected = null;
     state = state.copyWith(status: ServerStatus.starting, error: null);
+    WebDavClient? client;
     try {
-      final client = WebDavClient(
+      client = WebDavClient(
         baseUrl: url,
         username: username,
         password: password,
-        allowBadCert: allowBadCert,
       );
       setSharedAuth(client.authHeader);
       final pingResult = await client.pingStatusCode();
       if (pingResult == null) {
+        client.dispose(); // failed connection — don't leak the HttpClient
         state = state.copyWith(
           status: ServerStatus.error,
           error: 'Cloud server not reachable. Check URL and port.',
@@ -104,6 +108,7 @@ class ServerNotifier extends Notifier<ServerState> {
         return;
       }
       if (pingResult == 401 || pingResult == 403) {
+        client.dispose();
         state = state.copyWith(
           status: ServerStatus.error,
           error: 'Authentication failed. Check username and password.',
@@ -111,6 +116,7 @@ class ServerNotifier extends Notifier<ServerState> {
         return;
       }
       if (pingResult != 200) {
+        client.dispose();
         state = state.copyWith(
           status: ServerStatus.error,
           error: 'Server returned HTTP $pingResult.',
@@ -124,20 +130,20 @@ class ServerNotifier extends Notifier<ServerState> {
         client: client,
       );
     } on HandshakeException catch (_) {
+      client?.dispose();
+      // 'BAD_CERT' means an untrusted certificate was rejected and is waiting
+      // in CertTrust.lastRejected for the confirmation dialog. If the
+      // handshake failed for another reason (lastRejected is null), surface
+      // the raw failure instead of offering a bogus cert dialog.
       state = state.copyWith(
         status: ServerStatus.error,
-        error: allowBadCert
-            ? 'TLS handshake failed even with cert verification disabled.'
-            : 'BAD_CERT',
-      );
-    } on TlsException catch (_) {
-      state = state.copyWith(
-        status: ServerStatus.error,
-        error: allowBadCert
-            ? 'TLS error: certificate validation failed.'
-            : 'BAD_CERT',
+        error: CertTrust.lastRejected != null
+            ? 'BAD_CERT'
+            : 'TLS handshake failed. The server may not support secure '
+                  'connections, or the certificate is invalid.',
       );
     } catch (e) {
+      client?.dispose();
       state = state.copyWith(status: ServerStatus.error, error: e.toString());
     }
   }
@@ -212,6 +218,7 @@ class ServerNotifier extends Notifier<ServerState> {
 
         // Verify server is responding
         if (!await client.ping()) {
+          client.dispose();
           state = state.copyWith(
             status: ServerStatus.error,
             error: 'Server not responding',
@@ -273,4 +280,11 @@ final thumbnailServiceProvider = Provider<ThumbnailService>(
 );
 final serverProvider = NotifierProvider<ServerNotifier, ServerState>(
   ServerNotifier.new,
+);
+
+/// Phone-side HTTPS relay used when casting with a loopback-only local
+/// server (the TV cannot reach 127.0.0.1, so the phone forwards media
+/// requests over TLS). Singleton for the whole app session.
+final castHttpsRelayProvider = Provider<CastHttpsRelay>(
+  (ref) => CastHttpsRelay(rustBridge: ref.watch(rustBridgeProvider)),
 );

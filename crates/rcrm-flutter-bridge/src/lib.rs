@@ -27,6 +27,8 @@ mod jxl;
 
 mod crypt_ops;
 mod server;
+mod tls_cert;
+mod webp;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -401,4 +403,70 @@ pub unsafe extern "C" fn rcrm_free_decode_buf(ptr: *mut decode::DecodeBuf) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcrm_set_log_level(level: u8) {
 	rcrm_core::log_level::set(level);
+}
+
+// =======================
+// TV cast receiver TLS
+// =======================
+
+/// Generate a self-signed TLS certificate + private key for the TV cast
+/// receiver (Android TV side of the QR-code pairing feature).
+///
+/// Returns a malloc'd JSON string `{"cert":"<PEM>","key":"<PEM>"}` on success
+/// or `{"error":"..."}` on failure — caller must `rcrm_free_string`.
+/// The key is PKCS#8 PEM (ECDSA P-256), 10-year validity.
+///
+/// # Safety
+/// Always safe to call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcrm_generate_tv_cert() -> *mut c_char {
+	match tls_cert::generate() {
+		Ok((cert, key)) => {
+			str_to_cstring(&serde_json::json!({"cert": cert, "key": key.as_str()}).to_string())
+		}
+		Err(e) => str_to_cstring(&serde_json::json!({"error": e}).to_string()),
+	}
+}
+
+// =======================
+// Thumbnail WebP encoding (all platforms — not gated to mobile-decode)
+// =======================
+
+/// Encode raw RGBA pixels as lossy WebP (for the on-disk thumbnail cache).
+///
+/// # Arguments
+/// * `data` — RGBA8 pixels, `width * height * 4` bytes
+/// * `len` — byte length (must equal `width * height * 4`)
+/// * `width`, `height` — image dimensions
+/// * `quality` — 0-100 (thumbnails typically 70-85)
+///
+/// # Returns
+/// A malloc'd `WebpBuf` (free with `rcrm_free_webp_buf`) whose `data` holds
+/// the WebP bytes and `data_len` the encoded length, or null on failure.
+///
+/// # Safety
+/// `data` must be a valid pointer to at least `len` bytes. The returned
+/// pointer must be freed with `rcrm_free_webp_buf`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcrm_encode_thumb_webp(
+	data: *const u8,
+	len: usize,
+	width: u32,
+	height: u32,
+	quality: u8,
+) -> *mut webp::WebpBuf {
+	match unsafe { webp::encode_rgba_webp(data, len, width, height, quality) } {
+		Some(buf) => Box::into_raw(buf),
+		None => std::ptr::null_mut(),
+	}
+}
+
+/// Free a `WebpBuf` returned by `rcrm_encode_thumb_webp`.
+///
+/// # Safety
+/// `ptr` must be null or a pointer previously returned by
+/// `rcrm_encode_thumb_webp`. Must not be freed twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcrm_free_webp_buf(ptr: *mut webp::WebpBuf) {
+	unsafe { webp::free_webp_buf(ptr) }
 }

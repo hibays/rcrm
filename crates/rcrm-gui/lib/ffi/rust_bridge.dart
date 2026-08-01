@@ -62,6 +62,9 @@ typedef RcrmIsBlankFrameDart = int Function(Pointer<Uint8> data, int len);
 typedef RcrmSetLogLevelC = Void Function(Uint8 level);
 typedef RcrmSetLogLevelDart = void Function(int level);
 
+typedef RcrmGenTvCertC = Pointer<Utf8> Function();
+typedef RcrmGenTvCertDart = Pointer<Utf8> Function();
+
 // ── Mobile image decoder typedefs (shared with MobileImageDecoder) ──
 
 /// Native callback: Rust calls this from a background thread after decode.
@@ -91,6 +94,28 @@ typedef RcrmDecodeAsyncDart =
 typedef RcrmFreeDecodeBufC = Void Function(Pointer<Void> ptr);
 typedef RcrmFreeDecodeBufDart = void Function(Pointer<Void> ptr);
 
+// ── Thumbnail WebP encoding (all platforms) ──────────────────
+
+typedef RcrmWebpBufC =
+    Pointer<Void> Function(
+      Pointer<Uint8> data,
+      IntPtr len,
+      Uint32 width,
+      Uint32 height,
+      Uint8 quality,
+    );
+typedef RcrmWebpBufDart =
+    Pointer<Void> Function(
+      Pointer<Uint8> data,
+      int len,
+      int width,
+      int height,
+      int quality,
+    );
+
+typedef RcrmFreeWebpBufC = Void Function(Pointer<Void> ptr);
+typedef RcrmFreeWebpBufDart = void Function(Pointer<Void> ptr);
+
 // ── Bridge class ─────────────────────────────────────────────────
 
 class RustBridge {
@@ -110,12 +135,20 @@ class RustBridge {
   late RcrmVersionDart version;
   late RcrmSetLogLevelDart _setLogLevelFfi;
   late RcrmIsBlankFrameDart isBlankFrame;
+  late RcrmGenTvCertDart _genTvCert;
+  late RcrmWebpBufDart encodeThumbWebp;
+  late RcrmFreeWebpBufDart freeWebpBuf;
 
   /// Raw function addresses for MobileImageDecoder (cached, avoid per-decode
   /// dlsym).
   static int decodeAvifAsyncAddr = 0;
   static int decodeJxlAsyncAddr = 0;
   static int freeDecodeBufAddr = 0;
+
+  /// Raw address of `rcrm_free_webp_buf`, for the NativeFinalizer that
+  /// auto-frees WebP output buffers when the Dart view is GC'd (zero-copy
+  /// return path).
+  static int freeWebpBufAddr = 0;
 
   /// The native library handle — MobileImageDecoder reuses this to avoid a
   /// second dlopen. null until [load] is called.
@@ -194,7 +227,19 @@ class RustBridge {
         .lookupFunction<RcrmSetLogLevelC, RcrmSetLogLevelDart>(
           'rcrm_set_log_level',
         );
-
+    _genTvCert = _lib!.lookupFunction<RcrmGenTvCertC, RcrmGenTvCertDart>(
+      'rcrm_generate_tv_cert',
+    );
+    encodeThumbWebp = _lib!.lookupFunction<RcrmWebpBufC, RcrmWebpBufDart>(
+      'rcrm_encode_thumb_webp',
+    );
+    freeWebpBuf = _lib!.lookupFunction<RcrmFreeWebpBufC, RcrmFreeWebpBufDart>(
+      'rcrm_free_webp_buf',
+    );
+    freeWebpBufAddr = _lib!
+        .lookup<NativeFunction<RcrmFreeWebpBufC>>('rcrm_free_webp_buf')
+        .address;
+    // mobile-decode gated — present on mobile builds; absent on desktop.
     // Decode symbols are #[cfg(mobile-decode)] gated — absent on desktop.
     // On mobile a missing symbol is a build bug: let it throw (fail-fast).
     if (Platform.isAndroid || Platform.isIOS) {
@@ -323,5 +368,24 @@ class RustBridge {
   void setLogLevel(int level) {
     if (!_loaded) return;
     _setLogLevelFfi(level.clamp(0, 3));
+  }
+
+  /// Generate a self-signed TLS cert + PKCS#8 key for the TV cast receiver.
+  /// Returns {"cert": ..., "key": ...} or {} on failure. The PEM strings use
+  /// CRLF line endings (rcgen output) — the caller must write them verbatim.
+  Map<String, String> generateTvCert() {
+    if (!_loaded) return const {};
+    final ptr = _genTvCert();
+    final jsonStr = _readString(ptr); // frees the native string
+    if (jsonStr == null) return const {};
+    try {
+      final map = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final cert = map['cert'] as String?;
+      final key = map['key'] as String?;
+      if (cert == null || key == null) return const {};
+      return {'cert': cert, 'key': key};
+    } catch (_) {
+      return const {};
+    }
   }
 }

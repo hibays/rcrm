@@ -233,9 +233,31 @@ class _PooledImageState extends State<PooledImage> {
   Widget build(BuildContext context) {
     Widget content;
     if (_error) {
-      content = GestureDetector(
-        onTap: _retry,
-        child: widget.errorWidget ?? _defaultError(),
+      // A full-surface GestureDetector here would WIN the gesture arena over
+      // the card's own onTap (leaf recognizers beat ancestors), so tapping a
+      // card whose image failed to load would silently "retry" instead of
+      // opening the album/image. Keep the tap surface transparent: the error
+      // tile itself is inert, and retry lives on a small corner button.
+      content = Stack(
+        children: [
+          widget.errorWidget ?? _defaultError(),
+          Positioned(
+            top: 4,
+            right: 4,
+            child: Material(
+              color: Colors.black45,
+              shape: const CircleBorder(),
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: _retry,
+                child: const Padding(
+                  padding: EdgeInsets.all(4),
+                  child: Icon(Icons.refresh, size: 14, color: Colors.white70),
+                ),
+              ),
+            ),
+          ),
+        ],
       );
     } else if (_ready && _provider != null) {
       content = Image(

@@ -395,3 +395,168 @@ fn _path() -> PathBuf {
 // Silence unused Read import if all usages are removed in future edits.
 #[allow(dead_code)]
 fn _read<R: Read>(_: R) {}
+
+/// `read_at_with` (caller-provided handle) must produce byte-identical
+/// results to `read_at` (self-opened handle) for every offset/len
+/// combination, including the head/tail boundary, EOF and out-of-order
+/// offsets through a single reused handle.
+#[test]
+fn read_at_with_matches_read_at_across_offsets() {
+	let dir = std::env::temp_dir().join("rcrm_proj_test_readatwith");
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+
+	let path = dir.join("test_video.mp4");
+	// 128 KiB, well above calibration_amount (2048) → Partial mode.
+	let original = deterministic_content(128 * 1024, 5);
+	std::fs::write(&path, &original).unwrap();
+
+	let key = deterministic_content(32, 6);
+	let manager = make_manager(&key);
+	let new_name = manager.encrypt_file(&path).expect("encrypt failed");
+	let enc_path = dir.join(&new_name);
+
+	let session_key = SessionKey::generate().expect("mlock failed");
+	let pf = ProjectedFile::open(&enc_path, &manager, &session_key).expect("open failed");
+
+	// One handle reused across ALL reads (the transfer-loop pattern).
+	let mut f = std::fs::File::open(&enc_path).unwrap();
+
+	// Deterministic (offset, len) pairs covering:
+	//   - start of file, middle of head, head/tail boundary (2048)
+	//   - middle of tail, EOF, past EOF, zero-length, huge len
+	let cases: &[(u64, usize)] = &[
+		(0, 1),
+		(0, 4096),
+		(100, 100),
+		(1024, 2048),           // spans head/tail boundary at 2048
+		(2048, 4096),           // exactly at boundary
+		(3000, 500),            // straddles boundary
+		(40_000, 100),          // tail
+		(128 * 1024 - 10, 10),  // tail near EOF
+		(128 * 1024, 10),       // at EOF → 0
+		(128 * 1024 + 100, 10), // past EOF → 0
+		(0, 0),                 // empty buffer → 0
+		(0, 1 << 20),           // huge len → clamped to file size
+	];
+
+	for &(off, len) in cases {
+		let mut a = vec![0xAAu8; len];
+		let mut b = vec![0xBBu8; len];
+		let n_a = pf.read_at(off, &mut a, &session_key).unwrap();
+		let n_b = pf.read_at_with(&mut f, off, &mut b, &session_key).unwrap();
+		assert_eq!(n_a, n_b, "count mismatch at offset {} len {}", off, len);
+		assert_eq!(
+			&a[..n_a],
+			&b[..n_b],
+			"content mismatch at offset {} len {}",
+			off,
+			len
+		);
+	}
+
+	// Out-of-order offsets through the same handle (seek correctness).
+	let mut buf = vec![0u8; 64];
+	let n = pf
+		.read_at_with(&mut f, 40_000, &mut buf, &session_key)
+		.unwrap();
+	assert_eq!(&buf[..n], &original[40_000..40_000 + n]);
+	let n = pf
+		.read_at_with(&mut f, 100, &mut buf, &session_key)
+		.unwrap();
+	assert_eq!(&buf[..n], &original[100..100 + n]);
+	let n = pf
+		.read_at_with(&mut f, 1024, &mut buf, &session_key)
+		.unwrap();
+	assert_eq!(&buf[..n], &original[1024..1024 + n]);
+
+	drop(f);
+	std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `read_at_with` on a FULL-encrypted file must match `read_at` too.
+#[test]
+fn read_at_with_matches_read_at_full_encrypted() {
+	let dir = std::env::temp_dir().join("rcrm_proj_test_readatwith_full");
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+
+	let path = dir.join("small.mp3");
+	// 512 bytes — below calibration_amount (2048) → Full mode.
+	let original = deterministic_content(512, 9);
+	std::fs::write(&path, &original).unwrap();
+
+	let key = deterministic_content(32, 8);
+	let manager = make_manager(&key);
+	let new_name = manager.encrypt_file(&path).expect("encrypt failed");
+	let enc_path = dir.join(&new_name);
+
+	let session_key = SessionKey::generate().expect("mlock failed");
+	let pf = ProjectedFile::open(&enc_path, &manager, &session_key).expect("open failed");
+	assert!(pf.is_full_encrypted());
+
+	let mut f = std::fs::File::open(&enc_path).unwrap();
+	for off in [0u64, 1, 100, 511, 512, 1000] {
+		let mut a = vec![0u8; 64];
+		let mut b = vec![0xCCu8; 64];
+		let n_a = pf.read_at(off, &mut a, &session_key).unwrap();
+		let n_b = pf.read_at_with(&mut f, off, &mut b, &session_key).unwrap();
+		assert_eq!(n_a, n_b);
+		assert_eq!(&a[..n_a], &b[..n_b], "mismatch at offset {}", off);
+	}
+	drop(f);
+	std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// O3: the head is materialized lazily. A file whose part2 fragment (the
+/// last `header_len` bytes, at disk offset `file_size`) has been truncated
+/// away still OPENS successfully (only the header + adjacent part1 are read
+/// at open time), the unencrypted tail still reads fine, and only a read
+/// overlapping the head region fails (on the deferred part2 read).
+#[test]
+fn lazy_head_defers_part2_read_until_head_access() {
+	let dir = std::env::temp_dir().join("rcrm_proj_test_lazyhead");
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+
+	let path = dir.join("test_video.mp4");
+	let original = deterministic_content(64 * 1024, 21);
+	std::fs::write(&path, &original).unwrap();
+
+	let key = deterministic_content(32, 22);
+	let manager = make_manager(&key);
+	let new_name = manager.encrypt_file(&path).expect("encrypt failed");
+	let enc_path = dir.join(&new_name);
+
+	// Disk layout: [header H][part1 C-H][plain tail C..file_size][part2 H].
+	// Truncate away the final H bytes (the part2 fragment) by setting the
+	// length to the virtual (plaintext) size.
+	let file_size = original.len() as u64;
+	let f = std::fs::OpenOptions::new()
+		.write(true)
+		.open(&enc_path)
+		.unwrap();
+	f.set_len(file_size).unwrap();
+	drop(f);
+
+	let session_key = SessionKey::generate().expect("mlock failed");
+	let pf = ProjectedFile::open(&enc_path, &manager, &session_key).expect("open must succeed");
+
+	// Tail reads (offset >= calibration_amount) still work without the head.
+	let mut buf = vec![0u8; 100];
+	let n = pf.read_at(40_000, &mut buf, &session_key).unwrap();
+	assert_eq!(n, 100);
+	assert_eq!(&buf[..], &original[40_000..40_100]);
+
+	// Head-overlapping reads now fail on the deferred part2 read.
+	let mut head_buf = vec![0u8; 100];
+	assert!(
+		pf.read_at(100, &mut head_buf, &session_key).is_err(),
+		"head read should fail on truncated part2"
+	);
+
+	// And the failure is cached: a second head read fails the same way.
+	assert!(pf.read_at(100, &mut head_buf, &session_key).is_err());
+
+	std::fs::remove_dir_all(&dir).unwrap();
+}

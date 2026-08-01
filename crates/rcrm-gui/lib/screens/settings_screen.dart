@@ -5,11 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models/server_config.dart';
+import '../config/theme.dart';
 import '../providers/server_provider.dart';
 import '../providers/settings_provider.dart';
+import '../services/net.dart';
 import '../services/thumb_cache.dart';
 
-const _hintSilver = TextStyle(color: Color(0xFFAAAAAA));
+const _hintSilver = TextStyle(color: RCrmColors.silver);
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -70,7 +72,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
-  Future<void> _tryConnect({required bool allowBadCert}) async {
+  Future<void> _tryConnect() async {
     final h = _hostCtrl.text.trim();
     if (h.isEmpty) return;
     final p = _portCtrl.text.trim();
@@ -81,17 +83,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final pw = _passCtrl.text;
     setState(() => _isConnecting = true);
     try {
-      if (!allowBadCert) {
-        await ref.read(settingsServiceProvider).saveCloudServerConfig(url, u);
-      }
-      await ref
-          .read(serverProvider.notifier)
-          .connectCloud(url, u, pw, allowBadCert: allowBadCert);
+      await ref.read(settingsServiceProvider).saveCloudServerConfig(url, u);
+      await ref.read(serverProvider.notifier).connectCloud(url, u, pw);
       if (!mounted) return;
       final st = ref.read(serverProvider);
-      if (st.error == 'BAD_CERT' && !allowBadCert) {
-        setState(() => _isConnecting = false);
-        await _showCert(h, url, u, pw);
+      if (st.error == 'BAD_CERT') {
+        final info = CertTrust.lastRejected;
+        if (info != null) {
+          setState(() => _isConnecting = false);
+          await _showCert(h, url, u, pw, info);
+        }
       }
     } finally {
       if (mounted) setState(() => _isConnecting = false);
@@ -103,6 +104,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     String url,
     String user,
     String pass,
+    CertInfo info,
   ) async {
     if (_showingCertDialog) return;
     _showingCertDialog = true;
@@ -110,8 +112,46 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Untrusted Certificate'),
-        content: Text(
-          'The server at $host uses a self-signed certificate. Trust and continue?',
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'The server at $host presented a certificate that is not '
+                'trusted by this device.',
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Certificate',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 4),
+              Text('Subject: ${info.subject}'),
+              Text('Issued by: ${info.issuer}'),
+              if (info.notAfter != null)
+                Text('Expires: ${_fmtDate(info.notAfter!)}'),
+              const SizedBox(height: 10),
+              const Text(
+                'Fingerprint (SHA-1)',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              Text(
+                info.formattedSha1,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                'Only this exact certificate will be trusted, and only for '
+                'this session. If the server presents any other certificate, '
+                'the connection will be refused.',
+                style: TextStyle(
+                  color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -129,17 +169,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     if (t == true && mounted) {
       setState(() => _isConnecting = true);
       try {
+        // Pin ONLY this certificate; every later connection must present the
+        // same fingerprint or it is refused.
+        CertTrust.pin(info);
         await ref
             .read(settingsServiceProvider)
             .saveCloudServerConfig(url, user);
-        await ref
-            .read(serverProvider.notifier)
-            .connectCloud(url, user, pass, allowBadCert: true);
+        await ref.read(serverProvider.notifier).connectCloud(url, user, pass);
       } finally {
         if (mounted) setState(() => _isConnecting = false);
       }
     }
   }
+
+  static String _fmtDate(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
 
   @override
   Widget build(BuildContext ctx) {
@@ -171,117 +216,148 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
           const SizedBox(height: 12),
           if (_deployMode == DeployMode.local) ...[
-            Card(
-              child: Column(
-                children: [
-                  ListTile(
-                    leading: Icon(
-                      Icons.circle,
-                      size: 12,
-                      color: ss.isRunning
-                          ? Theme.of(ctx).colorScheme.primary
-                          : Colors.red,
-                    ),
-                    title: Text(ss.isRunning ? 'Running' : 'Stopped'),
-                    subtitle: ss.url != null ? Text(ss.url!) : null,
-                    trailing: ss.isRunning
-                        ? TextButton(
-                            onPressed: () =>
-                                ref.read(serverProvider.notifier).stop(),
-                            child: const Text('Stop'),
-                          )
-                        : TextButton(
-                            onPressed: () => Navigator.of(
-                              ctx,
-                            ).pushReplacementNamed('/setup'),
-                            child: const Text('Start'),
-                          ),
-                  ),
-                  if (ss.error != null)
-                    Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Text(
-                        ss.error!,
-                        style: TextStyle(
-                          color: Theme.of(ctx).colorScheme.error,
-                          fontSize: 12,
-                        ),
+            _group([
+              ListTile(
+                leading: Icon(
+                  Icons.circle,
+                  size: 12,
+                  // Running = orange (state indicator, the accent means
+                  // something is happening). Stopped = neutral silver, not
+                  // red — an unstarted server is a normal state, not an error.
+                  color: ss.isRunning
+                      ? RCrmColors.primary
+                      : const Color(0xFF8A8A8A),
+                ),
+                title: Text(ss.isRunning ? 'Running' : 'Stopped'),
+                subtitle: ss.url != null ? Text(ss.url!) : null,
+                trailing: ss.isRunning
+                    ? TextButton(
+                        onPressed: () =>
+                            ref.read(serverProvider.notifier).stop(),
+                        child: const Text('Stop'),
+                      )
+                    : TextButton(
+                        onPressed: () =>
+                            Navigator.of(ctx).pushReplacementNamed('/setup'),
+                        child: const Text('Start'),
                       ),
-                    ),
-                ],
               ),
-            ),
-            const SizedBox(height: 8),
-            ListTile(
-              leading: const Icon(Icons.folder),
-              title: const Text('Managed Directories'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: _editDirectories,
-            ),
+              if (ss.error != null)
+                Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(
+                    ss.error!,
+                    style: TextStyle(
+                      color: Theme.of(ctx).colorScheme.error,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+              ListTile(
+                leading: const Icon(Icons.folder),
+                title: const Text('Managed Directories'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: _editDirectories,
+              ),
+            ]),
           ] else ...[
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
+            _group([
+              // Cloud fields need breathing room — 16px horizontal padding
+              // matches ListTile insets in the local branch; 12px vertical
+              // keeps the card from feeling cramped.
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    // Label on the left, button right-aligned. On narrow cards (or
+                    // large text scale) the button scales down via FittedBox instead
+                    // of overflowing the card (mirrors cloud_setup_screen).
                     Row(
                       children: [
                         const Text('Protocol'),
-                        const Spacer(),
-                        SegmentedButton<bool>(
-                          segments: const [
-                            ButtonSegment(value: true, label: Text('HTTPS')),
-                            ButtonSegment(value: false, label: Text('HTTP')),
-                          ],
-                          selected: {_cloudHttps},
-                          onSelectionChanged: ss.isRunning
-                              ? null
-                              : (v) {
-                                  setState(() {
-                                    _cloudHttps = v.first;
-                                    if (_portCtrl.text.isEmpty ||
-                                        _portCtrl.text ==
-                                            (_cloudHttps ? '80' : '443')) {
-                                      _portCtrl.text = _cloudHttps
-                                          ? '443'
-                                          : '80';
-                                    }
-                                  });
-                                },
+                        const SizedBox(width: 12),
+                        // Expanded (tight) makes the FittedBox fill all remaining
+                        // width, so Alignment.centerRight pushes the button flush
+                        // to the card edge. A loose Flexible would leave the
+                        // FittedBox parked at the left of its slot instead.
+                        Expanded(
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerRight,
+                            child: SegmentedButton<bool>(
+                              segments: const [
+                                ButtonSegment(
+                                  value: true,
+                                  label: Text('HTTPS'),
+                                ),
+                                ButtonSegment(
+                                  value: false,
+                                  label: Text('HTTP'),
+                                ),
+                              ],
+                              selected: {_cloudHttps},
+                              style: const ButtonStyle(
+                                visualDensity: VisualDensity.compact,
+                              ),
+                              onSelectionChanged: ss.isRunning
+                                  ? null
+                                  : (v) {
+                                      setState(() {
+                                        _cloudHttps = v.first;
+                                        if (_portCtrl.text.isEmpty ||
+                                            _portCtrl.text ==
+                                                (_cloudHttps ? '80' : '443')) {
+                                          _portCtrl.text = _cloudHttps
+                                              ? '443'
+                                              : '80';
+                                        }
+                                      });
+                                    },
+                            ),
+                          ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          flex: 3,
-                          child: TextField(
-                            controller: _hostCtrl,
-                            decoration: const InputDecoration(
-                              labelText: 'Host',
-                              hintText: 'example.com',
-                              hintStyle: _hintSilver,
-                              prefixIcon: Icon(Icons.dns),
-                            ),
-                            enabled: !ss.isRunning,
+                    // Host/Port side-by-side on wide cards; stacked on narrow ones
+                    // (the port field only gets ~80px otherwise and its label
+                    // overflows at 1.3x text scale).
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final host = TextField(
+                          controller: _hostCtrl,
+                          decoration: const InputDecoration(
+                            labelText: 'Host',
+                            hintText: 'example.com',
+                            hintStyle: _hintSilver,
+                            prefixIcon: Icon(Icons.dns),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          flex: 1,
-                          child: TextField(
-                            controller: _portCtrl,
-                            decoration: InputDecoration(
-                              labelText: 'Port',
-                              hintText: _cloudHttps ? '443' : '80',
-                              hintStyle: _hintSilver,
-                            ),
-                            keyboardType: TextInputType.number,
-                            enabled: !ss.isRunning,
+                          enabled: !ss.isRunning,
+                        );
+                        final port = TextField(
+                          controller: _portCtrl,
+                          decoration: InputDecoration(
+                            labelText: 'Port',
+                            hintText: _cloudHttps ? '443' : '80',
+                            hintStyle: _hintSilver,
                           ),
-                        ),
-                      ],
+                          keyboardType: TextInputType.number,
+                          enabled: !ss.isRunning,
+                        );
+                        if (constraints.maxWidth >= 300) {
+                          return Row(
+                            children: [
+                              Expanded(flex: 3, child: host),
+                              const SizedBox(width: 12),
+                              Expanded(flex: 1, child: port),
+                            ],
+                          );
+                        }
+                        return Column(
+                          children: [host, const SizedBox(height: 12), port],
+                        );
+                      },
                     ),
                     const SizedBox(height: 12),
                     TextField(
@@ -330,9 +406,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       SizedBox(
                         width: double.infinity,
                         child: FilledButton.icon(
-                          onPressed: _isConnecting
-                              ? null
-                              : () => _tryConnect(allowBadCert: false),
+                          onPressed: _isConnecting ? null : () => _tryConnect(),
                           icon: _isConnecting
                               ? const SizedBox(
                                   width: 16,
@@ -348,6 +422,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         ),
                       ),
                     ],
+                    // BAD_CERT has its own untrusted-certificate dialog; don't
+                    // also dump the raw marker string into the error text.
                     if (ss.error != null && ss.error != 'BAD_CERT') ...[
                       const SizedBox(height: 12),
                       Text(
@@ -361,28 +437,24 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ],
                 ),
               ),
-            ),
+            ]),
           ],
           const Divider(),
           _sectionHeader('Display'),
           const SizedBox(height: 8),
-          Card(
-            child: Column(
-              children: [
-                SwitchListTile(
-                  title: const Text('Video Hover Preview'),
-                  subtitle: const Text('Show preview clips on hover'),
-                  value: ui.previewEnabled,
-                  onChanged: (v) {
-                    ref.read(uiSettingsProvider.notifier).setPreviewEnabled(v);
-                  },
-                ),
-              ],
+          _group([
+            SwitchListTile(
+              title: const Text('Video Hover Preview'),
+              subtitle: const Text('Show preview clips on hover'),
+              value: ui.previewEnabled,
+              onChanged: (v) {
+                ref.read(uiSettingsProvider.notifier).setPreviewEnabled(v);
+              },
             ),
-          ),
+          ]),
           const SizedBox(height: 8),
-          Card(
-            child: _seg<String>(
+          _group([
+            _seg<String>(
               title: 'Image Grouping',
               selected: {ui.imageClassification},
               segments: const [
@@ -396,126 +468,121 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     .setImageClassification(v.first);
               },
             ),
-          ),
+          ]),
           const SizedBox(height: 8),
-          Card(
-            child: Column(
-              children: [
-                _seg<String>(
-                  title: 'Image Layout',
-                  subtitle: 'Masonry or uniform grid',
-                  selected: {ui.imageLayout},
-                  segments: const [
-                    ButtonSegment(value: 'masonry', label: Text('Masonry')),
-                    ButtonSegment(value: 'uniform', label: Text('Uniform')),
-                  ],
-                  onChanged: (v) {
-                    ref
-                        .read(uiSettingsProvider.notifier)
-                        .setImageLayout(v.first);
-                  },
-                ),
-                const Divider(height: 1),
-                _seg<String>(
-                  title: 'Default Video View',
-                  selected: {ui.videoLayout},
-                  segments: const [
-                    ButtonSegment(value: 'grid', label: Text('Grid')),
-                    ButtonSegment(value: 'list', label: Text('List')),
-                  ],
-                  onChanged: (v) {
-                    ref
-                        .read(uiSettingsProvider.notifier)
-                        .setVideoLayout(v.first);
-                  },
-                ),
+          _group([
+            _seg<String>(
+              title: 'Image Layout',
+              subtitle: 'Masonry or uniform grid',
+              selected: {ui.imageLayout},
+              segments: const [
+                ButtonSegment(value: 'masonry', label: Text('Masonry')),
+                ButtonSegment(value: 'uniform', label: Text('Uniform')),
               ],
+              onChanged: (v) {
+                ref.read(uiSettingsProvider.notifier).setImageLayout(v.first);
+              },
             ),
-          ),
+            const Divider(height: 1),
+            _seg<String>(
+              title: 'Default Video View',
+              selected: {ui.videoLayout},
+              segments: const [
+                ButtonSegment(value: 'grid', label: Text('Grid')),
+                ButtonSegment(value: 'list', label: Text('List')),
+              ],
+              onChanged: (v) {
+                ref.read(uiSettingsProvider.notifier).setVideoLayout(v.first);
+              },
+            ),
+          ]),
           const SizedBox(height: 8),
-          Card(
-            child: Column(
-              children: [
-                SwitchListTile(
-                  title: const Text('Picture-in-Picture'),
-                  subtitle: const Text(
-                    'Show a floating player when scrolling past the video',
-                  ),
-                  value: ui.pipEnabled,
-                  onChanged: (v) {
-                    ref.read(uiSettingsProvider.notifier).setPipEnabled(v);
-                  },
-                ),
-                const Divider(height: 1),
-                _seg<String>(
-                  title: 'PiP Size',
-                  subtitle: 'Small compact window or full-width overlay',
-                  selected: {ui.pipSize},
-                  segments: const [
-                    ButtonSegment(value: 'normal', label: Text('Normal')),
-                    ButtonSegment(value: 'small', label: Text('Small')),
-                  ],
-                  onChanged: (v) {
-                    ref.read(uiSettingsProvider.notifier).setPipSize(v.first);
-                  },
-                ),
-              ],
+          _group([
+            SwitchListTile(
+              title: const Text('Picture-in-Picture'),
+              subtitle: const Text(
+                'Show a floating player when scrolling past the video',
+              ),
+              value: ui.pipEnabled,
+              onChanged: (v) {
+                ref.read(uiSettingsProvider.notifier).setPipEnabled(v);
+              },
             ),
-          ),
+            const Divider(height: 1),
+            _seg<String>(
+              title: 'PiP Size',
+              subtitle: 'Small compact window or full-width overlay',
+              selected: {ui.pipSize},
+              segments: const [
+                ButtonSegment(value: 'normal', label: Text('Normal')),
+                ButtonSegment(value: 'small', label: Text('Small')),
+              ],
+              onChanged: (v) {
+                ref.read(uiSettingsProvider.notifier).setPipSize(v.first);
+              },
+            ),
+          ]),
           const Divider(),
           _sectionHeader('Cache'),
           const SizedBox(height: 8),
-          Card(
-            child: Column(
-              children: [
-                SwitchListTile(
-                  title: const Text('Thumbnail Cache'),
-                  subtitle: const Text(
-                    'Cache video posters + image thumbnails on disk',
-                  ),
-                  value: ui.thumbCacheEnabled,
-                  onChanged: (v) async {
-                    await ref
-                        .read(uiSettingsProvider.notifier)
-                        .setThumbCacheEnabled(v);
-                    _loadCacheSize();
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.sd_storage),
-                  title: const Text('Cache Size'),
-                  subtitle: Text(
-                    _cacheBytes == null
-                        ? 'Calculating…'
-                        : ThumbCache.human(_cacheBytes!),
-                  ),
-                  trailing: TextButton(
-                    onPressed: () async {
-                      await ThumbCache.clear();
-                      _loadCacheSize();
-                    },
-                    child: const Text('Clear'),
-                  ),
-                ),
-              ],
+          _group([
+            SwitchListTile(
+              title: const Text('Thumbnail Cache'),
+              subtitle: const Text(
+                'Cache video posters + image thumbnails on disk',
+              ),
+              value: ui.thumbCacheEnabled,
+              onChanged: (v) async {
+                await ref
+                    .read(uiSettingsProvider.notifier)
+                    .setThumbCacheEnabled(v);
+                _loadCacheSize();
+              },
             ),
-          ),
+            ListTile(
+              leading: const Icon(Icons.sd_storage),
+              title: const Text('Cache Size'),
+              subtitle: Text(
+                _cacheBytes == null
+                    ? 'Calculating…'
+                    : ThumbCache.human(_cacheBytes!),
+              ),
+              trailing: TextButton(
+                onPressed: () async {
+                  await ThumbCache.clear();
+                  _loadCacheSize();
+                },
+                child: const Text('Clear'),
+              ),
+            ),
+          ]),
           const Divider(),
           _sectionHeader('About'),
           const SizedBox(height: 8),
-          const Card(
-            child: Column(
-              children: [
-                ListTile(
-                  leading: Icon(Icons.info),
-                  title: Text('RCrm Media Library'),
-                  subtitle: Text('Version 1.0.0'),
-                ),
-              ],
+          _group([
+            ListTile(
+              leading: const Icon(Icons.info),
+              title: const Text('RCrm Media Library'),
+              subtitle: const Text('Version 1.0.0'),
             ),
-          ),
+          ]),
         ],
       ),
+    );
+  }
+
+  /// Settings group container — flat tonal surface, no Card drop shadow.
+  /// Uses [Material] (not a colored Container) so ListTile ink/ripples paint
+  /// on it; a DecoratedBox in between would hide them (debug assertion).
+  Widget _group(List<Widget> children) {
+    return Material(
+      // colorScheme.surface (#121212) — the same one layer above pitch
+      // tone the home screen's album chips use. Keeps settings visually
+      // continuous with the first screen instead of jumping to Char.
+      color: Theme.of(context).colorScheme.surface,
+      borderRadius: BorderRadius.circular(RCrmRadii.md),
+      clipBehavior: Clip.antiAlias,
+      child: Column(children: children),
     );
   }
 
@@ -575,7 +642,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     child: Text(
       t,
       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-        color: Theme.of(context).colorScheme.primary,
+        // Deeper neutral than the design-system Silver (#AAAAAA reads too
+        // light for section titles). User preference: keep it dark.
+        color: const Color(0xFF8A8A8A),
       ),
     ),
   );

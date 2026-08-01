@@ -21,6 +21,7 @@ import '../providers/library_provider.dart';
 import '../providers/settings_provider.dart';
 import '../providers/window_chrome_provider.dart';
 import '../widgets/video_card.dart';
+import '../widgets/media_player_keys.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../widgets/player_controls.dart';
 import '../widgets/finger_preview_listener.dart';
@@ -59,7 +60,13 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   final List<MediaItem> hist = [];
   final _videoKey = GlobalKey();
 
+  /// Persistent focus node for keyboard shortcuts. `Focus(autofocus: true)`
+  /// only grabs focus on first mount; clicking a slider/button moves focus
+  /// away and arrows/space/ESC stop reaching the CallbackShortcuts. We
+  /// re-request focus on any tap so the shortcuts stay alive.
+  final _shortcutFocus = FocusNode();
   final _barKey = GlobalKey();
+
   static SharedPreferences? _volPrefs;
   Timer? _gOverlayTimer;
   double _volume = 100;
@@ -227,6 +234,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _hideTimer?.cancel();
     _exitTimer?.cancel();
     p?.stop();
+    _shortcutFocus.dispose();
     p?.dispose();
     p = null;
     vc = null;
@@ -344,6 +352,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
 
   void _onTap() {
     if (!_isMobile) return;
+    _shortcutFocus.requestFocus();
     setState(() {
       if (_showControls) {
         _showControls = false;
@@ -532,6 +541,44 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     );
   }
 
+  // Keyboard shortcuts (space/arrows/F/ESC) — the verified global-key
+  // approach (MediaPlayerKeys wraps HardwareKeyboard, so it works even
+  // when no Flutter widget holds focus). Wraps BOTH the fullscreen and
+  // normal layouts.
+  Widget _withShortcuts(Widget child) {
+    return Focus(
+      focusNode: _shortcutFocus,
+      autofocus: true,
+      child: MediaPlayerKeys(
+        actions: MediaPlayerKeyActions(
+          onTogglePlay: () {
+            if (p != null) {
+              if (p!.state.playing) {
+                p!.pause();
+              } else {
+                p!.play();
+              }
+            }
+          },
+          onSeek: (delta) {
+            if (p == null) return;
+            final pos = p!.state.position + delta;
+            p!.seek(Duration(seconds: pos.inSeconds.clamp(0, 999999)));
+          },
+          onVolume: (delta) {
+            _volume = (_volume + delta * 100).clamp(0, 100);
+            p?.setVolume(_volume);
+          },
+          onEscape: fullscreen ? () => _setFullscreen(false) : null,
+          onToggleFullscreen: _isMobile
+              ? null
+              : () => _setFullscreen(!fullscreen),
+        ),
+        child: child,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext c) {
     final allVideos = ref.watch(videosListProvider);
@@ -554,59 +601,74 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         : size.width > 900;
     final video = _video();
     if (fullscreen) {
-      return PopScope(
-        canPop: false,
-        onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) _setFullscreen(false);
-        },
-        child: Scaffold(
-          backgroundColor: Colors.black,
-          body: MouseRegion(
-            onHover: (_) => _poke(),
-            onEnter: (_) => _show(),
-            child: Listener(
-              onPointerSignal: (event) {
-                if (event is PointerScrollEvent) {
-                  final dy = event.scrollDelta.dy;
-                  if (dy.abs() > 0) {
-                    final step = dy > 0 ? -5 : 5;
-                    final nv = (_volume + step).clamp(0.0, 100.0);
-                    if (nv != _volume) {
-                      _volume = nv;
-                      p?.setVolume(_volume);
-                      _prefsSetVol();
-                      _resetIdle();
-                    }
-                    _gOverlayTimer?.cancel();
-                    if (mounted) {
-                      setState(() {
-                        _gOverlayType = _OverlayType.volume;
-                        _gOverlayValue = _volume.round();
+      return _withShortcuts(
+        PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) _setFullscreen(false);
+          },
+          child: Scaffold(
+            backgroundColor: Colors.black,
+            body: MouseRegion(
+              onHover: (_) => _poke(),
+              onEnter: (_) => _show(),
+              child: Listener(
+                onPointerDown: (_) => _shortcutFocus.requestFocus(),
+                onPointerSignal: (event) {
+                  if (event is PointerScrollEvent) {
+                    final dy = event.scrollDelta.dy;
+                    if (dy.abs() > 0) {
+                      final step = dy > 0 ? -5 : 5;
+                      final nv = (_volume + step).clamp(0.0, 100.0);
+                      if (nv != _volume) {
+                        _volume = nv;
+                        p?.setVolume(_volume);
+                        _prefsSetVol();
+                        _resetIdle();
+                      }
+                      _gOverlayTimer?.cancel();
+                      if (mounted) {
+                        setState(() {
+                          _gOverlayType = _OverlayType.volume;
+                          _gOverlayValue = _volume.round();
+                        });
+                      }
+                      _gOverlayTimer = Timer(const Duration(seconds: 1), () {
+                        if (mounted) setState(() => _gOverlayType = null);
                       });
                     }
-                    _gOverlayTimer = Timer(const Duration(seconds: 1), () {
-                      if (mounted) setState(() => _gOverlayType = null);
-                    });
                   }
-                }
-              },
-              child: Stack(
-                children: [
-                  _wrapPointer(
-                    Center(
-                      child: vc != null
-                          ? Video(
-                              key: ValueKey('video_fs_$fullscreen'),
-                              controller: vc!,
-                              fit: BoxFit.contain,
-                              controls: NoVideoControls,
-                            )
-                          : const SizedBox(),
+                },
+                child: Stack(
+                  children: [
+                    _wrapPointer(
+                      Center(
+                        child: vc != null
+                            ? Video(
+                                key: ValueKey('video_fs_$fullscreen'),
+                                controller: vc!,
+                                fit: BoxFit.contain,
+                                controls: NoVideoControls,
+                              )
+                            : const SizedBox(),
+                      ),
                     ),
-                  ),
-                  if (_isMobile)
+                    if (_isMobile)
+                      Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        child: IgnorePointer(
+                          ignoring: !_showControls,
+                          child: AnimatedOpacity(
+                            opacity: _showControls ? 1.0 : 0.0,
+                            duration: _fadeMs,
+                            child: _topTitleBar(),
+                          ),
+                        ),
+                      ),
                     Positioned(
-                      top: 0,
+                      bottom: 0,
                       left: 0,
                       right: 0,
                       child: IgnorePointer(
@@ -614,28 +676,16 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                         child: AnimatedOpacity(
                           opacity: _showControls ? 1.0 : 0.0,
                           duration: _fadeMs,
-                          child: _topTitleBar(),
+                          child: _bar(),
                         ),
                       ),
                     ),
-                  Positioned(
-                    bottom: 0,
-                    left: 0,
-                    right: 0,
-                    child: IgnorePointer(
-                      ignoring: !_showControls,
-                      child: AnimatedOpacity(
-                        opacity: _showControls ? 1.0 : 0.0,
-                        duration: _fadeMs,
-                        child: _bar(),
-                      ),
-                    ),
-                  ),
-                  if (_seeking) _seekBar(),
-                  if (show2x) _speedBadge(),
-                  if (_gOverlayType != null) _centerOverlay(),
-                  if (_showSettings) _settingsOverlay(),
-                ],
+                    if (_seeking) _seekBar(),
+                    if (show2x) _speedBadge(),
+                    if (_gOverlayType != null) _centerOverlay(),
+                    if (_showSettings) _settingsOverlay(),
+                  ],
+                ),
               ),
             ),
           ),
@@ -710,16 +760,20 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                   child: narrow,
                 )
               : narrow);
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Stack(
-          children: [
-            body,
-            if (_pip && !fullscreen && ref.watch(uiSettingsProvider).pipEnabled)
-              _pipWidget(),
-            if (_showSettings) _settingsOverlay(),
-          ],
+    return _withShortcuts(
+      Scaffold(
+        backgroundColor: Colors.black,
+        body: SafeArea(
+          child: Stack(
+            children: [
+              body,
+              if (_pip &&
+                  !fullscreen &&
+                  ref.watch(uiSettingsProvider).pipEnabled)
+                _pipWidget(),
+              if (_showSettings) _settingsOverlay(),
+            ],
+          ),
         ),
       ),
     );
@@ -753,6 +807,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     return GestureDetector(
       onTapDown: (_) {},
       onTap: () {
+        _shortcutFocus.requestFocus();
         if (_videoTapTimer == null) {
           _videoTapTimer = Timer(const Duration(milliseconds: 300), () {
             _videoTapTimer = null;

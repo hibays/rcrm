@@ -187,13 +187,19 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
               ),
               const SizedBox(height: 16),
               Text(
-                'No results for "$_query"',
+                'No results for "$q"',
                 style: Theme.of(context).textTheme.titleLarge,
               ),
               const SizedBox(height: 8),
               Text(
-                'Try a different name or type (e.g. mp4, jpg)',
+                'Try a different file name or extension (mp4, jpg, avif)',
                 style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 24),
+              TextButton.icon(
+                onPressed: _clear,
+                icon: const Icon(Icons.close, size: 16),
+                label: const Text('Clear search'),
               ),
             ],
           ),
@@ -211,7 +217,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
         const gap = 8.0;
         final videoCardW =
             (width - gridPad - gap * (videoCols - 1)) / videoCols;
-        final videoAR = videoCardW / (videoCardW * 9 / 16 + 40);
+        final videoAR = videoCardW / (videoCardW * 9 / 16 + 60);
         final imageAR = 1.0;
 
         return CustomScrollView(
@@ -224,7 +230,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                 child: Row(
                   children: [
                     Text(
-                      '$total results',
+                      total == 1 ? '1 result' : '$total results',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         color: Colors.white,
                         fontWeight: FontWeight.w600,
@@ -520,30 +526,38 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     List<Album> albums,
   ) {
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            Icons.search,
-            size: 64,
-            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.3),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Search your library',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '${videos.length} videos, ${albums.length} albums',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Try typing a name or type: mp4, jpg, mkv...',
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-        ],
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.search,
+              size: 56,
+              color: Theme.of(
+                context,
+              ).colorScheme.primary.withValues(alpha: 0.3),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Search your library',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${videos.length} videos, ${albums.length} albums',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 20),
+            Text(
+              'Start typing a file name or extension\ne.g. mkv, avif, jpg',
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(height: 1.5),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }

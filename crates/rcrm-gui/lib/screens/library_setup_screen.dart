@@ -195,28 +195,40 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
                   ),
                   const SizedBox(height: 32),
 
-                  ..._selectedDirs.map(
-                    (d) => Card(
-                      child: ListTile(
-                        leading: const Icon(Icons.folder),
-                        title: Text(
-                          _displayName(d),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(
-                          d,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.close),
-                          onPressed: () =>
-                              setState(() => _selectedDirs.remove(d)),
-                        ),
+                  // Folder list as tonal group (no nested Card).
+                  if (_selectedDirs.isNotEmpty)
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        children: _selectedDirs
+                            .map(
+                              (d) => ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.folder, size: 20),
+                                title: Text(
+                                  _displayName(d),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                subtitle: Text(
+                                  d,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                trailing: IconButton(
+                                  icon: const Icon(Icons.close, size: 18),
+                                  onPressed: () =>
+                                      setState(() => _selectedDirs.remove(d)),
+                                ),
+                              ),
+                            )
+                            .toList(),
                       ),
                     ),
-                  ),
+                  const SizedBox(height: 8),
 
                   OutlinedButton.icon(
                     onPressed: _pickFolder,
@@ -226,79 +238,101 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
                   const SizedBox(height: 24),
 
                   if (_hasFolders) ...[
-                    if (addingMore)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 12),
-                        child: Text(
-                          '${_passwords.length} password(s) accepted'
-                          '${_lockedRemaining > 0 ? '  ·  $_lockedRemaining still locked' : ''}',
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.primary,
-                            fontSize: 13,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface,
+                        borderRadius: BorderRadius.circular(8),
                       ),
-                    TextField(
-                      controller: _passwordController,
-                      obscureText: true,
-                      autofocus: _hasFolders,
-                      onSubmitted: (_) => _connect(),
-                      decoration: InputDecoration(
-                        labelText: addingMore
-                            ? 'Next Decryption Password'
-                            : 'Decryption Password',
-                        hintText: 'Leave empty for plaintext folders',
-                        hintStyle: const TextStyle(color: Colors.grey),
-                        border: const OutlineInputBorder(),
-                        prefixIcon: const Icon(Icons.lock),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (addingMore)
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 12),
+                                child: Text(
+                                  '${_passwords.length} password(s) accepted'
+                                  '${_lockedRemaining > 0 ? '  ·  $_lockedRemaining still locked' : ''}',
+                                  style: TextStyle(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.primary,
+                                    fontSize: 13,
+                                  ),
+                                  textAlign: TextAlign.center,
+                                ),
+                              ),
+                            TextField(
+                              controller: _passwordController,
+                              obscureText: true,
+                              autofocus: _hasFolders,
+                              onSubmitted: (_) => _connect(),
+                              decoration: InputDecoration(
+                                labelText: addingMore
+                                    ? 'Next Decryption Password'
+                                    : 'Decryption Password',
+                                hintText: 'Leave empty for plaintext folders',
+                                hintStyle: const TextStyle(color: Colors.grey),
+                                border: const OutlineInputBorder(),
+                                prefixIcon: const Icon(Icons.lock),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            FilledButton.icon(
+                              onPressed: _isLoading ? null : _connect,
+                              icon: _isLoading
+                                  ? const SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : Icon(
+                                      addingMore ? Icons.key : Icons.play_arrow,
+                                    ),
+                              label: Text(
+                                _isLoading
+                                    ? _statusText
+                                    : (addingMore
+                                          ? 'Add Password'
+                                          : 'Unlock & Enter'),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                     const SizedBox(height: 16),
+                    if (_error != null)
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Theme.of(
+                            context,
+                          ).colorScheme.error.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          _error!,
+                          style: TextStyle(
+                            color: Theme.of(context).colorScheme.error,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
                   ],
-
-                  if (_error != null)
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      margin: const EdgeInsets.only(bottom: 16),
-                      decoration: BoxDecoration(
-                        color: Colors.red.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        _error!,
-                        style: const TextStyle(color: Colors.red),
-                      ),
-                    ),
-
-                  if (_hasFolders)
-                    FilledButton.icon(
-                      onPressed: _isLoading ? null : _connect,
-                      icon: _isLoading
-                          ? const SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : Icon(addingMore ? Icons.key : Icons.play_arrow),
-                      label: Text(
-                        _isLoading
-                            ? _statusText
-                            : (addingMore ? 'Add Password' : 'Unlock & Enter'),
-                      ),
-                    ),
 
                   if (_hasFolders) const SizedBox(height: 12),
 
-                  // Skip — only allowed when no saved mounts
                   if (!_hasFolders)
                     TextButton(
                       onPressed: _isLoading ? null : _skip,
                       child: const Text('Skip — mount later manually'),
                     ),
-
-                  // Switch to cloud deploy mode
-                  TextButton(
+                  const SizedBox(height: 8),
+                  TextButton.icon(
                     onPressed: () async {
                       final nav = Navigator.of(context);
                       await ref
@@ -307,7 +341,8 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
                       if (!mounted) return;
                       nav.pushReplacementNamed('/cloud-setup');
                     },
-                    child: const Text('Switch to Cloud Deploy'),
+                    icon: const Icon(Icons.cloud, size: 16),
+                    label: const Text('Switch to Cloud Deploy'),
                   ),
                 ],
               ),

@@ -973,9 +973,17 @@ impl FtpSession {
 				}
 			}
 			ReadSource::Projected(pf) => {
+				// Open the encrypted file once for the whole transfer; each
+				// 64 KiB chunk no longer pays for a fresh open().
+				let mut f = std::fs::File::open(pf.disk_path())?;
 				while sent < total {
 					let want = std::cmp::min(buf.len() as u64, total - sent) as usize;
-					let n = pf.read_at(offset + sent, &mut buf[..want], &self.ctx.session_key)?;
+					let n = pf.read_at_with(
+						&mut f,
+						offset + sent,
+						&mut buf[..want],
+						&self.ctx.session_key,
+					)?;
 					if n == 0 {
 						break;
 					}

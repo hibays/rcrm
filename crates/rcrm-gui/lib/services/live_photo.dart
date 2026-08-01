@@ -12,8 +12,8 @@
 // Detection + extraction via HTTP Range (WebDAV server supports 206 Partial).
 
 import 'dart:convert';
-import 'dart:io' show BytesBuilder, HttpClient;
 import 'dart:typed_data';
+import 'net.dart';
 import 'package:media_kit/media_kit.dart';
 
 // ── Result types ───────────────────────────────────────────────
@@ -60,7 +60,7 @@ Future<Uint8List> _rangeFetch(
   int end, {
   Map<String, String>? headers,
 }) async {
-  final client = HttpClient()..badCertificateCallback = (_, _, _) => true;
+  final client = createTrustAwareHttpClient();
   try {
     final req = await client.openUrl('GET', Uri.parse(Uri.encodeFull(url)));
     req.headers.set('Range', 'bytes=$start-$end');
@@ -79,7 +79,7 @@ Future<Uint8List> _rangeFetch(
 }
 
 Future<int> _fileSize(String url, {Map<String, String>? headers}) async {
-  final client = HttpClient()..badCertificateCallback = (_, _, _) => true;
+  final client = createTrustAwareHttpClient();
   try {
     final req = await client.openUrl('HEAD', Uri.parse(Uri.encodeFull(url)));
     if (headers != null) {
@@ -117,7 +117,7 @@ Future<bool> _hasMovCompanion(
   if (_headPending.containsKey(movUrl)) return _headPending[movUrl]!;
 
   final f = (() async {
-    final client = HttpClient()..badCertificateCallback = (_, _, _) => true;
+    final client = createTrustAwareHttpClient();
     try {
       final req = await client.openUrl(
         'HEAD',

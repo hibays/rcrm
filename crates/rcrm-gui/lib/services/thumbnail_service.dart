@@ -11,6 +11,7 @@ import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:ffi';
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import '../ffi/rust_bridge.dart';
@@ -21,6 +22,12 @@ import 'net.dart';
 class ThumbnailService {
   static final _posterCache = <String, Uint8List>{};
   static final _posterInflight = <String, Completer<Uint8List?>>{};
+
+  /// Test hook: when true, generatePoster returns null immediately without
+  /// enqueueing work or starting the 30s idle pool timer. Widget tests that
+  /// render VideoCards use this to avoid pending-timer failures.
+  @visibleForTesting
+  static bool suppressPosterGeneration = false;
 
   /// Poster width in pixels. Mobile constrains the Player surface to this
   /// width (VideoControllerConfiguration); desktop passes it to ffmpeg
@@ -59,6 +66,7 @@ class ThumbnailService {
   // ── Poster ───────────────────────────────────────────────
 
   Future<Uint8List?> generatePoster(String videoUrl) async {
+    if (suppressPosterGeneration) return null;
     final cached = _cacheGet(videoUrl);
     if (cached != null) return cached;
 

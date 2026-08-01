@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/server_config.dart';
 import '../providers/server_provider.dart';
+import '../services/net.dart';
 
 const _hintSilver = TextStyle(color: Color(0xFFAAAAAA));
 
@@ -52,7 +53,7 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
     _userCtrl.text = c.remoteUsername;
   }
 
-  Future<void> _tryConnect({required bool allowBadCert}) async {
+  Future<void> _tryConnect() async {
     final h = _hostCtrl.text.trim();
     if (h.isEmpty) {
       _showErr('Host required');
@@ -66,22 +67,21 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
     final pw = _passCtrl.text;
     setState(() => _isConnecting = true);
     try {
-      if (!allowBadCert) {
-        await ref.read(settingsServiceProvider).saveCloudServerConfig(url, u);
-      }
-      await ref
-          .read(serverProvider.notifier)
-          .connectCloud(url, u, pw, allowBadCert: allowBadCert);
+      await ref.read(settingsServiceProvider).saveCloudServerConfig(url, u);
+      await ref.read(serverProvider.notifier).connectCloud(url, u, pw);
       if (!mounted) return;
       final st = ref.read(serverProvider);
       if (st.isRunning) {
         Navigator.of(context).pushReplacementNamed('/home');
         return;
       }
-      if (st.error == 'BAD_CERT' && !allowBadCert) {
-        setState(() => _isConnecting = false);
-        await _showCert(h, url, u, pw);
-        return;
+      if (st.error == 'BAD_CERT') {
+        final info = CertTrust.lastRejected;
+        if (info != null) {
+          setState(() => _isConnecting = false);
+          await _showCert(h, url, u, pw, info);
+          return;
+        }
       }
       _showErr(st.error ?? 'Connection failed');
     } finally {
@@ -94,6 +94,7 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
     String url,
     String user,
     String pass,
+    CertInfo info,
   ) async {
     if (_showingCertDialog) return;
     _showingCertDialog = true;
@@ -101,8 +102,46 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Untrusted Certificate'),
-        content: Text(
-          'The server at $host uses a self-signed certificate. Trust and continue?',
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'The server at $host presented a certificate that is not '
+                'trusted by this device.',
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Certificate',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 4),
+              Text('Subject: ${info.subject}'),
+              Text('Issued by: ${info.issuer}'),
+              if (info.notAfter != null)
+                Text('Expires: ${_fmtDate(info.notAfter!)}'),
+              const SizedBox(height: 10),
+              const Text(
+                'Fingerprint (SHA-1)',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              Text(
+                info.formattedSha1,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                'Only this exact certificate will be trusted, and only for '
+                'this session. If the server presents any other certificate, '
+                'the connection will be refused.',
+                style: TextStyle(
+                  color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -120,12 +159,13 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
     if (t == true && mounted) {
       setState(() => _isConnecting = true);
       try {
+        // Pin ONLY this certificate; the next connection (and every later
+        // one) must present the same fingerprint or it is refused.
+        CertTrust.pin(info);
         await ref
             .read(settingsServiceProvider)
             .saveCloudServerConfig(url, user);
-        await ref
-            .read(serverProvider.notifier)
-            .connectCloud(url, user, pass, allowBadCert: true);
+        await ref.read(serverProvider.notifier).connectCloud(url, user, pass);
         if (!mounted) return;
         final st = ref.read(serverProvider);
         if (st.isRunning) {
@@ -138,6 +178,10 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
       }
     }
   }
+
+  static String _fmtDate(DateTime d) =>
+      '${d.year}-${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
 
   void _showErr(String m) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -177,125 +221,190 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 32),
-                  Row(
-                    children: [
-                      const Text('Protocol'),
-                      const Spacer(),
-                      SegmentedButton<bool>(
-                        segments: const [
-                          ButtonSegment(value: true, label: Text('HTTPS')),
-                          ButtonSegment(value: false, label: Text('HTTP')),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Theme.of(ctx).colorScheme.surface,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // Wide cards: label on the left, segmented button
+                          // right-aligned (Spacer). Narrow cards: button wraps
+                          // to its own line, still right-aligned.
+                          LayoutBuilder(
+                            builder: (context, constraints) {
+                              final label = Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text('Protocol'),
+                                  Text(
+                                    _cloudHttps
+                                        ? 'Encrypted connection'
+                                        : 'Unencrypted connection',
+                                    style: Theme.of(context).textTheme.bodySmall
+                                        ?.copyWith(fontSize: 11),
+                                  ),
+                                ],
+                              );
+                              final button = SegmentedButton<bool>(
+                                segments: const [
+                                  ButtonSegment(
+                                    value: true,
+                                    label: Text('HTTPS'),
+                                  ),
+                                  ButtonSegment(
+                                    value: false,
+                                    label: Text('HTTP'),
+                                  ),
+                                ],
+                                selected: {_cloudHttps},
+                                style: const ButtonStyle(
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                                onSelectionChanged: ss.isRunning
+                                    ? null
+                                    : (v) {
+                                        setState(() {
+                                          _cloudHttps = v.first;
+                                          if (_portCtrl.text.isEmpty ||
+                                              _portCtrl.text ==
+                                                  (_cloudHttps
+                                                      ? '80'
+                                                      : '443')) {
+                                            _portCtrl.text = _cloudHttps
+                                                ? '443'
+                                                : '80';
+                                          }
+                                        });
+                                      },
+                              );
+                              // ~300px fits label + spacing + both segments at
+                              // 1.3x text scale; below that the button wraps.
+                              if (constraints.maxWidth >= 300) {
+                                return Row(
+                                  children: [label, const Spacer(), button],
+                                );
+                              }
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  label,
+                                  const SizedBox(height: 8),
+                                  Align(
+                                    alignment: Alignment.centerRight,
+                                    child: button,
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            children: [
+                              Expanded(
+                                flex: 3,
+                                child: TextField(
+                                  controller: _hostCtrl,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Host',
+                                    hintText: 'example.com',
+                                    hintStyle: _hintSilver,
+                                    prefixIcon: Icon(Icons.dns),
+                                  ),
+                                  enabled: !_isConnecting,
+                                  textInputAction: TextInputAction.next,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                flex: 1,
+                                child: TextField(
+                                  controller: _portCtrl,
+                                  decoration: InputDecoration(
+                                    labelText: 'Port',
+                                    hintText: _cloudHttps ? '443' : '80',
+                                    hintStyle: _hintSilver,
+                                  ),
+                                  keyboardType: TextInputType.number,
+                                  enabled: !_isConnecting,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _userCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'Username',
+                              hintStyle: _hintSilver,
+                              prefixIcon: Icon(Icons.person),
+                            ),
+                            enabled: !_isConnecting,
+                            textInputAction: TextInputAction.next,
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _passCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'Password',
+                              hintStyle: _hintSilver,
+                              prefixIcon: Icon(Icons.lock),
+                            ),
+                            obscureText: true,
+                            enabled: !_isConnecting,
+                            onSubmitted: (_) => _tryConnect(),
+                          ),
+                          const SizedBox(height: 16),
+                          FilledButton.icon(
+                            onPressed: _isConnecting
+                                ? null
+                                : () => _tryConnect(),
+                            icon: _isConnecting
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.link),
+                            label: Text(
+                              _isConnecting ? 'Connecting…' : 'Connect',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextButton(
+                            onPressed: _isConnecting
+                                ? null
+                                : () => Navigator.of(
+                                    context,
+                                  ).pushReplacementNamed('/home'),
+                            child: const Text(
+                              'Skip — browse read-only library',
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          TextButton(
+                            onPressed: _isConnecting
+                                ? null
+                                : () async {
+                                    await ref
+                                        .read(settingsServiceProvider)
+                                        .setDeployMode(DeployMode.local);
+                                    if (mounted) {
+                                      Navigator.of(
+                                        context,
+                                      ).pushReplacementNamed('/setup');
+                                    }
+                                  },
+                            child: const Text('Switch to Local Deploy'),
+                          ),
                         ],
-                        selected: {_cloudHttps},
-                        onSelectionChanged: ss.isRunning
-                            ? null
-                            : (v) {
-                                setState(() {
-                                  _cloudHttps = v.first;
-                                  if (_portCtrl.text.isEmpty ||
-                                      _portCtrl.text ==
-                                          (_cloudHttps ? '80' : '443')) {
-                                    _portCtrl.text = _cloudHttps ? '443' : '80';
-                                  }
-                                });
-                              },
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      Expanded(
-                        flex: 3,
-                        child: TextField(
-                          controller: _hostCtrl,
-                          decoration: const InputDecoration(
-                            labelText: 'Host',
-                            hintText: 'example.com',
-                            hintStyle: _hintSilver,
-                            prefixIcon: Icon(Icons.dns),
-                          ),
-                          enabled: !_isConnecting,
-                          textInputAction: TextInputAction.next,
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        flex: 1,
-                        child: TextField(
-                          controller: _portCtrl,
-                          decoration: InputDecoration(
-                            labelText: 'Port',
-                            hintText: _cloudHttps ? '443' : '80',
-                            hintStyle: _hintSilver,
-                          ),
-                          keyboardType: TextInputType.number,
-                          enabled: !_isConnecting,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _userCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Username',
-                      hintStyle: _hintSilver,
-                      prefixIcon: Icon(Icons.person),
                     ),
-                    enabled: !_isConnecting,
-                    textInputAction: TextInputAction.next,
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _passCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Password',
-                      hintStyle: _hintSilver,
-                      prefixIcon: Icon(Icons.lock),
-                    ),
-                    obscureText: true,
-                    enabled: !_isConnecting,
-                    onSubmitted: (_) => _tryConnect(allowBadCert: false),
-                  ),
-                  const SizedBox(height: 24),
-                  FilledButton.icon(
-                    onPressed: _isConnecting
-                        ? null
-                        : () => _tryConnect(allowBadCert: false),
-                    icon: _isConnecting
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.link),
-                    label: Text(_isConnecting ? 'Connecting…' : 'Connect'),
-                  ),
-                  const SizedBox(height: 12),
-                  TextButton(
-                    onPressed: _isConnecting
-                        ? null
-                        : () => Navigator.of(
-                            context,
-                          ).pushReplacementNamed('/home'),
-                    child: const Text('Skip — browse read-only library'),
-                  ),
-                  const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: _isConnecting
-                        ? null
-                        : () async {
-                            await ref
-                                .read(settingsServiceProvider)
-                                .setDeployMode(DeployMode.local);
-                            if (mounted) {
-                              Navigator.of(
-                                context,
-                              ).pushReplacementNamed('/setup');
-                            }
-                          },
-                    child: const Text('Switch to Local Deploy'),
                   ),
                 ],
               ),

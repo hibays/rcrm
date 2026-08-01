@@ -315,17 +315,30 @@ fn check_auth(req: &Request, auth: &AuthConfig) -> bool {
 		Some(e) => e,
 		None => return false,
 	};
-	let decoded = match base64_decode(encoded) {
+	let mut decoded = match base64_decode(encoded) {
 		Some(d) => d,
 		None => return false,
 	};
-	// "user:pass"
-	let s = String::from_utf8_lossy(&decoded);
-	let (user, pass) = match s.split_once(':') {
-		Some((u, p)) => (u, p),
-		None => return false,
-	};
-	auth.verify(user, pass)
+	// decoded holds the plaintext "user:pass" — keep it in a scope so we
+	// can wipe it before the function returns. Use strict UTF-8: the
+	// credential is ASCII, so a lossy conversion would only add an
+	// uncleaned heap copy for malformed input we reject anyway.
+	{
+		let creds = match std::str::from_utf8(&decoded) {
+			Ok(s) => s,
+			Err(_) => return false,
+		};
+		let (user, pass) = match creds.split_once(':') {
+			Some((u, p)) => (u, p),
+			None => return false,
+		};
+		let ok = auth.verify(user, pass);
+		// Wipe the decoded credential buffer after verify (creds borrows
+		// from it, so this must happen after the last borrow).
+		use zeroize::Zeroize;
+		decoded.as_mut_slice().zeroize();
+		ok
+	}
 }
 
 /// Extract the base64 payload from "Basic <b64>".
@@ -1063,9 +1076,13 @@ fn stream_body(
 			}
 		}
 		Resolved::Projected(pf) => {
+			// Open the encrypted file once for the whole transfer; each
+			// 64 KiB chunk no longer pays for a fresh CreateFile/open.
+			let mut f = std::fs::File::open(pf.disk_path())?;
 			while sent < length {
 				let want = std::cmp::min(buf.len() as u64, length - sent) as usize;
-				let n = pf.read_at(offset + sent, &mut buf[..want], &ctx.session_key)?;
+				let n =
+					pf.read_at_with(&mut f, offset + sent, &mut buf[..want], &ctx.session_key)?;
 				if n == 0 {
 					break;
 				}

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use argon2::{Algorithm, Argon2, Version};
 use blake2::{Blake2b512, Blake2s256, Digest};
@@ -50,7 +51,10 @@ pub struct Manager {
 	pub calibration_amount: u32,
 	pub rule_fn: fn(&Path) -> bool,
 	pub works: usize,
-	pub keys: HashMap<u32, LockedKey<32>>,
+	/// Derived keys, shared via `Arc` so multiple `ProjectedFile`s can
+	/// reference the same locked page without cloning (each clone would
+	/// allocate + mlock a fresh page).
+	pub keys: HashMap<u32, Arc<LockedKey<32>>>,
 }
 
 impl Manager {
@@ -107,7 +111,7 @@ impl Manager {
 	}
 
 	fn add_key(&mut self, key: &[u8], idx: Option<u32>) -> u32 {
-		let derived = self.derive_key(key);
+		let derived = Arc::new(self.derive_key(key));
 		let idx = idx.unwrap_or_else(|| crc32fast::hash(key));
 
 		if self.keys.contains_key(&idx) {
@@ -129,10 +133,10 @@ impl Manager {
 			panic!("The indexed key index '{}' does not exist.", idx);
 		}
 		self.keys
-			.insert(Manager::MAGIC_KEY_USING, self.keys[idx].clone());
+			.insert(Manager::MAGIC_KEY_USING, Arc::clone(&self.keys[idx]));
 	}
 
-	pub fn drop_key(&mut self, idx: &u32) -> Option<LockedKey<32>> {
+	pub fn drop_key(&mut self, idx: &u32) -> Option<Arc<LockedKey<32>>> {
 		// LockedKey's Drop zeroizes + unlocks the page — no explicit zeroize needed.
 		self.keys.remove(idx)
 	}
@@ -153,7 +157,7 @@ impl Manager {
 
 	pub fn use_provided_key(&mut self, key: &[u8]) {
 		self.keys
-			.insert(Manager::MAGIC_KEY_USING, self.derive_key(key));
+			.insert(Manager::MAGIC_KEY_USING, Arc::new(self.derive_key(key)));
 	}
 
 	pub fn list_key_idxs(&self) -> Option<Vec<u32>> {
@@ -171,6 +175,12 @@ impl Manager {
 	/// Used by the projection layer to decrypt file heads / streams on demand.
 	pub fn using_key(&self) -> &LockedKey<32> {
 		self.get_using_key()
+	}
+
+	/// Return a shared reference to the key registered under `idx`.
+	/// All `ProjectedFile`s opened with this key share the same locked page.
+	pub fn key_by_idx(&self, idx: u32) -> Option<Arc<LockedKey<32>>> {
+		self.keys.get(&idx).cloned()
 	}
 
 	/// Read and verify the header of an encrypted file. Returns the parsed
@@ -216,12 +226,15 @@ impl Manager {
 	/// file's header. Returns the header and the index of the matching key.
 	/// On success the file cursor is positioned at the first byte after the
 	/// header. If no key matches, returns `InvalidData`.
-	pub fn read_file_header_any_key(&self, file: &mut File) -> io::Result<(FileHeader, u32)> {
+	pub fn read_file_header_any_key<R: Read + Seek>(
+		&self,
+		file: &mut R,
+	) -> io::Result<(FileHeader, u32)> {
 		let mut last_err: Option<io::Error> = None;
 		for (&idx, key) in &self.keys {
 			// Rewind before each attempt.
 			file.seek(SeekFrom::Start(0))?;
-			match FileHeader::read_and_verify(file, key.as_ref()) {
+			match FileHeader::read_and_verify(file, key.as_bytes()) {
 				Ok(h) => return Ok((h, idx)),
 				Err(e) if e.kind() == io::ErrorKind::InvalidData => {
 					last_err = Some(e);
@@ -236,12 +249,6 @@ impl Manager {
 				"No key registered — cannot open encrypted file",
 			)
 		}))
-	}
-
-	/// Look up a registered key by its index. Used by projection to
-	/// retrieve the matching key for a file after `read_file_header_any_key`.
-	pub fn key_by_idx(&self, idx: u32) -> Option<&LockedKey<32>> {
-		self.keys.get(&idx)
 	}
 
 	#[allow(dead_code)]
@@ -512,7 +519,7 @@ impl FileHeader {
 	/// Read the header from `file` and verify `key_hash` against `manager_key`.
 	/// On success the file cursor is positioned at the first byte after the
 	/// header. On `InvalidData` error the cursor position is unspecified.
-	pub fn read_and_verify(file: &mut File, manager_key: &[u8]) -> io::Result<Self> {
+	pub fn read_and_verify<R: Read>(file: &mut R, manager_key: &[u8]) -> io::Result<Self> {
 		let mut header_rd = [0u8; Self::FIXED_LEN];
 		let read = file.read(&mut header_rd)?;
 		if read < Self::FIXED_LEN {

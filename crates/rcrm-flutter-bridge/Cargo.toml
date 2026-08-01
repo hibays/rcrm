@@ -21,6 +21,13 @@ zeroize = { version = "1.8.2", features = ["simd"] }
 dunce = "1.0.5"
 rand = "0.10"
 zune-jpeg = "0.5"
+# Pure-Rust WebP encode for thumbnail caching (AGPL-3.0, rcrm is open-source).
+zenwebp = { version = "0.4", default-features = false, features = ["std"] }
+# Self-signed cert generation for the TV cast receiver (ECDSA P-256).
+rcgen = { version = "0.14", default-features = false, features = [
+	"aws_lc_rs",
+	"pem",
+] }
 # Use git version to aviod asm build error (v1.1.0) on android.
 # Android/iOS (ARM .S via -Bsymbolic for .so)
 rav1d = { git = "https://github.com/memorysafety/rav1d", rev = "2a734dc9cd52190146796fb24b29a8c7e3d2af1e", optional = true }

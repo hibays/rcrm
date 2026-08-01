@@ -1,7 +1,8 @@
 // services/webdav_client.dart
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show HandshakeException, HttpClient, TlsException;
+import 'dart:io' show HandshakeException, TlsException;
+import 'net.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart' show IOClient;
@@ -56,15 +57,8 @@ class WebDavClient {
     required this.baseUrl,
     this.username,
     this.password,
-    bool allowBadCert = false,
     http.Client? client,
-  }) : _client =
-           client ??
-           (allowBadCert
-               ? IOClient(
-                   HttpClient()..badCertificateCallback = (_, _, _) => true,
-                 )
-               : http.Client()) {
+  }) : _client = client ?? IOClient(createTrustAwareHttpClient()) {
     if (username != null && password != null) {
       _authHeader = 'Basic ${base64Encode(utf8.encode('$username:$password'))}';
     }

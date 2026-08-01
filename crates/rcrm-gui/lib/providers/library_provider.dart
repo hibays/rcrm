@@ -53,7 +53,29 @@ class ScanState {
 
 class ScanCoordinator extends Notifier<ScanState> {
   @override
-  ScanState build() => const ScanState();
+  ScanState build() {
+    // When the server stops, ALL cached library data is dropped so the UI
+    // can't show stale media next to a "no media found" empty state. The
+    // maps are plain NotifierProviders (kept alive), so without this they
+    // would retain the last scan's items after stop().
+    ref.listen(serverProvider, (prev, next) {
+      if ((prev?.isRunning ?? false) && !next.isRunning) {
+        // Invalidate any scan still in flight: its onBatch/completion
+        // callbacks check _scanGen and would otherwise re-populate the
+        // stores AFTER the clear below (stop during a scan).
+        _scanGen++;
+        _clearAll();
+        state = const ScanState();
+      }
+    });
+    return const ScanState();
+  }
+
+  void _clearAll() {
+    ref.read(videosMapProvider.notifier).clear();
+    ref.read(imagesMapProvider.notifier).clear();
+    ref.read(recentVideosProvider.notifier).clear();
+  }
 
   int _scanGen = 0;
 

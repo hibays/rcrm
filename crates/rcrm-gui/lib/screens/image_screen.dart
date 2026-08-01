@@ -34,7 +34,13 @@ final selectedAlbumProvider = NotifierProvider<SelectedAlbumNotifier, Album?>(
 class ImageAlbumOpenNotifier extends Notifier<bool> {
   @override
   bool build() => false;
-  void setOpen(bool v) => state = v;
+
+  /// Guarded so a late call (e.g. ImageScreen.dispose while the provider
+  /// container is already being torn down at app exit) is a no-op instead of
+  /// throwing UnmountedRefException.
+  void setOpen(bool v) {
+    if (ref.mounted) state = v;
+  }
 }
 
 final imageAlbumOpenProvider = NotifierProvider<ImageAlbumOpenNotifier, bool>(
@@ -71,7 +77,10 @@ class _ImageScreenState extends ConsumerState<ImageScreen> {
 
   @override
   void dispose() {
-    Future(() => _albumOpen.setOpen(false));
+    // Direct call is safe now: setOpen no-ops when the provider container is
+    // already gone. (The old `Future(...)` wrapper left a pending timer in
+    // tests and could hit an unmounted ref at app exit.)
+    _albumOpen.setOpen(false);
     super.dispose();
   }
 

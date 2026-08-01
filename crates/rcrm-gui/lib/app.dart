@@ -6,13 +6,17 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'config/theme.dart';
 import 'models/server_config.dart';
 import 'providers/server_provider.dart';
 import 'providers/settings_provider.dart';
+import 'screens/cast_receiver_screen.dart';
+import 'screens/cast_scan_screen.dart';
 import 'screens/cloud_setup_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/library_setup_screen.dart';
 import 'screens/settings_screen.dart';
+import 'services/tv_detector.dart';
 import 'widgets/desktop_title_bar.dart';
 
 class RcrmApp extends ConsumerStatefulWidget {
@@ -26,6 +30,7 @@ class RcrmApp extends ConsumerStatefulWidget {
 class _RcrmAppState extends ConsumerState<RcrmApp> {
   final _navigatorKey = GlobalKey<NavigatorState>();
   DeployMode? _deployMode;
+  bool _isTv = false;
 
   @override
   void initState() {
@@ -35,6 +40,9 @@ class _RcrmAppState extends ConsumerState<RcrmApp> {
     // defaults on launch. Also mirrors the cache flag into ThumbCache.enabled.
     ref.read(uiSettingsProvider.notifier).load();
     _loadDeployMode();
+    isAndroidTv().then((tv) {
+      if (mounted) setState(() => _isTv = tv);
+    });
   }
 
   Future<void> _loadDeployMode() async {
@@ -59,7 +67,7 @@ class _RcrmAppState extends ConsumerState<RcrmApp> {
     return MaterialApp(
       title: 'RCrm Media Library',
       navigatorKey: _navigatorKey,
-      theme: _buildTheme(),
+      theme: RCrmTheme.dark,
       debugShowCheckedModeBanner: false,
       builder: (context, child) {
         if (Platform.isAndroid || Platform.isIOS) return child!;
@@ -67,6 +75,8 @@ class _RcrmAppState extends ConsumerState<RcrmApp> {
       },
       home: _deployMode == null
           ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+          : _isTv
+          ? const CastReceiverScreen()
           : isCloud
           ? const CloudSetupScreen()
           : LibrarySetupScreen(initialDirs: _savedDirs),
@@ -75,45 +85,9 @@ class _RcrmAppState extends ConsumerState<RcrmApp> {
         '/cloud-setup': (context) => const CloudSetupScreen(),
         '/home': (context) => const HomeScreen(),
         '/settings': (context) => const SettingsScreen(),
+        '/cast-scan': (context) => const CastScanScreen(),
+        '/cast-receiver': (context) => const CastReceiverScreen(showBack: true),
       },
-    );
-  }
-
-  ThemeData _buildTheme() {
-    const brand = Color(0xFFFF6B00);
-    final isDesktop =
-        Platform.isWindows || Platform.isMacOS || Platform.isLinux;
-    final base = ThemeData.dark().copyWith(
-      scaffoldBackgroundColor: const Color(0xFF0E0E0E),
-      colorScheme: const ColorScheme.dark(primary: brand),
-      appBarTheme: const AppBarTheme(
-        backgroundColor: Color(0xFF1A1A1A),
-        elevation: 0,
-      ),
-      bottomNavigationBarTheme: const BottomNavigationBarThemeData(
-        backgroundColor: Color(0xFF1A1A1A),
-        selectedItemColor: Color(0xFFFF9900),
-        unselectedItemColor: Colors.white54,
-        type: BottomNavigationBarType.fixed,
-      ),
-      segmentedButtonTheme: SegmentedButtonThemeData(
-        style: ButtonStyle(
-          backgroundColor: WidgetStateProperty.resolveWith(
-            (states) => states.contains(WidgetState.selected) ? brand : null,
-          ),
-          foregroundColor: WidgetStateProperty.resolveWith(
-            (states) => states.contains(WidgetState.selected)
-                ? Colors.black
-                : Colors.white70,
-          ),
-        ),
-      ),
-    );
-    if (!isDesktop) return base;
-    return base.copyWith(
-      textTheme: base.textTheme.apply(
-        fontFamilyFallback: const ['Microsoft YaHei', 'PingFang SC', 'SimHei'],
-      ),
     );
   }
 }

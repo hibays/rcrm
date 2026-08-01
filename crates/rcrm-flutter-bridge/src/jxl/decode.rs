@@ -152,8 +152,8 @@ fn planar_sample(
 				let (sx, sy) = orient_src(dx, dy, gw, gh, orientation);
 				let sx = sx as usize;
 				let sy = sy as usize;
-				for c in 0..3 {
-					let v = sample_planar(&channels[c], sx, sy, bd);
+				for ch in channels.iter().take(3) {
+					let v = sample_planar(ch, sx, sy, bd);
 					out.push((v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
 				}
 				out.push(255);

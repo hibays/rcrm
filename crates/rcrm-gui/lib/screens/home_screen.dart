@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/media_item.dart';
 import '../models/album.dart';
+import '../config/theme.dart';
 import '../providers/library_provider.dart';
 import '../providers/server_provider.dart';
 import '../widgets/doctor_panel.dart';
@@ -16,10 +17,14 @@ import '../widgets/album_preview.dart';
 import '../widgets/video_card.dart';
 import '../widgets/finger_preview_listener.dart';
 import '../services/preview_player.dart';
+import '../services/cast_remote.dart';
+import '../services/cast_session_store.dart';
 import 'video_player_screen.dart';
 import 'search_screen.dart';
 import 'video_screen.dart';
 import 'image_screen.dart';
+import 'cast_receiver_screen.dart';
+import 'cast_remote_screen.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -85,6 +90,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       }
     });
 
+    // External album selection (home chip OR a search result) must surface on
+    // the Images tab. The chip also switches the tab itself, so this covers
+    // the search flow: search result -> pop -> switch to Images -> ImageScreen
+    // consumes the selection. Without this, tapping an album search result
+    // from the Home/Videos tab appeared to do nothing.
+    ref.listen(selectedAlbumProvider, (prev, next) {
+      if (next != null && _currentIndex != 2) {
+        setState(() => _currentIndex = 2);
+      }
+    });
+
     // Auto re-scan when server (re)starts while already mounted.
     ref.listen(serverProvider, (prev, next) {
       if (next.isRunning && !(prev?.isRunning ?? false)) _scanLibrary();
@@ -126,7 +142,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       height: 18,
                       child: CircularProgressIndicator(
                         strokeWidth: 2,
-                        color: Colors.white54,
+                        // Loading spinner is orange per the design system.
+                        color: RCrmColors.primary,
                       ),
                     )
                   : const Icon(Icons.refresh),
@@ -134,21 +151,71 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               tooltip: 'Refresh library',
             ),
             IconButton(
+              icon: const Icon(Icons.cast),
+              onPressed: () async {
+                // If a pairing is still alive on the TV, go straight to the
+                // remote screen; otherwise show the scanner.
+                final saved = await CastSessionStore().load();
+                if (!context.mounted) return;
+                if (saved == null) {
+                  Navigator.pushNamed(context, '/cast-scan');
+                  return;
+                }
+                final remote = CastRemote.resume(saved.qr, saved.session);
+                // Validate before entering: a dead session (TV restarted or
+                // owner unpaired) should open the scanner directly instead
+                // of flashing an error on the remote screen.
+                try {
+                  await remote.status().timeout(const Duration(seconds: 3));
+                } catch (_) {
+                  await CastSessionStore().clear();
+                  remote.disconnect();
+                  if (!context.mounted) return;
+                  Navigator.pushNamed(context, '/cast-scan');
+                  return;
+                }
+                if (!context.mounted) return;
+                Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => CastRemoteScreen(remote: remote),
+                  ),
+                );
+              },
+              tooltip: 'Cast to TV',
+            ),
+            IconButton(
+              icon: const Icon(Icons.tv),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => const CastReceiverScreen(showBack: true),
+                ),
+              ),
+              tooltip: 'Cast receiver (show QR)',
+            ),
+            IconButton(
               icon: const Icon(Icons.settings),
               onPressed: () => Navigator.pushNamed(context, '/settings'),
             ),
           ],
         ),
-        body: IndexedStack(
-          index: _currentIndex,
-          children: [
-            // Tab 0: Home
-            _buildHomeTab(scanState, recommended, recentVideos, albums),
-            // Tab 1: Videos
-            const VideoScreen(),
-            // Tab 2: Images
-            const ImageScreen(),
-          ],
+        body: Builder(
+          builder: (_) {
+            switch (_currentIndex) {
+              case 1:
+                return const VideoScreen();
+              case 2:
+                return const ImageScreen();
+              default:
+                return _buildHomeTab(
+                  scanState,
+                  recommended,
+                  recentVideos,
+                  albums,
+                );
+            }
+          },
         ),
         bottomNavigationBar: BottomNavigationBar(
           currentIndex: _currentIndex,
@@ -306,7 +373,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ],
 
           // ── Empty state ──────────────────────
-          if (recentVideos.isEmpty &&
+          // Only when EVERY source is empty — a non-empty Recommended row
+          // (videosMap) must never sit next to a "No media found" message.
+          if (recommended.isEmpty &&
+              recentVideos.isEmpty &&
               albums.isEmpty &&
               (!scanState.isLoading || scanState.hasCompletedOnce))
             _buildEmptyState(context),
@@ -323,15 +393,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     IconData icon, {
     VoidCallback? onViewAll,
   }) {
-    return Row(
-      children: [
-        Icon(icon, size: 20, color: Theme.of(context).colorScheme.primary),
-        const SizedBox(width: 8),
-        Text(title, style: Theme.of(context).textTheme.titleLarge),
-        const Spacer(),
-        if (onViewAll != null)
-          TextButton(onPressed: onViewAll, child: const Text('View all')),
-      ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Row(
+        children: [
+          // Deeper neutral than Silver (#AAAAAA is too light for section
+          // markers). Matches the settings section headers.
+          Icon(icon, size: 22, color: const Color(0xFF8A8A8A)),
+          const SizedBox(width: 10),
+          Text(
+            title,
+            style: Theme.of(
+              context,
+            ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w600),
+          ),
+          const Spacer(),
+          if (onViewAll != null)
+            TextButton(onPressed: onViewAll, child: const Text('View all')),
+        ],
+      ),
     );
   }
 
@@ -412,8 +492,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Add folders with media files in Settings',
+              'Add folders with media files to get started',
               style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: () => Navigator.pushNamed(context, '/settings'),
+              icon: const Icon(Icons.settings, size: 18),
+              label: const Text('Open Settings'),
             ),
           ],
         ),

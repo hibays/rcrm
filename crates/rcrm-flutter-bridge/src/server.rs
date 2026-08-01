@@ -102,7 +102,13 @@ pub fn start(dirs_json: &str, passwords: &[Zeroizing<String>], bind_addr: &str, 
 	clear_error();
 
 	let bind_addr = bind_addr.to_string();
-	let pw_vec: Vec<String> = passwords.iter().map(|z| z.as_str().to_string()).collect();
+	// Keep passwords inside Zeroizing the whole way across the thread
+	// boundary: never copy them into a plain String (which would leave an
+	// uncleaned copy in the heap).
+	let pw_vec: Vec<Zeroizing<String>> = passwords
+		.iter()
+		.map(|z| Zeroizing::new(z.as_str().to_string()))
+		.collect();
 	let dirs_owned = dirs_json.to_string();
 
 	START_STATUS.store(1, Ordering::SeqCst);
@@ -110,8 +116,8 @@ pub fn start(dirs_json: &str, passwords: &[Zeroizing<String>], bind_addr: &str, 
 	thread::Builder::new()
 		.name("rcrm-startup".into())
 		.spawn(move || {
-			let passwords: Vec<Zeroizing<String>> =
-				pw_vec.into_iter().map(Zeroizing::new).collect();
+			// Already Zeroizing — no re-wrap needed.
+			let passwords: Vec<Zeroizing<String>> = pw_vec;
 
 			// --- Step 1: if first call, scan directories ---
 			{
