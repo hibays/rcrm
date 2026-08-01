@@ -248,7 +248,7 @@ class ThumbnailService {
       }
     });
     try {
-      await done.future.timeout(const Duration(seconds: 2));
+      await done.future.timeout(const Duration(seconds: 4));
     } catch (_) {
       // Stream stalled or seek never reported — let the screenshot attempt
       // proceed anyway; isBlank will reject a bad frame and we retry.
@@ -277,7 +277,7 @@ class ThumbnailService {
           .timeout(const Duration(seconds: 15));
       try {
         await controller.waitUntilFirstFrameRendered.timeout(
-          const Duration(seconds: 10),
+          const Duration(seconds: 15),
         );
       } catch (_) {}
       player.pause();
