@@ -51,7 +51,7 @@ pub unsafe fn encode_rgba_webp(
 
 	let cfg = LossyConfig::new()
 		.with_quality(quality.clamp(0, 100) as f32)
-		.with_method(4); // speed/quality balance (0 = fast, 6 = best)
+		.with_method(5); // speed/quality balance (0 = fast, 6 = best)
 	let encoded =
 		match EncodeRequest::lossy(&cfg, pixels, PixelLayout::Rgba8, width, height).encode() {
 			Ok(b) => b,

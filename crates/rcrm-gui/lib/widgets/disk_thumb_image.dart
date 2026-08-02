@@ -116,7 +116,7 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
     Uint8List rgba,
     int w,
     int h, {
-    int quality = 78,
+    int quality = 82,
   }) {
     final bridge = RustBridge();
     if (!bridge.isLoaded) {

@@ -19,7 +19,6 @@ import '../services/mobile_image_decoder.dart';
 import '../services/animated_detector.dart';
 import '../services/live_photo.dart';
 import '../widgets/pooled_image.dart';
-import '../widgets/auth_image.dart';
 
 enum _ViewerMode { still, animation, live }
 
@@ -400,9 +399,55 @@ class _ViewerPageState extends State<_ViewerPage>
     _detectAnimation();
     _isZoomed = widget.controller.value.getMaxScaleOnAxis() > 1.01;
     widget.controller.addListener(_onZoomChange);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) setState(() => _showFullRes = true);
-    });
+    // Arm the full-res decode only after the push transition AND any page
+    // scroll animation have finished. The full-res texture upload on first
+    // paint is this screen's largest single-frame cost; landing inside a
+    // transition/scroll window is what drops frames on open & swipe.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _armFullRes());
+  }
+
+  Animation<double>? _routeAnim;
+  ScrollPosition? _scrollPos;
+
+  void _armFullRes() {
+    if (!mounted || _showFullRes) return;
+    final route = ModalRoute.of(context);
+    final pos = widget.pageController.hasClients
+        ? widget.pageController.position
+        : null;
+    final routeDone =
+        route?.animation == null ||
+        route!.animation!.status == AnimationStatus.completed;
+    final idle = pos == null || !pos.isScrollingNotifier.value;
+    if (routeDone && idle) {
+      setState(() => _showFullRes = true);
+      return;
+    }
+    if (!routeDone) {
+      final anim = route.animation;
+      _routeAnim = anim;
+      anim?.addStatusListener(_onRouteStatus);
+    }
+    if (!idle) {
+      _scrollPos = pos;
+      pos.isScrollingNotifier.addListener(_onScrollIdle);
+    }
+  }
+
+  void _onRouteStatus(AnimationStatus status) {
+    if (status != AnimationStatus.completed) return;
+    _routeAnim?.removeStatusListener(_onRouteStatus);
+    _routeAnim = null;
+    _armFullRes();
+  }
+
+  void _onScrollIdle() {
+    final pos = _scrollPos;
+    if (pos == null || !pos.isScrollingNotifier.value) {
+      pos?.isScrollingNotifier.removeListener(_onScrollIdle);
+      _scrollPos = null;
+      _armFullRes();
+    }
   }
 
   void _onZoomChange() {
@@ -533,14 +578,20 @@ class _ViewerPageState extends State<_ViewerPage>
   @override
   void dispose() {
     widget.controller.removeListener(_onZoomChange);
+    _routeAnim?.removeStatusListener(_onRouteStatus);
+    _scrollPos?.isScrollingNotifier.removeListener(_onScrollIdle);
     _liveDoneTimer?.cancel();
     _tapTimer?.cancel();
     _livePlayer?.dispose();
     _livePlayer = null;
     _liveVC = null;
     _liveReadySub?.cancel();
+    _liveDurSub?.cancel();
     _dismissCtrl.removeStatusListener(_dismissStatusListener);
-    _dismissListener = null;
+    if (_dismissListener != null) {
+      _dismissCtrl.removeListener(_dismissListener!);
+      _dismissListener = null;
+    }
     _dismissCtrl.dispose();
     if (_isLargeImage(widget.item)) {
       _FullResImageProvider.evictImage(widget.item.url);
@@ -600,6 +651,7 @@ class _ViewerPageState extends State<_ViewerPage>
   Timer? _liveDoneTimer;
   bool _liveReady = false;
   StreamSubscription<dynamic>? _liveReadySub;
+  StreamSubscription<dynamic>? _liveDurSub;
 
   Future<void> _playLive() async {
     if (!mounted) return;
@@ -628,18 +680,29 @@ class _ViewerPageState extends State<_ViewerPage>
 
   void _waitForDuration(Player p) {
     if (!mounted || _livePlayer != p) return;
-    final durMs = p.state.duration.inMilliseconds;
-    if (durMs > 0) {
-      _liveDoneTimer?.cancel();
-      _liveDoneTimer = Timer(Duration(milliseconds: durMs + 200), () {
-        if (mounted && _livePlayer == p) _stopLive();
-      });
-    } else {
-      _liveDoneTimer?.cancel();
-      _liveDoneTimer = Timer(const Duration(milliseconds: 150), () {
-        _waitForDuration(p);
-      });
+    final known = p.state.duration.inMilliseconds;
+    if (known > 0) {
+      _scheduleLiveStop(p, known);
+      return;
     }
+    // Duration not reported yet — wait for the stream event instead of
+    // re-checking every 150ms.
+    _liveDurSub?.cancel();
+    _liveDurSub = p.stream.duration.listen((d) {
+      if (!mounted || _livePlayer != p) return;
+      if (d.inMilliseconds > 0) {
+        _liveDurSub?.cancel();
+        _liveDurSub = null;
+        _scheduleLiveStop(p, d.inMilliseconds);
+      }
+    });
+  }
+
+  void _scheduleLiveStop(Player p, int durMs) {
+    _liveDoneTimer?.cancel();
+    _liveDoneTimer = Timer(Duration(milliseconds: durMs + 200), () {
+      if (mounted && _livePlayer == p) _stopLive();
+    });
   }
 
   void _stopLive() {
@@ -647,6 +710,8 @@ class _ViewerPageState extends State<_ViewerPage>
     _liveDoneTimer = null;
     _liveReadySub?.cancel();
     _liveReadySub = null;
+    _liveDurSub?.cancel();
+    _liveDurSub = null;
     _liveReady = false;
     _livePlayer?.dispose();
     _livePlayer = null;
@@ -683,51 +748,59 @@ class _ViewerPageState extends State<_ViewerPage>
     _dragEngaged = false;
     if (_dismissOffset == Offset.zero) return;
 
-    // Reset the controller so a previous gesture (successful dismiss,
-    // interrupted spring-back) can't leak stale state into this one.
-    _dismissCtrl.stop();
-    _dismissCtrl.removeStatusListener(_dismissStatusListener);
-    if (_dismissListener != null) {
-      _dismissCtrl.removeListener(_dismissListener!);
-      _dismissListener = null;
-    }
-
     if (_dist > _threshold) {
       final dir = _dismissOffset / _dist;
       final target = dir * MediaQuery.of(context).size.longestSide;
       final from = _dismissOffset;
       // Pop only once the forward animation completes; guard with mounted
       // so we never navigate after dispose or on a stale listener.
-      _dismissCtrl.addStatusListener(_dismissStatusListener);
-      _dismissListener = () {
-        if (!mounted) return;
-        setState(
-          () => _dismissOffset = Offset.lerp(from, target, _dismissCtrl.value)!,
-        );
-      };
-      _dismissCtrl.addListener(_dismissListener!);
-      _dismissCtrl.forward(from: 0);
+      _animateDismiss(
+        (t) => Offset.lerp(from, target, t)!,
+        popOnEnd: true,
+      );
     } else {
       final from = _dismissOffset;
-      _dismissListener = () {
-        if (!mounted) return;
-        setState(
-          () => _dismissOffset = Offset.lerp(
-            from,
-            Offset.zero,
-            Curves.easeOut.transform(_dismissCtrl.value),
-          )!,
-        );
-      };
-      _dismissCtrl.addListener(_dismissListener!);
-      _dismissCtrl.forward(from: 0);
+      _animateDismiss(
+        (t) => Offset.lerp(from, Offset.zero, Curves.easeOut.transform(t))!,
+      );
     }
   }
+
+  /// Run one dismiss spring with the given position lerp. Resets the
+  /// controller first so a previous gesture (successful dismiss, interrupted
+  /// spring-back) can't leak stale state into this one; [popOnEnd] attaches
+  /// the status listener that pops the route once the animation completes.
+  void _animateDismiss(
+    Offset Function(double t) lerp, {
+    bool popOnEnd = false,
+  }) {
+    _dismissCtrl.stop();
+    _dismissCtrl.removeStatusListener(_dismissStatusListener);
+    if (_dismissListener != null) {
+      _dismissCtrl.removeListener(_dismissListener!);
+      _dismissListener = null;
+    }
+    _dismissListener = () {
+      if (!mounted) return;
+      setState(() => _dismissOffset = lerp(_dismissCtrl.value));
+    };
+    _dismissCtrl.addListener(_dismissListener!);
+    if (popOnEnd) _dismissCtrl.addStatusListener(_dismissStatusListener);
+    _dismissCtrl.forward(from: 0);
+  }
+
+  // Set once the dismiss animation has popped the route: guards against a
+  // second pop arriving from _close()/system back during the same moment
+  // (a double-pop would exit the screen below the viewer too).
+  bool _dismissed = false;
 
   void _dismissStatusListener(AnimationStatus status) {
     if (status == AnimationStatus.completed) {
       _dismissCtrl.removeStatusListener(_dismissStatusListener);
-      if (mounted) Navigator.pop(context);
+      if (!_dismissed && mounted) {
+        _dismissed = true;
+        Navigator.pop(context);
+      }
     }
   }
 
@@ -957,7 +1030,9 @@ class _ViewerPageState extends State<_ViewerPage>
     return Stack(
       fit: StackFit.expand,
       children: [
-        // Bottom: instant 400px thumbnail (grid LRU cache).
+        // Bottom: fast 400px thumbnail (grid LRU cache). Same memory/disk
+        // path as the wall (PooledImage): static after the first frame —
+        // animation is played by the full-res layer above it.
         PooledImage(
           url: widget.item.url,
           fit: BoxFit.contain,
@@ -965,7 +1040,7 @@ class _ViewerPageState extends State<_ViewerPage>
           placeholder: const SizedBox.shrink(),
           errorWidget: const SizedBox.shrink(),
         ),
-        // Middle: full-resolution static image.
+        // Middle: full-resolution image (multi-frame codecs animate).
         _fullResLayer(),
         // Top: live photo video overlay (only when first frame is ready).
         if (_mode == _ViewerMode.live && _liveReady)
@@ -979,18 +1054,13 @@ class _ViewerPageState extends State<_ViewerPage>
   }
 
   Widget _fullResLayer() {
-    if (_mode == _ViewerMode.animation) {
-      return Image(
-        image: AuthImage(widget.item.url),
-        fit: BoxFit.contain,
-        gaplessPlayback: true,
-        errorBuilder: (_, _, _) => _errorPlaceholder(),
-      );
-    }
     if (!_showFullRes) return const SizedBox.shrink();
+    // Same provider in both still and animation mode: switching providers
+    // on mode change would re-fetch + re-decode the same URL.
     return Image(
       image: _FullResImageProvider(widget.item.url),
       fit: BoxFit.contain,
+      gaplessPlayback: true,
       frameBuilder: _fullResFrameBuilder,
       errorBuilder: (_, _, _) => _errorPlaceholder(),
     );

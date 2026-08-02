@@ -167,10 +167,18 @@ class _VideoCardState extends State<VideoCard> {
   Widget build(BuildContext c) {
     final showDur = widget.item.durationSeconds != null && !widget.compact;
     final card = Card(
+      color: Colors.black,
       clipBehavior: Clip.antiAlias,
       child: Stack(
         fit: StackFit.expand,
-        children: [_thumb(), if (showDur) _dur(), _info()],
+        children: [
+          // 1px black edge at the card's bottom: the thumbnail region stops
+          // 1px short, so no thumbnail pixel ever paints the bottom row —
+          // nothing left to leak through the anti-aliased clip boundary.
+          Positioned(top: 0, left: 0, right: 0, bottom: 1, child: _thumb()),
+          if (showDur) _dur(),
+          _info(),
+        ],
       ),
     );
 
