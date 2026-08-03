@@ -6,6 +6,7 @@
 // opens the full viewer which loads the image on demand.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/album.dart';
@@ -47,6 +48,11 @@ class ImageAlbumOpenNotifier extends Notifier<bool> {
 final imageAlbumOpenProvider = NotifierProvider<ImageAlbumOpenNotifier, bool>(
   ImageAlbumOpenNotifier.new,
 );
+
+/// Keyboard shortcut: Esc on the album view returns to the album list.
+class _CloseAlbumIntent extends Intent {
+  const _CloseAlbumIntent();
+}
 
 class ImageScreen extends ConsumerStatefulWidget {
   const ImageScreen({super.key});
@@ -184,72 +190,93 @@ class _ImageScreenState extends ConsumerState<ImageScreen> {
     final width = MediaQuery.of(context).size.width;
     final maxColsByWidth = (width / 100).floor().clamp(2, 8);
     final cols = storedCols.clamp(2, maxColsByWidth);
-    return Column(
-      children: [
-        // Header bar
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          color: Theme.of(context).colorScheme.surface,
-          child: Row(
+    return Shortcuts(
+      shortcuts: {
+        const SingleActivator(LogicalKeyboardKey.escape):
+            const _CloseAlbumIntent(),
+      },
+      child: Actions(
+        actions: {
+          _CloseAlbumIntent: CallbackAction<_CloseAlbumIntent>(
+            onInvoke: (_) {
+              _selectAlbum(null);
+              return null;
+            },
+          ),
+        },
+        child: Focus(
+          autofocus: true,
+          skipTraversal: true,
+          child: Column(
             children: [
-              IconButton(
-                icon: const Icon(Icons.arrow_back, size: 20),
-                onPressed: () => _selectAlbum(null),
-                visualDensity: VisualDensity.compact,
-              ),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+              // Header bar
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                color: Theme.of(context).colorScheme.surface,
+                child: Row(
                   children: [
-                    Text(
-                      album.name,
-                      style: Theme.of(context).textTheme.titleMedium,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back, size: 20),
+                      onPressed: () => _selectAlbum(null),
+                      visualDensity: VisualDensity.compact,
                     ),
-                    Text(
-                      '${album.itemCount} images',
-                      style: Theme.of(context).textTheme.bodySmall,
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            album.name,
+                            style: Theme.of(context).textTheme.titleMedium,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          Text(
+                            '${album.itemCount} images',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                    ColumnButton(
+                      current: cols,
+                      min: 2,
+                      max: maxColsByWidth,
+                      onChanged: (n) => ref
+                          .read(uiSettingsProvider.notifier)
+                          .setImageColumns(n),
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        layout == 'masonry'
+                            ? Icons.grid_on
+                            : Icons.dashboard_customize,
+                        size: 20,
+                      ),
+                      onPressed: () {
+                        ref
+                            .read(uiSettingsProvider.notifier)
+                            .setImageLayout(
+                              layout == 'masonry' ? 'uniform' : 'masonry',
+                            );
+                      },
+                      visualDensity: VisualDensity.compact,
+                      tooltip: layout == 'masonry' ? 'Uniform' : 'Masonry',
                     ),
                   ],
                 ),
               ),
-              ColumnButton(
-                current: cols,
-                min: 2,
-                max: maxColsByWidth,
-                onChanged: (n) =>
-                    ref.read(uiSettingsProvider.notifier).setImageColumns(n),
-              ),
-              IconButton(
-                icon: Icon(
-                  layout == 'masonry'
-                      ? Icons.grid_on
-                      : Icons.dashboard_customize,
-                  size: 20,
+              Expanded(
+                child: ImageGrid(
+                  items: items,
+                  layout: layout,
+                  crossAxisCount: cols,
+                  onTap: (item) => _openViewer(items, items.indexOf(item)),
                 ),
-                onPressed: () {
-                  ref
-                      .read(uiSettingsProvider.notifier)
-                      .setImageLayout(
-                        layout == 'masonry' ? 'uniform' : 'masonry',
-                      );
-                },
-                visualDensity: VisualDensity.compact,
-                tooltip: layout == 'masonry' ? 'Uniform' : 'Masonry',
               ),
             ],
           ),
         ),
-        Expanded(
-          child: ImageGrid(
-            items: items,
-            layout: layout,
-            crossAxisCount: cols,
-            onTap: (item) => _openViewer(items, items.indexOf(item)),
-          ),
-        ),
-      ],
+      ),
     );
   }
 

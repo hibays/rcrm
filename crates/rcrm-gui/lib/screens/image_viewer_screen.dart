@@ -7,6 +7,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'dart:io' show Platform;
 import '../models/media_item.dart';
 import '../widgets/image_wall_strip.dart';
@@ -21,6 +22,19 @@ import '../services/live_photo.dart';
 import '../widgets/pooled_image.dart';
 
 enum _ViewerMode { still, animation, live }
+
+/// Keyboard shortcuts: ←/→ page between images, Esc closes the viewer.
+class _PrevIntent extends Intent {
+  const _PrevIntent();
+}
+
+class _NextIntent extends Intent {
+  const _NextIntent();
+}
+
+class _CloseIntent extends Intent {
+  const _CloseIntent();
+}
 
 /// In-process sound toggle — defaults to enabled, resets on app restart.
 bool _soundEnabled = true;
@@ -113,6 +127,23 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
     c.value = Matrix4.identity()..scaleByDouble(s, s, s, 1.0);
   }
 
+  /// Page ±1 with the same animated navigation the arrow buttons use.
+  void _goTo(int delta) {
+    if (_navAnimating) return;
+    final target = _currentIndex + delta;
+    if (target < 0 || target >= widget.items.length) return;
+    _navAnimating = true;
+    _pageController
+        .animateToPage(
+          target,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut,
+        )
+        .whenComplete(() {
+          if (mounted) setState(() => _navAnimating = false);
+        });
+  }
+
   Widget _chrome(Widget child) => ValueListenableBuilder<bool>(
     valueListenable: _showUI,
     builder: (_, show, c) => IgnorePointer(
@@ -148,194 +179,211 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
 
   Widget _buildPrevArrow() => _ArrowButton(
     icon: Icons.chevron_left,
-    onTap: () {
-      if (_navAnimating) return;
-      final target = _currentIndex - 1;
-      if (target >= 0 && target < widget.items.length) {
-        _navAnimating = true;
-        _pageController
-            .animateToPage(
-              target,
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeInOut,
-            )
-            .whenComplete(() {
-              if (mounted) setState(() => _navAnimating = false);
-            });
-      }
-    },
+    onTap: () => _goTo(-1),
     isDesktop: _isDesktop,
   );
 
   Widget _buildNextArrow() => _ArrowButton(
     icon: Icons.chevron_right,
-    onTap: () {
-      if (_navAnimating) return;
-      final target = _currentIndex + 1;
-      if (target >= 0 && target < widget.items.length) {
-        _navAnimating = true;
-        _pageController
-            .animateToPage(
-              target,
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeInOut,
-            )
-            .whenComplete(() {
-              if (mounted) setState(() => _navAnimating = false);
-            });
-      }
-    },
+    onTap: () => _goTo(1),
     isDesktop: _isDesktop,
   );
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      canPop: true,
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        body: Stack(
-          children: [
-            ScrollConfiguration(
-              behavior: ScrollConfiguration.of(context).copyWith(
-                dragDevices: {
-                  PointerDeviceKind.touch,
-                  PointerDeviceKind.mouse,
-                  PointerDeviceKind.trackpad,
-                },
-              ),
-              child: PageView.builder(
-                controller: _pageController,
-                physics: const NeverScrollableScrollPhysics(),
-                // CRITICAL: the page offset is driven manually via jumpTo.
-                // With the default pageSnapping, PageView wraps the physics in
-                // PageScrollPhysics and every jumpTo starts a snap-back spring
-                // toward the nearest page. While the finger holds still at a
-                // partial swipe, that spring fights the finger — the page
-                // visibly slides back (position race / flicker). Disabling it
-                // makes jumpTo end idle; release snapping is handled by
-                // _onInteractionEnd.
-                pageSnapping: false,
-                itemCount: widget.items.length,
-                onPageChanged: (index) {
-                  setState(() {
-                    _currentIndex = index.clamp(0, widget.items.length - 1);
-                  });
-                },
-                itemBuilder: (context, index) => _ViewerPage(
-                  item: widget.items[index],
-                  controller: _ctrlFor(index),
-                  pageController: _pageController,
-                  showUINotifier: _showUI,
-                  isDesktop: _isDesktop,
-                  onZoomChanged: (_) {
-                    if (mounted) setState(() {});
-                  },
-                  onToggleUi: () => _showUI.value = !_showUI.value,
-                  onHideUi: () => _showUI.value = false,
-                ),
-              ),
-            ),
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: _chrome(
-                SafeArea(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
+    return Shortcuts(
+      shortcuts: {
+        const SingleActivator(LogicalKeyboardKey.arrowLeft):
+            const _PrevIntent(),
+        const SingleActivator(LogicalKeyboardKey.arrowRight):
+            const _NextIntent(),
+        const SingleActivator(LogicalKeyboardKey.escape): const _CloseIntent(),
+      },
+      child: Actions(
+        actions: {
+          _PrevIntent: CallbackAction<_PrevIntent>(
+            onInvoke: (_) {
+              _goTo(-1);
+              return null;
+            },
+          ),
+          _NextIntent: CallbackAction<_NextIntent>(
+            onInvoke: (_) {
+              _goTo(1);
+              return null;
+            },
+          ),
+          _CloseIntent: CallbackAction<_CloseIntent>(
+            onInvoke: (_) {
+              _close();
+              return null;
+            },
+          ),
+        },
+        child: Focus(
+          autofocus: true,
+          skipTraversal: true,
+          child: PopScope(
+            canPop: true,
+            child: Scaffold(
+              backgroundColor: Colors.transparent,
+              body: Stack(
+                children: [
+                  ScrollConfiguration(
+                    behavior: ScrollConfiguration.of(context).copyWith(
+                      dragDevices: {
+                        PointerDeviceKind.touch,
+                        PointerDeviceKind.mouse,
+                        PointerDeviceKind.trackpad,
+                      },
                     ),
-                    color: Colors.black.withValues(alpha: 0.6),
-                    child: Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(
-                            Icons.arrow_back,
-                            color: Colors.white,
-                          ),
-                          onPressed: _close,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            widget.items[_currentIndex].name,
-                            style: const TextStyle(color: Colors.white),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        Text(
-                          '${_currentIndex + 1} / ${widget.items.length}',
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.zoom_in, color: Colors.white),
-                          onPressed: () => _zoom(1.5),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.zoom_out, color: Colors.white),
-                          onPressed: () => _zoom(1 / 1.5),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.info, color: Colors.white70),
-                          onPressed: _showInfo,
-                        ),
-                      ],
+                    child: PageView.builder(
+                      controller: _pageController,
+                      physics: const NeverScrollableScrollPhysics(),
+                      // CRITICAL: the page offset is driven manually via jumpTo.
+                      // With the default pageSnapping, PageView wraps the physics in
+                      // PageScrollPhysics and every jumpTo starts a snap-back spring
+                      // toward the nearest page. While the finger holds still at a
+                      // partial swipe, that spring fights the finger — the page
+                      // visibly slides back (position race / flicker). Disabling it
+                      // makes jumpTo end idle; release snapping is handled by
+                      // _onInteractionEnd.
+                      pageSnapping: false,
+                      itemCount: widget.items.length,
+                      onPageChanged: (index) {
+                        setState(() {
+                          _currentIndex = index.clamp(
+                            0,
+                            widget.items.length - 1,
+                          );
+                        });
+                      },
+                      itemBuilder: (context, index) => _ViewerPage(
+                        item: widget.items[index],
+                        controller: _ctrlFor(index),
+                        pageController: _pageController,
+                        showUINotifier: _showUI,
+                        isDesktop: _isDesktop,
+                        onZoomChanged: (_) {
+                          if (mounted) setState(() {});
+                        },
+                        onToggleUi: () => _showUI.value = !_showUI.value,
+                        onHideUi: () => _showUI.value = false,
+                      ),
                     ),
                   ),
-                ),
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: _chrome(
+                      SafeArea(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          color: Colors.black.withValues(alpha: 0.6),
+                          child: Row(
+                            children: [
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.arrow_back,
+                                  color: Colors.white,
+                                ),
+                                onPressed: _close,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  widget.items[_currentIndex].name,
+                                  style: const TextStyle(color: Colors.white),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              Text(
+                                '${_currentIndex + 1} / ${widget.items.length}',
+                                style: const TextStyle(color: Colors.white70),
+                              ),
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.zoom_in,
+                                  color: Colors.white,
+                                ),
+                                onPressed: () => _zoom(1.5),
+                              ),
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.zoom_out,
+                                  color: Colors.white,
+                                ),
+                                onPressed: () => _zoom(1 / 1.5),
+                              ),
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.info,
+                                  color: Colors.white70,
+                                ),
+                                onPressed: _showInfo,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // ── Bottom strip ──
+                  if (widget.items.length > 1)
+                    Positioned(
+                      bottom: 0,
+                      left: 0,
+                      right: 0,
+                      child: _chrome(
+                        ImageWallStrip(
+                          items: widget.items,
+                          currentIndex: _currentIndex,
+                          onTap: (index) => _pageController.jumpToPage(index),
+                        ),
+                      ),
+                    ),
+
+                  // ── Prev arrow ──
+                  if (_currentIndex > 0)
+                    Positioned(
+                      left: 0,
+                      top: 70,
+                      bottom: 120,
+                      width: 60,
+                      child: _isDesktop
+                          ? MouseRegion(
+                              onEnter: (_) => _showArrows.value = true,
+                              onExit: (_) => _showArrows.value = false,
+                              child: _arrowChrome(_buildPrevArrow()),
+                            )
+                          : _chrome(_buildPrevArrow()),
+                    ),
+
+                  // ── Next arrow ──
+                  if (_currentIndex < widget.items.length - 1)
+                    Positioned(
+                      right: 0,
+                      top: 70,
+                      bottom: 90,
+                      width: 60,
+                      child: _isDesktop
+                          ? MouseRegion(
+                              onEnter: (_) => _showArrows.value = true,
+                              onExit: (_) => _showArrows.value = false,
+                              child: _arrowChrome(_buildNextArrow()),
+                            )
+                          : _chrome(_buildNextArrow()),
+                    ),
+                ],
               ),
             ),
-
-            // ── Bottom strip ──
-            if (widget.items.length > 1)
-              Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                child: _chrome(
-                  ImageWallStrip(
-                    items: widget.items,
-                    currentIndex: _currentIndex,
-                    onTap: (index) => _pageController.jumpToPage(index),
-                  ),
-                ),
-              ),
-
-            // ── Prev arrow ──
-            if (_currentIndex > 0)
-              Positioned(
-                left: 0,
-                top: 70,
-                bottom: 120,
-                width: 60,
-                child: _isDesktop
-                    ? MouseRegion(
-                        onEnter: (_) => _showArrows.value = true,
-                        onExit: (_) => _showArrows.value = false,
-                        child: _arrowChrome(_buildPrevArrow()),
-                      )
-                    : _chrome(_buildPrevArrow()),
-              ),
-
-            // ── Next arrow ──
-            if (_currentIndex < widget.items.length - 1)
-              Positioned(
-                right: 0,
-                top: 70,
-                bottom: 90,
-                width: 60,
-                child: _isDesktop
-                    ? MouseRegion(
-                        onEnter: (_) => _showArrows.value = true,
-                        onExit: (_) => _showArrows.value = false,
-                        child: _arrowChrome(_buildNextArrow()),
-                      )
-                    : _chrome(_buildNextArrow()),
-              ),
-          ],
+          ),
         ),
       ),
     );
@@ -498,6 +546,10 @@ class _ViewerPageState extends State<_ViewerPage>
   }
 
   void _onInteractionEnd(ScaleEndDetails d) {
+    // The route may have been popped mid-gesture (e.g. Esc while a swipe is
+    // in flight): the controller is then detached, and any position access
+    // would throw "PageController not attached".
+    if (!mounted || !widget.pageController.hasClients) return;
     final wasPageDrag = _dragStartGlobal != null;
     _dragStartGlobal = null;
     // When zoomed, never trigger page change — just spring back.
@@ -754,10 +806,7 @@ class _ViewerPageState extends State<_ViewerPage>
       final from = _dismissOffset;
       // Pop only once the forward animation completes; guard with mounted
       // so we never navigate after dispose or on a stale listener.
-      _animateDismiss(
-        (t) => Offset.lerp(from, target, t)!,
-        popOnEnd: true,
-      );
+      _animateDismiss((t) => Offset.lerp(from, target, t)!, popOnEnd: true);
     } else {
       final from = _dismissOffset;
       _animateDismiss(
