@@ -12,6 +12,7 @@ import '../models/album.dart';
 import '../models/media_item.dart';
 import '../providers/library_provider.dart';
 import '../providers/settings_provider.dart';
+import '../utils/natural_sort.dart';
 import '../widgets/album_card.dart';
 import '../widgets/image_grid.dart';
 import '../widgets/column_button.dart';
@@ -268,7 +269,7 @@ class _ImageScreenState extends ConsumerState<ImageScreen> {
     var sorted = List<MediaItem>.from(items);
     switch (uiSettings.imageSort) {
       case 'name':
-        sorted.sort((a, b) => a.name.compareTo(b.name));
+        sorted.sort((a, b) => naturalCompare(a.name, b.name));
       case 'date':
         sorted.sort(
           (a, b) => (a.modified ?? DateTime(2000)).compareTo(

@@ -6,6 +6,7 @@
 
 import '../models/album.dart';
 import '../models/media_item.dart';
+import '../utils/natural_sort.dart';
 import 'webdav_client.dart';
 
 /// How images are grouped into albums.
@@ -70,7 +71,7 @@ class MediaLibrary {
       );
     }).toList();
 
-    albumList.sort((a, b) => a.name.compareTo(b.name));
+    albumList.sort((a, b) => naturalCompare(a.name, b.name));
     return albumList;
   }
 
@@ -133,7 +134,7 @@ class MediaLibrary {
     albumList.sort((a, b) {
       final cmp = b.items.length.compareTo(a.items.length);
       if (cmp != 0) return cmp;
-      return a.name.compareTo(b.name);
+      return naturalCompare(a.name, b.name);
     });
     return albumList;
   }
@@ -172,12 +173,6 @@ class MediaLibrary {
         onBatch: onBatch,
       );
     }
-  }
-
-  /// Scan only videos from a specific path.
-  Future<List<MediaItem>> scanVideos(String path) async {
-    final items = await _client.listDirectory(path);
-    return items.where((item) => item.isVideo).toList();
   }
 
   /// Scan images organized by album (folder).

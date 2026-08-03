@@ -13,6 +13,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/album.dart';
 import '../models/media_item.dart';
 import '../services/media_library.dart';
+import '../utils/natural_sort.dart';
 import 'server_provider.dart';
 import 'settings_provider.dart';
 
@@ -265,7 +266,7 @@ final sortedVideosProvider = Provider<List<MediaItem>>((ref) {
     int c;
     switch (sort) {
       case 'name':
-        c = a.name.compareTo(b.name);
+        c = naturalCompare(a.name, b.name);
         break;
       case 'date':
         c = (a.modified ?? DateTime(2000)).compareTo(

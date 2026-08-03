@@ -16,6 +16,7 @@ import '../providers/server_provider.dart';
 import '../services/cast_protocol.dart';
 import '../services/cast_remote.dart';
 import '../services/cast_session_store.dart';
+import '../utils/natural_sort.dart';
 import '../widgets/pooled_image.dart';
 import '../widgets/video_card.dart';
 import 'cast_scan_screen.dart';
@@ -115,18 +116,14 @@ class _State extends ConsumerState<CastRemoteScreen> {
     if (client != null) {
       try {
         final result = await client.listAll(path);
-        subdirs = result.subdirs.toList()..sort();
+        subdirs = result.subdirs.toList()..sort(naturalCompare);
         final files = result.files.toList();
         // Single source of truth: MediaItem.type (same classification as
         // the main library).
         videos = files.where((f) => f.type == MediaType.video).toList()
-          ..sort(
-            (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
-          );
+          ..sort((a, b) => naturalCompare(a.name, b.name));
         images = files.where((f) => f.type == MediaType.image).toList()
-          ..sort(
-            (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
-          );
+          ..sort((a, b) => naturalCompare(a.name, b.name));
       } catch (_) {
         if (!mounted) return;
         setState(() {
