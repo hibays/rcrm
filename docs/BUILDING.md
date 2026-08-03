@@ -126,6 +126,23 @@ Pipeline: `cargo-ndk` for 4 ABIs (aarch64, armv7, x86_64, i686) → download lib
 # Output: build/ios/iphoneos/Runner.app
 ```
 
+## Test & Analyze
+
+```bash
+# From crates/rcrm-gui/
+flutter analyze lib                          # ZERO warnings enforced
+
+# MUST use `flutter test` — plain `dart test` fails to load the suite
+# (the app imports Flutter packages, which import dart:ui, unavailable
+# on the bare Dart VM).
+flutter test test/rcrm_gui_test.dart         # unit tests (23)
+flutter test test/widget_test.dart           # widget smoke test
+
+# From repo root
+cargo test
+cargo clippy --all                           # ZERO warnings enforced
+```
+
 ## Troubleshooting
 
 ### All Platforms

@@ -37,7 +37,7 @@ class ImageCard extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Card(
-        clipBehavior: Clip.antiAliasWithSaveLayer,
+        clipBehavior: Clip.antiAlias,
         child: Stack(
           fit: intrinsicRatio ? StackFit.loose : StackFit.expand,
           children: [
