@@ -64,14 +64,16 @@ class ThumbCache {
     } catch (_) {}
   }
 
-  /// The cached file for [id], or null when disabled / not present.
+  /// The cached file for [id], or null when disabled. No existence check —
+  /// callers that open the file must handle a missing entry (e.g. via
+  /// `ImmutableBuffer.fromFilePath`, which throws). Saves one stat per cell.
   static Future<File?> fileFor(String id) async {
     if (!enabled) return null;
     try {
-      final f = File('${(await _ensureDir()).path}/${_key(id)}');
-      if (await f.exists()) return f;
-    } catch (_) {}
-    return null;
+      return File('${(await _ensureDir()).path}/${_key(id)}');
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Delete the cache entry for [id] (best-effort). Used to heal corrupt

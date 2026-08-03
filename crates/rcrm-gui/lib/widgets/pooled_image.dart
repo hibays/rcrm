@@ -48,7 +48,10 @@ class _PooledImageState extends State<PooledImage> {
   }
 
   // URLs that have decoded at least once → don't flash a spinner on re-show.
-  static final Set<String> _seenLoaded = {};
+  // Stores url HASHES (few bytes each), so a huge library can't grow this
+  // set out of memory. A rare hash collision only suppresses a spinner for
+  // a never-seen image — cosmetic, harmless.
+  static final Set<int> _seenLoaded = {};
 
   ImageProvider? _provider;
   bool _ready = false;
@@ -108,24 +111,31 @@ class _PooledImageState extends State<PooledImage> {
     final ratioKnown =
         !widget.useIntrinsicRatio || _ratioCache.containsKey(widget.url);
     if (warm && ratioKnown) {
-      _seenLoaded.add(widget.url);
+      _seenLoaded.add(widget.url.hashCode);
       setState(() {
         _ready = true;
         _ratio = _ratioCache[widget.url] ?? _ratio;
       });
       return;
     }
-    final token = ImageLoadGate.instance.acquire();
+    // Disk thumbnails skip the decode gate: a disk hit is a tiny engine
+    // decode that must not queue behind cold misses (or the full-res
+    // viewer). The expensive cold-miss generation is still throttled by
+    // the same gate inside DiskThumbImage._make.
+    final gated = _provider is! DiskThumbImage;
+    final token = gated ? ImageLoadGate.instance.acquire() : null;
     _token = token;
-    await token.future;
-    if (!mounted) {
-      // _teardown() may have already released the token via done().
-      // Only release if _token still points to us.
-      if (_token == token) {
-        ImageLoadGate.instance.done(token);
-        _token = null;
+    if (token != null) {
+      await token.future;
+      if (!mounted) {
+        // _teardown() may have already released the token via done().
+        // Only release if _token still points to us.
+        if (_token == token) {
+          ImageLoadGate.instance.done(token);
+          _token = null;
+        }
+        return;
       }
-      return;
     }
 
     final stream = provider.resolve(const ImageConfiguration());
@@ -133,7 +143,7 @@ class _PooledImageState extends State<PooledImage> {
       (info, sync) {
         final h = info.image.height;
         if (h > 0) _putRatio(widget.url, info.image.width / h);
-        _seenLoaded.add(widget.url);
+        _seenLoaded.add(widget.url.hashCode);
         _teardown(); // remove listener + release slot
         if (mounted) {
           setState(() {
@@ -271,7 +281,7 @@ class _PooledImageState extends State<PooledImage> {
       // on re-show (seen before) to avoid spinner flashing on return.
       content =
           widget.placeholder ??
-          (_seenLoaded.contains(widget.url) ? _dark() : _spinner());
+          (_seenLoaded.contains(widget.url.hashCode) ? _dark() : _spinner());
     }
     if (widget.useIntrinsicRatio) {
       return AspectRatio(

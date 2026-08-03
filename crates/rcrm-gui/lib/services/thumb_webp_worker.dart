@@ -20,9 +20,9 @@
 import 'dart:async';
 import 'dart:ffi';
 import 'dart:isolate';
-import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart';
 
 import '../ffi/rust_bridge.dart';
 
@@ -104,6 +104,10 @@ class ThumbWebpWorker {
     } catch (_) {
       _dead = true;
       _port = null;
+      debugPrint(
+        'ThumbWebpWorker: worker spawn failed — '
+        'falling back to synchronous encodes',
+      );
       return false;
     }
   }
@@ -122,11 +126,14 @@ class ThumbWebpWorker {
     buf.asTypedList(rgba.length).setAll(0, rgba);
     _port!.send([token, buf.address, rgba.length, w, h, quality]);
     try {
-      return await completer.future.timeout(const Duration(seconds: 15));
+      return await completer.future.timeout(const Duration(seconds: 5));
     } on TimeoutException {
       // Only condemn the CURRENT worker; an older generation may have
       // already been respawned while a stale request was still pending.
-      if (gen == _generation) _dead = true;
+      if (gen == _generation) {
+        _dead = true;
+        debugPrint('ThumbWebpWorker: encode timed out — respawning');
+      }
       return null;
     } finally {
       calloc.free(buf);
@@ -144,6 +151,10 @@ class ThumbWebpWorker {
       // -1: the worker could not load the bridge — fall back permanently.
       if (hs != null && !hs.isCompleted) hs.complete(null);
       _dead = true;
+      debugPrint(
+        'ThumbWebpWorker: bridge load failed in worker isolate — '
+        'falling back to synchronous encodes',
+      );
       return;
     }
     if (msg is List<dynamic>) {
