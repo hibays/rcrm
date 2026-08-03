@@ -28,6 +28,9 @@ Write-Host ""
 # ── Step 1: Rust bridge for iOS ─────────────────────────────────
 Write-Host "[1/4] Building Rust bridge for iOS..." -ForegroundColor Yellow
 Push-Location $bridge
+# RUSTC_BOOTSTRAP=rav1d: keep identical to Android/Windows scripts — cargo folds
+# it into the fingerprint config hash; any mismatch forces a full rebuild.
+$env:RUSTC_BOOTSTRAP = "rav1d"
 cargo build --release -p rcrm-flutter-bridge --features mobile-decode --target aarch64-apple-ios
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Rust iOS device build failed!" -ForegroundColor Red

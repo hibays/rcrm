@@ -35,9 +35,11 @@ echo "[1/4] Building Rust bridge for Android ($MODE)..."
 JNI_LIBS="$GUI/android/app/src/main/jniLibs"
 mkdir -p "$JNI_LIBS/arm64-v8a" "$JNI_LIBS/armeabi-v7a" "$JNI_LIBS/x86_64" "$JNI_LIBS/x86"
 
-# rav1d-safe requires nightly feature on armv7; RUSTC_BOOTSTRAP=1
-# allows it on stable — only the stdarch_arm_feature_detection gate.
-export RUSTC_BOOTSTRAP=1
+# RUSTC_BOOTSTRAP=rav1d: unlock only the stdarch_arm_feature_detection
+# nightly gate that rav1d's ARM asm needs on armv7. MUST be identical in
+# every build script: cargo folds RUSTC_BOOTSTRAP into the fingerprint
+# config hash, so a mismatch between scripts forces a full rebuild.
+export RUSTC_BOOTSTRAP=rav1d
 cargo ndk \
     --target aarch64-linux-android \
     --target armv7-linux-androideabi \

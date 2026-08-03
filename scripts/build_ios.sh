@@ -31,6 +31,9 @@ echo ""
 echo "[1/4] Building Rust bridge for iOS..."
 (
   cd "$BRIDGE"
+  # RUSTC_BOOTSTRAP=rav1d: keep identical to other build scripts — cargo folds
+  # it into the fingerprint config hash; any mismatch forces a full rebuild.
+  export RUSTC_BOOTSTRAP=rav1d
   cargo build --release -p rcrm-flutter-bridge --features mobile-decode --target aarch64-apple-ios
   cargo build --release -p rcrm-flutter-bridge --features mobile-decode --target aarch64-apple-ios-sim 2>/dev/null || echo "  (simulator target skipped)"
 )

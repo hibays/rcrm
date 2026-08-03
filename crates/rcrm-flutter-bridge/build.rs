@@ -30,4 +30,5 @@ fn main() {
 
 	// Rebuild if any source in the bridge changes
 	println!("cargo:rerun-if-changed=src/");
+	println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
 }

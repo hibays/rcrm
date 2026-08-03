@@ -31,9 +31,11 @@ New-Item -ItemType Directory -Force -Path "$jniLibsBase/armeabi-v7a" | Out-Null
 New-Item -ItemType Directory -Force -Path "$jniLibsBase/x86_64" | Out-Null
 New-Item -ItemType Directory -Force -Path "$jniLibsBase/x86" | Out-Null
 
-# rav1d-safe requires nightly feature on armv7; RUSTC_BOOTSTRAP=1
-# allows it on stable — only the stdarch_arm_feature_detection gate.
-$env:RUSTC_BOOTSTRAP = 1
+# RUSTC_BOOTSTRAP=rav1d: unlock only the stdarch_arm_feature_detection
+# nightly gate that rav1d's ARM asm needs on armv7. MUST be identical in
+# every build script: cargo folds RUSTC_BOOTSTRAP into the fingerprint
+# config hash, so a mismatch between scripts forces a full rebuild.
+$env:RUSTC_BOOTSTRAP = "rav1d"
 cargo ndk `
     --target aarch64-linux-android `
     --target armv7-linux-androideabi `
