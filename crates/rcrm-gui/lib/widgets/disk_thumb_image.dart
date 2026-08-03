@@ -1,7 +1,7 @@
 // widgets/disk_thumb_image.dart
 // A small-thumbnail ImageProvider with a STABLE cache key (file-path + width)
 // so Flutter's in-memory imageCache still dedups across rebuilds/scroll (no
-// re-decode). Only a DOWNSCALED thumbnail (PNG at the target width) is stored
+// re-decode). Only a DOWNSCALED thumbnail (WebP at the target width) is stored
 // on disk — never the original full-size image. The on-disk ThumbCache is read
 // first (cross-session); the server is hit only on a cold miss.
 //
@@ -44,12 +44,24 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
     // Stable key: file path only (no random host/port/credentials) + width.
     // `wp` marks the WebP-encoded format so old PNG caches are not misread.
     final diskKey = '${ThumbCache.pathId(url)}|w${width}wp';
-    Uint8List? thumb = await ThumbCache.read(diskKey);
-    if (thumb == null || thumb.isEmpty) {
-      thumb = await _makeThumb(url); // fetch original, downscale, WebP-encode
-      if (thumb != null && thumb.isNotEmpty) {
-        ThumbCache.write(diskKey, thumb); // persist the SMALL thumbnail only
+    // Hit path: let the engine read the file directly (no Dart-side copy, no
+    // exists()/readAsBytes round trip). Any failure — including a corrupt or
+    // truncated cache entry rejected by the codec — deletes the entry and
+    // falls through to regeneration below (self-heal, no permanent error
+    // cell). The decode future is awaited so codec errors land in this catch.
+    try {
+      final file = await ThumbCache.fileFor(diskKey);
+      if (file != null) {
+        final buffer = await ui.ImmutableBuffer.fromFilePath(file.path);
+        return await decode(buffer);
       }
+    } catch (_) {
+      await ThumbCache.remove(diskKey); // heal: drop the bad cache entry
+    }
+    // Cold miss: fetch original, downscale, WebP-encode, persist.
+    final thumb = await _makeThumb(url);
+    if (thumb != null && thumb.isNotEmpty) {
+      ThumbCache.write(diskKey, thumb); // persist the SMALL thumbnail only
     }
     if (thumb == null || thumb.isEmpty) {
       throw StateError('DiskThumbImage: empty bytes for $url');

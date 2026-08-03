@@ -64,6 +64,27 @@ class ThumbCache {
     } catch (_) {}
   }
 
+  /// The cached file for [id], or null when disabled / not present.
+  static Future<File?> fileFor(String id) async {
+    if (!enabled) return null;
+    try {
+      final f = File('${(await _ensureDir()).path}/${_key(id)}');
+      if (await f.exists()) return f;
+    } catch (_) {}
+    return null;
+  }
+
+  /// Delete the cache entry for [id] (best-effort). Used to heal corrupt
+  /// cache files: a decode failure removes the bad entry so the next load
+  /// regenerates instead of failing forever.
+  static Future<void> remove(String id) async {
+    if (!enabled) return;
+    try {
+      final f = File('${(await _ensureDir()).path}/${_key(id)}');
+      if (await f.exists()) await f.delete();
+    } catch (_) {}
+  }
+
   /// Total size of all cached files, in bytes.
   static Future<int> sizeBytes() async {
     try {
