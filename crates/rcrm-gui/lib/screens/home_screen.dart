@@ -36,6 +36,13 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   int _currentIndex = 0;
   bool _isRefreshing = false;
+
+  /// True while the cast entry flow runs (session load + TV reachability
+  /// check). Guards the cast button against re-entry: without it, tapping
+  /// repeatedly while the check is in flight stacks a new CastScanScreen /
+  /// CastRemoteScreen per tap, and each stacked scanner grabs the camera
+  /// again — the app hangs and the routes pile up ("层层路由").
+  bool _castBusy = false;
   final _fp = FingerPreviewState();
   bool _fromHomeChip = false;
 
@@ -67,6 +74,47 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       await ref.read(scanStateProvider.notifier).scan(lib);
     } catch (_) {}
     if (mounted) setState(() => _isRefreshing = false);
+  }
+
+  /// Cast entry flow. [bool _castBusy] makes it non-reentrant: while the
+  /// session load / TV reachability check runs (which can take seconds when
+  /// the TV was killed), further taps are ignored instead of each spawning
+  /// its own push → stacked scanners/routes and an unresponsive app.
+  Future<void> _openCast() async {
+    if (_castBusy) return;
+    setState(() => _castBusy = true);
+    try {
+      // If a pairing is still alive on the TV, go straight to the remote
+      // screen; otherwise show the scanner.
+      final saved = await CastSessionStore().load();
+      if (!mounted) return;
+      if (saved == null) {
+        Navigator.pushNamed(context, '/cast-scan');
+        return;
+      }
+      final remote = CastRemote.resume(saved.qr, saved.session);
+      // Validate before entering: a dead session (TV restarted or owner
+      // unpaired) should open the scanner directly instead of flashing an
+      // error on the remote screen.
+      try {
+        await remote.status().timeout(const Duration(seconds: 3));
+      } catch (_) {
+        await CastSessionStore().clear();
+        remote.disconnect();
+        if (!mounted) return;
+        Navigator.pushNamed(context, '/cast-scan');
+        return;
+      }
+      if (!mounted) return;
+      Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => CastRemoteScreen(remote: remote),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _castBusy = false);
+    }
   }
 
   @override
@@ -151,37 +199,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               tooltip: 'Refresh library',
             ),
             IconButton(
-              icon: const Icon(Icons.cast),
-              onPressed: () async {
-                // If a pairing is still alive on the TV, go straight to the
-                // remote screen; otherwise show the scanner.
-                final saved = await CastSessionStore().load();
-                if (!context.mounted) return;
-                if (saved == null) {
-                  Navigator.pushNamed(context, '/cast-scan');
-                  return;
-                }
-                final remote = CastRemote.resume(saved.qr, saved.session);
-                // Validate before entering: a dead session (TV restarted or
-                // owner unpaired) should open the scanner directly instead
-                // of flashing an error on the remote screen.
-                try {
-                  await remote.status().timeout(const Duration(seconds: 3));
-                } catch (_) {
-                  await CastSessionStore().clear();
-                  remote.disconnect();
-                  if (!context.mounted) return;
-                  Navigator.pushNamed(context, '/cast-scan');
-                  return;
-                }
-                if (!context.mounted) return;
-                Navigator.push(
-                  context,
-                  MaterialPageRoute<void>(
-                    builder: (_) => CastRemoteScreen(remote: remote),
-                  ),
-                );
-              },
+              icon: _castBusy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: RCrmColors.primary,
+                      ),
+                    )
+                  : const Icon(Icons.cast),
+              onPressed: _castBusy ? null : _openCast,
               tooltip: 'Cast to TV',
             ),
             IconButton(

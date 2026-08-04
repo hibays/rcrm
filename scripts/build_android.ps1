@@ -1,7 +1,7 @@
 # build_android.ps1
-# Full Android build pipeline: Rust .so for 4 ABIs → Flutter APK
+# Full Android build pipeline: Rust .so for 3 ABIs → Flutter APK
 # Prerequisites:
-#   rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+#   rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
 #   cargo install cargo-ndk
 #   $env:ANDROID_NDK_HOME = "path/to/ndk"
 
@@ -29,7 +29,6 @@ $jniLibsBase = "crates/rcrm-gui/android/app/src/main/jniLibs"
 New-Item -ItemType Directory -Force -Path "$jniLibsBase/arm64-v8a" | Out-Null
 New-Item -ItemType Directory -Force -Path "$jniLibsBase/armeabi-v7a" | Out-Null
 New-Item -ItemType Directory -Force -Path "$jniLibsBase/x86_64" | Out-Null
-New-Item -ItemType Directory -Force -Path "$jniLibsBase/x86" | Out-Null
 
 # RUSTC_BOOTSTRAP=rav1d: unlock only the stdarch_arm_feature_detection
 # nightly gate that rav1d's ARM asm needs on armv7. MUST be identical in
@@ -40,7 +39,6 @@ cargo ndk `
     --target aarch64-linux-android `
     --target armv7-linux-androideabi `
     --target x86_64-linux-android `
-    --target i686-linux-android `
     -o $jniLibsBase `
     build -p rcrm-flutter-bridge --features mobile-decode $cargoFlag
 
@@ -66,8 +64,7 @@ New-Item -ItemType Directory -Force $mkJarsDir | Out-Null
 $mkJars = @(
     "default-arm64-v8a.jar",
     "default-armeabi-v7a.jar",
-    "default-x86_64.jar",
-    "default-x86.jar"
+    "default-x86_64.jar"
 )
 
 $baseUrl = "https://github.com/media-kit/libmpv-android-video-build/releases/download/v1.1.7"

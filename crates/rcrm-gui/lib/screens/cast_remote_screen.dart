@@ -7,6 +7,7 @@
 // slider updates locally while dragging and sends ONE seek on release.
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -31,6 +32,13 @@ class CastRemoteScreen extends ConsumerStatefulWidget {
 
 class _State extends ConsumerState<CastRemoteScreen> {
   Timer? _poll;
+
+  /// True while a [/v1/status] poll is awaiting. With a dead/unreachable TV
+  /// the underlying socket can hang for the whole connect timeout; without
+  /// this guard the 1s periodic timer would stack up overlapping requests
+  /// and the transport could stall. Any poll that exceeds 3s is abandoned
+  /// and counted as a failure instead.
+  bool _pollInFlight = false;
 
   /// Per-second transport state. Updated by the poll timer WITHOUT a
   /// full-page rebuild: only the status bar and control panel listen to it,
@@ -71,9 +79,11 @@ class _State extends ConsumerState<CastRemoteScreen> {
   }
 
   Future<void> _tick() async {
+    if (_pollInFlight || !mounted) return;
+    _pollInFlight = true;
     final remote = widget.remote;
     try {
-      final status = await remote.status();
+      final status = await remote.status().timeout(const Duration(seconds: 3));
       if (!mounted) return;
       _ui.mutate(() {
         _ui.status = status;
@@ -92,7 +102,11 @@ class _State extends ConsumerState<CastRemoteScreen> {
       _ui.mutate(() => _ui.localPlaying = null);
       setState(() {
         _connected = false;
-        _pollError = unauthorized ? 'The TV ended the pairing - rescan' : '$e';
+        _pollError = unauthorized
+            ? 'The TV ended the pairing - rescan'
+            : (e is TimeoutException || e is SocketException)
+            ? 'Connection lost - rescan'
+            : '$e';
       });
       if (wasConnected && unauthorized) {
         // The TV ended the session (e.g. owner pressed 解除配对). Forget the
@@ -100,10 +114,19 @@ class _State extends ConsumerState<CastRemoteScreen> {
         // directly instead of resuming a dead session.
         unawaited(CastSessionStore().clear());
       }
+    } finally {
+      _pollInFlight = false;
     }
   }
 
+  /// Monotonic counter for directory loads. A superseded load (user navigated
+  /// again before the PROPFIND returned — e.g. back into the parent while a
+  /// child listing is still in flight) must not write its stale results over
+  /// the newer navigation's state.
+  int _dirLoadGen = 0;
+
   Future<void> _loadDir(String path) async {
+    final gen = ++_dirLoadGen;
     setState(() {
       _loadingDir = true;
       _dirError = false;
@@ -116,6 +139,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
     if (client != null) {
       try {
         final result = await client.listAll(path);
+        if (gen != _dirLoadGen) return;
         subdirs = result.subdirs.toList()..sort(naturalCompare);
         final files = result.files.toList();
         // Single source of truth: MediaItem.type (same classification as
@@ -125,6 +149,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
         images = files.where((f) => f.type == MediaType.image).toList()
           ..sort((a, b) => naturalCompare(a.name, b.name));
       } catch (_) {
+        if (gen != _dirLoadGen) return;
         if (!mounted) return;
         setState(() {
           _loadingDir = false;
@@ -133,6 +158,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
         return;
       }
     }
+    if (gen != _dirLoadGen) return;
     if (!mounted) return;
     setState(() {
       _subdirs = subdirs;
@@ -165,9 +191,21 @@ class _State extends ConsumerState<CastRemoteScreen> {
   }
 
   void _goUp() {
+    if (_currentDir == '/') return;
     final parts = _currentDir.split('/').where((p) => p.isNotEmpty).toList();
     parts.removeLast();
     _loadDir('/${parts.join('/')}');
+  }
+
+  /// Back affordance (AppBar leading + Android system back): inside a
+  /// subdirectory this goes up one level instead of leaving the remote, which
+  /// matches the toolbar's up button. Only at the root it pops the screen.
+  void _handleBack() {
+    if (_currentDir == '/') {
+      Navigator.of(context).maybePop();
+    } else {
+      _goUp();
+    }
   }
 
   String _nameOf(String path) {
@@ -286,80 +324,89 @@ class _State extends ConsumerState<CastRemoteScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Remote'),
-        actions: [
-          PopupMenuButton<String>(
-            tooltip: 'More',
-            icon: const Icon(Icons.more_vert),
-            onSelected: (v) {
-              if (v == 'disconnect') _disconnectOnly();
-              if (v == 'stop') _stopCasting();
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'disconnect',
-                child: ListTile(
-                  dense: true,
-                  leading: Icon(Icons.link_off),
-                  title: Text('Disconnect remote'),
-                  subtitle: Text('TV keeps playing'),
-                ),
-              ),
-              const PopupMenuItem(
-                value: 'stop',
-                child: ListTile(
-                  dense: true,
-                  leading: Icon(Icons.cast_connected),
-                  title: Text('Exit cast'),
-                  subtitle: Text('Stops playback and unpairs'),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          // Wide screens (desktop, landscape): browser on the left, a
-          // floating control panel on the right. Portrait phones keep the
-          // compact stacked layout.
-          if (constraints.maxWidth > 760 &&
-              constraints.maxWidth > constraints.maxHeight * 1.02) {
-            return Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    children: [
-                      _buildStatusBar(),
-                      const Divider(height: 1),
-                      Expanded(child: _buildBrowser()),
-                    ],
+    return PopScope(
+      // System back: inside a directory it must go up one level, not exit
+      // the remote screen. At the root it pops normally.
+      canPop: _currentDir == '/',
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _goUp();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          leading: BackButton(onPressed: _handleBack),
+          title: const Text('Remote'),
+          actions: [
+            PopupMenuButton<String>(
+              tooltip: 'More',
+              icon: const Icon(Icons.more_vert),
+              onSelected: (v) {
+                if (v == 'disconnect') _disconnectOnly();
+                if (v == 'stop') _stopCasting();
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem(
+                  value: 'disconnect',
+                  child: ListTile(
+                    dense: true,
+                    leading: Icon(Icons.link_off),
+                    title: Text('Disconnect remote'),
+                    subtitle: Text('TV keeps playing'),
                   ),
                 ),
-                const VerticalDivider(width: 1),
-                SizedBox(
-                  width: 360,
-                  child: Column(
-                    children: [
-                      Expanded(child: _buildControlPanel(asBottomBar: false)),
-                    ],
+                const PopupMenuItem(
+                  value: 'stop',
+                  child: ListTile(
+                    dense: true,
+                    leading: Icon(Icons.cast_connected),
+                    title: Text('Exit cast'),
+                    subtitle: Text('Stops playback and unpairs'),
                   ),
                 ),
               ],
+            ),
+          ],
+        ),
+        body: LayoutBuilder(
+          builder: (context, constraints) {
+            // Wide screens (desktop, landscape): browser on the left, a
+            // floating control panel on the right. Portrait phones keep the
+            // compact stacked layout.
+            if (constraints.maxWidth > 760 &&
+                constraints.maxWidth > constraints.maxHeight * 1.02) {
+              return Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      children: [
+                        _buildStatusBar(),
+                        const Divider(height: 1),
+                        Expanded(child: _buildBrowser()),
+                      ],
+                    ),
+                  ),
+                  const VerticalDivider(width: 1),
+                  SizedBox(
+                    width: 360,
+                    child: Column(
+                      children: [
+                        Expanded(child: _buildControlPanel(asBottomBar: false)),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            }
+            return Column(
+              children: [
+                _buildStatusBar(),
+                const Divider(height: 1),
+                Expanded(child: _buildBrowser()),
+                const Divider(height: 1),
+                _buildControls(),
+              ],
             );
-          }
-          return Column(
-            children: [
-              _buildStatusBar(),
-              const Divider(height: 1),
-              Expanded(child: _buildBrowser()),
-              const Divider(height: 1),
-              _buildControls(),
-            ],
-          );
-        },
+          },
+        ),
       ),
     );
   }
@@ -511,29 +558,8 @@ class _State extends ConsumerState<CastRemoteScreen> {
   }
 
   Widget _buildList() {
-    final rows = <Widget>[];
-    for (final d in _subdirs) {
-      rows.add(
-        ListTile(
-          leading: const CircleAvatar(
-            radius: 20,
-            backgroundColor: Color(0xFF2A2A3E),
-            child: Icon(Icons.folder, size: 20, color: Color(0xFFFFB74D)),
-          ),
-          title: Text(_nameOf(d), maxLines: 1, overflow: TextOverflow.ellipsis),
-          trailing: const Icon(
-            Icons.chevron_right,
-            size: 20,
-            color: Colors.white38,
-          ),
-          onTap: () => _loadDir(d),
-        ),
-      );
-    }
-    for (final v in _showImages ? _images : _videos) {
-      rows.add(_mediaRow(v));
-    }
-    if (rows.isEmpty) {
+    final files = _showImages ? _images : _videos;
+    if (_subdirs.isEmpty && files.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -552,10 +578,65 @@ class _State extends ConsumerState<CastRemoteScreen> {
         ),
       );
     }
+    final dirCount = _subdirs.length;
+    // Lazy rows: only the visible ones build their thumbnails. The old
+    // eagerly-built ListView constructed every VideoCard/PooledImage at once
+    // (all rows rendered immediately), which queued hundreds of poster
+    // generations on mobile and made thumbnails appear almost never.
     return ListView.separated(
-      itemCount: rows.length,
+      itemCount: dirCount + files.length,
       separatorBuilder: (_, _) => const Divider(height: 1, indent: 72),
-      itemBuilder: (_, i) => rows[i],
+      itemBuilder: (context, i) {
+        if (i < dirCount) return _dirRow(_subdirs[i]);
+        return _mediaRow(files[i - dirCount]);
+      },
+    );
+  }
+
+  /// Folder row with a content thumbnail: the first image inside the folder
+  /// (fetched lazily per visible row), or the folder icon when empty.
+  Widget _dirRow(String d) {
+    return InkWell(
+      onTap: () => _loadDir(d),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 108,
+              height: 60,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: _FolderPreview(
+                  dirPath: d,
+                  fallback: Container(
+                    color: const Color(0xFF2A2A3E),
+                    child: const Icon(
+                      Icons.folder,
+                      size: 28,
+                      color: Color(0xFFFFB74D),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                _nameOf(d),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Icon(Icons.chevron_right, size: 20, color: Colors.white38),
+          ],
+        ),
+      ),
     );
   }
 
@@ -659,6 +740,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
             if (i < _subdirs.length) {
               final d = _subdirs[i];
               return _FolderGridCell(
+                path: d,
                 name: _nameOf(d),
                 onTap: () => _loadDir(d),
               );
@@ -875,11 +957,17 @@ class _State extends ConsumerState<CastRemoteScreen> {
   }
 }
 
-/// Grid cell for a subdirectory (folder icon + name).
+/// Grid cell for a subdirectory: content thumbnail (first image inside the
+/// folder) or a folder icon when the folder has no images.
 class _FolderGridCell extends StatelessWidget {
+  final String path;
   final String name;
   final VoidCallback onTap;
-  const _FolderGridCell({required this.name, required this.onTap});
+  const _FolderGridCell({
+    required this.path,
+    required this.name,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -889,15 +977,28 @@ class _FolderGridCell extends StatelessWidget {
       child: InkWell(
         onTap: onTap,
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Icon(Icons.folder, size: 44, color: Color(0xFFFFB74D)),
-            const SizedBox(height: 8),
+            Expanded(
+              child: _FolderPreview(
+                dirPath: path,
+                fallback: const ColoredBox(
+                  color: Color(0xFF1E1E30),
+                  child: Center(
+                    child: Icon(
+                      Icons.folder,
+                      size: 44,
+                      color: Color(0xFFFFB74D),
+                    ),
+                  ),
+                ),
+              ),
+            ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
+              padding: const EdgeInsets.all(6),
               child: Text(
                 name,
-                maxLines: 2,
+                maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.center,
                 style: const TextStyle(fontSize: 12),
@@ -906,6 +1007,107 @@ class _FolderGridCell extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Lazily resolves the first image inside [dirPath] and paints it as a small
+/// folder preview with a folder badge, falling back to [fallback] while
+/// loading / when the folder has no images. Results (and in-flight requests)
+/// are cached per path so each folder is listed at most once per session.
+class _FolderPreview extends ConsumerStatefulWidget {
+  final String dirPath;
+  final Widget fallback;
+  const _FolderPreview({required this.dirPath, required this.fallback});
+
+  @override
+  ConsumerState<_FolderPreview> createState() => _FolderPreviewState();
+}
+
+class _FolderPreviewState extends ConsumerState<_FolderPreview> {
+  static final Map<String, String?> _urlCache = {};
+  static final Map<String, Future<String?>> _inflight = {};
+
+  String? _url;
+  bool _known = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_urlCache.containsKey(widget.dirPath)) {
+      _url = _urlCache[widget.dirPath];
+      _known = true;
+    }
+    _load();
+  }
+
+  Future<void> _load() async {
+    if (_known) return;
+    // Dedup across rows for the same folder: rejoin an in-flight probe.
+    var fut = _inflight[widget.dirPath];
+    if (fut == null) {
+      fut = _probe();
+      _inflight[widget.dirPath] = fut;
+    }
+    String? url;
+    try {
+      url = await fut;
+    } finally {
+      _inflight.remove(widget.dirPath);
+    }
+    // Only cache successful results. Null (transient failure or genuinely
+    // empty folder) is NOT cached so the next widget rebuild retries the
+    // network probe — avoids permanently blacking out a folder thumbnail
+    // after a brief connectivity hiccup.
+    if (url != null) {
+      _urlCache[widget.dirPath] = url;
+      if (_urlCache.length > 500) _urlCache.remove(_urlCache.keys.first);
+    }
+    if (!mounted) return;
+    setState(() {
+      _url = url;
+      _known = true;
+    });
+  }
+
+  Future<String?> _probe() async {
+    try {
+      final client = ref.read(serverProvider).client;
+      if (client == null) return null;
+      final result = await client.listAll(widget.dirPath);
+      for (final f in result.files) {
+        if (f.type == MediaType.image) return f.url;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final url = _url;
+    if (url == null) return widget.fallback;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        PooledImage(
+          url: url,
+          fit: BoxFit.cover,
+          decodeWidth: 400,
+          errorWidget: widget.fallback,
+        ),
+        Positioned(
+          right: 4,
+          bottom: 4,
+          child: Container(
+            padding: const EdgeInsets.all(2),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.55),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: const Icon(Icons.folder, size: 14, color: Color(0xFFFFB74D)),
+          ),
+        ),
+      ],
     );
   }
 }

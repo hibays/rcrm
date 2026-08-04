@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # build_android.sh
-# Full Android build pipeline: Rust .so for 4 ABIs → Flutter APK
+# Full Android build pipeline: Rust .so for 3 ABIs → Flutter APK
 # Prerequisites:
-#   rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+#   rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
 #   cargo install cargo-ndk
 #   export ANDROID_NDK_HOME="/path/to/ndk"
 # Usage:
@@ -33,7 +33,7 @@ echo ""
 # ── Step 1: Build Rust for Android ABIs ─────────────────────────
 echo "[1/4] Building Rust bridge for Android ($MODE)..."
 JNI_LIBS="$GUI/android/app/src/main/jniLibs"
-mkdir -p "$JNI_LIBS/arm64-v8a" "$JNI_LIBS/armeabi-v7a" "$JNI_LIBS/x86_64" "$JNI_LIBS/x86"
+mkdir -p "$JNI_LIBS/arm64-v8a" "$JNI_LIBS/armeabi-v7a" "$JNI_LIBS/x86_64"
 
 # RUSTC_BOOTSTRAP=rav1d: unlock only the stdarch_arm_feature_detection
 # nightly gate that rav1d's ARM asm needs on armv7. MUST be identical in
@@ -44,7 +44,6 @@ cargo ndk \
     --target aarch64-linux-android \
     --target armv7-linux-androideabi \
     --target x86_64-linux-android \
-    --target i686-linux-android \
     -o "$JNI_LIBS" \
     build -p rcrm-flutter-bridge --features mobile-decode $CARGO_FLAG
 
@@ -56,7 +55,7 @@ echo "[2/4] Pre-downloading media_kit Android JARs..."
 JARS_DIR="$GUI/build/media_kit_libs_android_video/v1.1.7"
 mkdir -p "$JARS_DIR"
 
-JARS=("default-arm64-v8a.jar" "default-armeabi-v7a.jar" "default-x86_64.jar" "default-x86.jar")
+JARS=("default-arm64-v8a.jar" "default-armeabi-v7a.jar" "default-x86_64.jar")
 BASE_URL="https://github.com/media-kit/libmpv-android-video-build/releases/download/v1.1.7"
 
 for j in "${JARS[@]}"; do

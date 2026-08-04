@@ -41,7 +41,7 @@ Changing any version independently WILL break the build. All components are inte
 ### Android
 
 - Android SDK with NDK 28.2.13676358 exactly: `sdkmanager "ndk;28.2.13676358"`
-- Rust Android targets: `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android`
+- Rust Android targets: `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android`
 - `cargo-ndk`: `cargo install cargo-ndk`
 
 ### Linux
@@ -103,7 +103,7 @@ $env:ANDROID_NDK_HOME = "D:\Dev\Android\Sdk\ndk\28.2.13676358"
 .\scripts\build_android.ps1 -Release -SplitAbi
 ```
 
-Pipeline: `cargo-ndk` for 4 ABIs (aarch64, armv7, x86_64, i686) → download libmpv Android JARs → `flutter build apk --split-per-abi`. Output: `build/app/outputs/flutter-apk/app-*-release.apk`.
+Pipeline: `cargo-ndk` for 3 ABIs (aarch64, armv7, x86_64) → download libmpv Android JARs → `flutter build apk --split-per-abi`. Output: `build/app/outputs/flutter-apk/app-*-release.apk`.
 
 ### Linux
 
@@ -180,7 +180,7 @@ cargo build --release -p rcrm-flutter-bridge
 
 # Android (via cargo-ndk)
 cargo ndk --target aarch64-linux-android --target armv7-linux-androideabi \
-  --target x86_64-linux-android --target i686-linux-android \
+  --target x86_64-linux-android \
   -o crates/rcrm-gui/android/app/src/main/jniLibs \
   build -p rcrm-flutter-bridge --release
 ```

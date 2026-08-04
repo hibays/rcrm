@@ -1077,7 +1077,7 @@ class _BrandHeader extends StatelessWidget {
         ),
         const SizedBox(width: 14),
         const Text(
-          'RCrm Cast Receiver',
+          'Cast Receiver',
           style: TextStyle(
             fontSize: 30,
             fontWeight: FontWeight.w700,
