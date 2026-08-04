@@ -8,6 +8,7 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -17,6 +18,7 @@ import '../providers/server_provider.dart';
 import '../services/cast_protocol.dart';
 import '../services/cast_remote.dart';
 import '../services/cast_session_store.dart';
+import '../services/thumbnail_service.dart';
 import '../utils/natural_sort.dart';
 import '../widgets/pooled_image.dart';
 import '../widgets/video_card.dart';
@@ -557,6 +559,15 @@ class _State extends ConsumerState<CastRemoteScreen> {
     );
   }
 
+  /// Scroll-position memory: the browse list/grid is rebuilt on every
+  /// directory or tab change, but PageStorage restores the previous offset
+  /// per (directory, tab) pair — going back up to a parent, or toggling
+  /// between images/videos, lands where you left off instead of the top.
+  /// Shared by list and grid mode so switching layout keeps the position.
+  Key _browseStorageKey() => PageStorageKey<String>(
+        'cast-browse:$_currentDir#${_showImages ? 'img' : 'vid'}',
+      );
+
   Widget _buildList() {
     final files = _showImages ? _images : _videos;
     if (_subdirs.isEmpty && files.isEmpty) {
@@ -584,6 +595,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
     // (all rows rendered immediately), which queued hundreds of poster
     // generations on mobile and made thumbnails appear almost never.
     return ListView.separated(
+      key: _browseStorageKey(),
       itemCount: dirCount + files.length,
       separatorBuilder: (_, _) => const Divider(height: 1, indent: 72),
       itemBuilder: (context, i) {
@@ -593,8 +605,8 @@ class _State extends ConsumerState<CastRemoteScreen> {
     );
   }
 
-  /// Folder row with a content thumbnail: the first image inside the folder
-  /// (fetched lazily per visible row), or the folder icon when empty.
+  /// Folder row with a content thumbnail: the first media file inside the
+  /// folder (fetched lazily per visible row), or the folder icon when empty.
   Widget _dirRow(String d) {
     return InkWell(
       onTap: () => _loadDir(d),
@@ -727,6 +739,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
         final minCard = 150.0;
         final cols = (constraints.maxWidth / minCard).floor().clamp(2, 6);
         return GridView.builder(
+          key: _browseStorageKey(),
           padding: const EdgeInsets.all(8),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: cols,
@@ -957,8 +970,8 @@ class _State extends ConsumerState<CastRemoteScreen> {
   }
 }
 
-/// Grid cell for a subdirectory: content thumbnail (first image inside the
-/// folder) or a folder icon when the folder has no images.
+/// Grid cell for a subdirectory: content thumbnail (first media file inside
+/// the folder) or a folder icon when the folder has no media.
 class _FolderGridCell extends StatelessWidget {
   final String path;
   final String name;
@@ -1011,10 +1024,12 @@ class _FolderGridCell extends StatelessWidget {
   }
 }
 
-/// Lazily resolves the first image inside [dirPath] and paints it as a small
-/// folder preview with a folder badge, falling back to [fallback] while
-/// loading / when the folder has no images. Results (and in-flight requests)
-/// are cached per path so each folder is listed at most once per session.
+/// Lazily resolves the first media file inside [dirPath] — an image, or else
+/// the first video (whose poster is fetched through the shared
+/// [ThumbnailService] pipeline) — and paints it as a small folder preview
+/// with a folder badge, falling back to [fallback] while loading / when the
+/// folder has no media. Results (and in-flight requests) are cached per path
+/// so each folder is listed at most once per session.
 class _FolderPreview extends ConsumerStatefulWidget {
   final String dirPath;
   final Widget fallback;
@@ -1025,76 +1040,139 @@ class _FolderPreview extends ConsumerStatefulWidget {
 }
 
 class _FolderPreviewState extends ConsumerState<_FolderPreview> {
-  static final Map<String, String?> _urlCache = {};
-  static final Map<String, Future<String?>> _inflight = {};
+  /// First media child per folder. A real hit is cached for the session; a
+  /// resolved-empty result is cached briefly ([_emptyTtl]) so returning to a
+  /// directory reuses folder thumbnails instead of re-probing every visible
+  /// row. The TTL is short so a folder that was probed during a connectivity
+  /// hiccup (listAll returns [] for failures too) recovers automatically.
+  static final Map<String, ({MediaItem? item, DateTime? emptyUntil})> _cache =
+      {};
+  static const Duration _emptyTtl = Duration(seconds: 20);
+  static final Map<String, Future<MediaItem?>> _inflight = {};
+  final ThumbnailService _ts = ThumbnailService();
 
-  String? _url;
-  bool _known = false;
+  MediaItem? _item;
+  Uint8List? _poster;
+  int _posterGen = 0;
 
   @override
   void initState() {
     super.initState();
-    if (_urlCache.containsKey(widget.dirPath)) {
-      _url = _urlCache[widget.dirPath];
-      _known = true;
-    }
+    _item = _cache[widget.dirPath]?.item;
     _load();
   }
 
+  @override
+  void didUpdateWidget(_FolderPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // ListView/GridView recycle elements: a slot can move to a different
+    // folder without initState running again. Re-resolve from scratch so
+    // the thumbnail always matches the folder it labels, never the slot.
+    if (oldWidget.dirPath != widget.dirPath) {
+      _posterGen++;
+      _poster = null;
+      _item = _cache[widget.dirPath]?.item;
+      _load();
+    }
+  }
+
   Future<void> _load() async {
-    if (_known) return;
+    final dir = widget.dirPath;
+    final entry = _cache[dir];
+    final cached = entry?.item;
+    if (cached != null) {
+      if (cached.type == MediaType.video) _loadPoster(cached);
+      return;
+    }
+    // A resolved-empty entry (no media, or a transient failure) is honored
+    // for a short window — returning to a directory must not re-probe every
+    // folder row — then retried so a failed probe can recover.
+    final until = entry?.emptyUntil;
+    if (until != null) {
+      if (DateTime.now().isBefore(until)) return;
+      _cache.remove(dir);
+    }
     // Dedup across rows for the same folder: rejoin an in-flight probe.
-    var fut = _inflight[widget.dirPath];
+    var fut = _inflight[dir];
     if (fut == null) {
-      fut = _probe();
-      _inflight[widget.dirPath] = fut;
+      fut = _probe(dir);
+      _inflight[dir] = fut;
     }
-    String? url;
+    MediaItem? item;
     try {
-      url = await fut;
+      item = await fut;
     } finally {
-      _inflight.remove(widget.dirPath);
+      _inflight.remove(dir);
     }
-    // Only cache successful results. Null (transient failure or genuinely
-    // empty folder) is NOT cached so the next widget rebuild retries the
-    // network probe — avoids permanently blacking out a folder thumbnail
-    // after a brief connectivity hiccup.
-    if (url != null) {
-      _urlCache[widget.dirPath] = url;
-      if (_urlCache.length > 500) _urlCache.remove(_urlCache.keys.first);
-    }
-    if (!mounted) return;
+    // Guard against the element being recycled to another folder while the
+    // probe was in flight — the result must not leak onto the wrong row.
+    if (!mounted || widget.dirPath != dir) return;
+    _cache[dir] = item != null
+        ? (item: item, emptyUntil: null)
+        : (item: null, emptyUntil: DateTime.now().add(_emptyTtl));
+    if (_cache.length > 500) _cache.remove(_cache.keys.first);
     setState(() {
-      _url = url;
-      _known = true;
+      _item = item;
+      if (item != null && item.type == MediaType.video) _loadPoster(item);
     });
   }
 
-  Future<String?> _probe() async {
+  /// First image directly inside [dir]; falls back to the first video so
+  /// video-only folders still get a thumbnail.
+  Future<MediaItem?> _probe(String dir) async {
     try {
       final client = ref.read(serverProvider).client;
       if (client == null) return null;
-      final result = await client.listAll(widget.dirPath);
+      final result = await client.listAll(dir);
+      MediaItem? firstVideo;
       for (final f in result.files) {
-        if (f.type == MediaType.image) return f.url;
+        if (f.type == MediaType.image) return f;
+        if (f.type == MediaType.video && firstVideo == null) firstVideo = f;
       }
+      return firstVideo;
     } catch (_) {}
     return null;
   }
 
+  Future<void> _loadPoster(MediaItem item) async {
+    final gen = ++_posterGen;
+    final dir = widget.dirPath;
+    try {
+      final bytes = await _ts.generatePoster(item.url);
+      if (!mounted || widget.dirPath != dir || gen != _posterGen) return;
+      _poster = bytes;
+      setState(() {});
+    } catch (_) {
+      if (!mounted || widget.dirPath != dir || gen != _posterGen) return;
+      _poster = null;
+      setState(() {});
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final url = _url;
-    if (url == null) return widget.fallback;
+    final item = _item;
+    if (item == null) return widget.fallback;
+    final thumb = item.type == MediaType.image
+        ? PooledImage(
+            url: item.url,
+            fit: BoxFit.cover,
+            decodeWidth: 400,
+            errorWidget: widget.fallback,
+          )
+        : (_poster != null
+            ? Image.memory(
+                _poster!,
+                fit: BoxFit.cover,
+                cacheWidth: 640,
+                gaplessPlayback: true,
+                errorBuilder: (_, _, _) => widget.fallback,
+              )
+            : widget.fallback);
     return Stack(
       fit: StackFit.expand,
       children: [
-        PooledImage(
-          url: url,
-          fit: BoxFit.cover,
-          decodeWidth: 400,
-          errorWidget: widget.fallback,
-        ),
+        thumb,
         Positioned(
           right: 4,
           bottom: 4,
