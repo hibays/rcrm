@@ -401,11 +401,12 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
                                     if (mounted) {
                                       // Full stack reset: setup must end up
                                       // as the only route below home.
-                                      Navigator.of(context)
-                                          .pushNamedAndRemoveUntil(
-                                            '/setup',
-                                            (_) => false,
-                                          );
+                                      Navigator.of(
+                                        context,
+                                      ).pushNamedAndRemoveUntil(
+                                        '/setup',
+                                        (_) => false,
+                                      );
                                     }
                                   },
                             child: const Text('Switch to Local Deploy'),
