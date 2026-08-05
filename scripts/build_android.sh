@@ -55,14 +55,24 @@ echo "[2/4] Pre-downloading media_kit Android JARs..."
 JARS_DIR="$GUI/build/media_kit_libs_android_video/v1.1.7"
 mkdir -p "$JARS_DIR"
 
-JARS=("default-arm64-v8a.jar" "default-armeabi-v7a.jar" "default-x86_64.jar")
+JARS=("default-arm64-v8a.jar" "default-armeabi-v7a.jar" "default-x86_64.jar" "default-x86.jar")
 BASE_URL="https://github.com/media-kit/libmpv-android-video-build/releases/download/v1.1.7"
+# GitHub is unreliable from CN networks; fall back to the gh-proxy mirror
+# (same content, MD5-verified by media_kit at build time).
+MIRROR_BASE_URL="https://gh-proxy.org/$BASE_URL"
 
 for j in "${JARS[@]}"; do
   dest="$JARS_DIR/$j"
   if [[ ! -f "$dest" || ! -s "$dest" ]]; then
     echo "  Downloading $j..."
-    curl -kL -o "$dest" "$BASE_URL/$j" 2>/dev/null && echo "  $j [OK]" || { echo "  ERROR: Failed to download $j"; exit 1; }
+    if curl -kL -o "$dest" "$BASE_URL/$j" 2>/dev/null; then
+      echo "  $j [OK]"
+    elif curl -kL -o "$dest" "$MIRROR_BASE_URL/$j" 2>/dev/null; then
+      echo "  $j [OK via mirror]"
+    else
+      echo "  ERROR: Failed to download $j"
+      exit 1
+    fi
   else
     echo "  $j [cached]"
   fi

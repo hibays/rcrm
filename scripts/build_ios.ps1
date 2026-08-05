@@ -72,8 +72,15 @@ if (Test-Path "$cacheDir\$libmpvFile") {
         Invoke-WebRequest -Uri $libmpvUrl -OutFile "$cacheDir\$libmpvFile" -UseBasicParsing
         Write-Host "  libmpv xcframework [OK]" -ForegroundColor Green
     } catch {
-        Write-Host "  ERROR: Failed to download libmpv xcframework" -ForegroundColor Red
-        exit 1
+        # GitHub is unreliable from CN networks; fall back to the gh-proxy mirror.
+        Write-Host "  GitHub direct failed ($_), retrying via gh-proxy..." -ForegroundColor Yellow
+        try {
+            Invoke-WebRequest -Uri "https://gh-proxy.org/$libmpvUrl" -OutFile "$cacheDir\$libmpvFile" -UseBasicParsing
+            Write-Host "  libmpv xcframework [OK via mirror]" -ForegroundColor Green
+        } catch {
+            Write-Host "  ERROR: Failed to download libmpv xcframework" -ForegroundColor Red
+            exit 1
+        }
     }
 }
 Write-Host ""

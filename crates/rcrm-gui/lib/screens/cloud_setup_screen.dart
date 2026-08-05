@@ -387,7 +387,7 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
                                         (_) => false,
                                       ),
                             child: const Text(
-                              'Skip �� browse read-only library',
+                              'Skip — browse read-only library',
                             ),
                           ),
                           const SizedBox(height: 8),

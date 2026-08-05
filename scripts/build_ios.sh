@@ -63,9 +63,15 @@ if [[ -f "$CACHE_DIR/$LIBMPV_FILE" ]]; then
   echo "  libmpv xcframework [cached]"
 else
   echo "  Downloading libmpv xcframework..."
-  curl -kL -o "$CACHE_DIR/$LIBMPV_FILE" "$LIBMPV_URL" \
-    && echo "  libmpv xcframework [OK]" \
-    || { echo "  ERROR: Failed to download libmpv xcframework"; exit 1; }
+  # GitHub is unreliable from CN networks; fall back to the gh-proxy mirror.
+  if curl -kL -o "$CACHE_DIR/$LIBMPV_FILE" "$LIBMPV_URL" 2>/dev/null; then
+    echo "  libmpv xcframework [OK]"
+  elif curl -kL -o "$CACHE_DIR/$LIBMPV_FILE" "https://gh-proxy.org/$LIBMPV_URL" 2>/dev/null; then
+    echo "  libmpv xcframework [OK via mirror]"
+  else
+    echo "  ERROR: Failed to download libmpv xcframework"
+    exit 1
+  fi
 fi
 echo ""
 

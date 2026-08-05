@@ -53,22 +53,38 @@ New-Item -ItemType Directory -Force $buildDir | Out-Null
 
 $mpvUrl = "https://github.com/media-kit/libmpv-win32-video-build/releases/download/2023-09-24/mpv-dev-x86_64-20230924-git-652a1dd.7z"
 $angleUrl = "https://github.com/alexmercerind/flutter-windows-ANGLE-OpenGL-ES/releases/download/v1.0.1/ANGLE.7z"
+# GitHub is unreliable from CN networks; fall back to the gh-proxy mirror
+# (same content, MD5-verified by the media_kit CMake build at configure time).
+$mirrorBase = "https://gh-proxy.org"
 
 $mpv7z = "$buildDir\mpv-dev-x86_64-20230924-git-652a1dd.7z"
 $angle7z = "$buildDir\ANGLE.7z"
 
+function Download-WithFallback([string]$Url, [string]$Dest, [string]$Label) {
+    Write-Host "  Downloading $Label..." -ForegroundColor Gray
+    try {
+        Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
+        Write-Host "  $Label [OK]" -ForegroundColor Green
+    } catch {
+        Write-Host "  GitHub direct failed ($_), retrying via gh-proxy..." -ForegroundColor Yellow
+        try {
+            Invoke-WebRequest -Uri "$mirrorBase/$Url" -OutFile $Dest -UseBasicParsing
+            Write-Host "  $Label [OK via mirror]" -ForegroundColor Green
+        } catch {
+            Write-Host "  ERROR: Failed to download $Label --- $_" -ForegroundColor Red
+            exit 1
+        }
+    }
+}
+
 if (-not (Test-Path $mpv7z)) {
-    Write-Host "  Downloading mpv..." -ForegroundColor Gray
-    Invoke-WebRequest $mpvUrl -OutFile $mpv7z -UseBasicParsing
-    Write-Host "  mpv [OK]" -ForegroundColor Green
+    Download-WithFallback $mpvUrl $mpv7z "mpv"
 } else {
     Write-Host "  mpv [cached]" -ForegroundColor Gray
 }
 
 if (-not (Test-Path $angle7z)) {
-    Write-Host "  Downloading ANGLE..." -ForegroundColor Gray
-    Invoke-WebRequest $angleUrl -OutFile $angle7z -UseBasicParsing
-    Write-Host "  ANGLE [OK]" -ForegroundColor Green
+    Download-WithFallback $angleUrl $angle7z "ANGLE"
 } else {
     Write-Host "  ANGLE [cached]" -ForegroundColor Gray
 }

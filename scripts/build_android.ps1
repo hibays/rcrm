@@ -64,10 +64,14 @@ New-Item -ItemType Directory -Force $mkJarsDir | Out-Null
 $mkJars = @(
     "default-arm64-v8a.jar",
     "default-armeabi-v7a.jar",
-    "default-x86_64.jar"
+    "default-x86_64.jar",
+    "default-x86.jar"
 )
 
 $baseUrl = "https://github.com/media-kit/libmpv-android-video-build/releases/download/v1.1.7"
+# GitHub is unreliable from CN networks; fall back to the gh-proxy mirror
+# (same content, MD5-verified by media_kit at build time).
+$mirrorBaseUrl = "https://gh-proxy.org/$baseUrl"
 
 foreach ($j in $mkJars) {
     $dest = "$mkJarsDir\$j"
@@ -77,8 +81,14 @@ foreach ($j in $mkJars) {
             Invoke-WebRequest -Uri "$baseUrl/$j" -OutFile $dest -UseBasicParsing
             Write-Host "  $j [OK]" -ForegroundColor Green
         } catch {
-            Write-Host "  ERROR: Failed to download $j --- $_" -ForegroundColor Red
-            exit 1
+            Write-Host "  GitHub direct failed ($_), retrying via gh-proxy..." -ForegroundColor Yellow
+            try {
+                Invoke-WebRequest -Uri "$mirrorBaseUrl/$j" -OutFile $dest -UseBasicParsing
+                Write-Host "  $j [OK via mirror]" -ForegroundColor Green
+            } catch {
+                Write-Host "  ERROR: Failed to download $j --- $_" -ForegroundColor Red
+                exit 1
+            }
         }
     } else {
         Write-Host "  $j [cached]" -ForegroundColor Gray
