@@ -13,9 +13,7 @@ mobile-decode = ["dep:rav1d", "dep:jxl-oxide", "dep:jxl-render"]
 [dependencies]
 rcrm-core = { path = "../rcrm-core" }
 rcrm-server = { path = "../rcrm-server" }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-libc = "0.2"
 parking_lot = "0.12"
 zeroize = { version = "1.8.2", features = ["simd"] }
 dunce = "1.0.5"
@@ -33,9 +31,14 @@ rcgen = { version = "0.14", default-features = false, features = [
 rav1d = { git = "https://github.com/memorysafety/rav1d", rev = "2a734dc9cd52190146796fb24b29a8c7e3d2af1e", optional = true }
 jxl-oxide = { version = "0.12", optional = true }
 jxl-render = { version = "0.12", optional = true }
+rxing = { version = "0.9.2", default-features = false, features = ["decoders", "full_barcode_format_support", "multi_barcode_readers", "encoding_rs", "encoders"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
 	"Win32_System_Threading",
 	"Win32_Foundation",
 ] }
+
+[dev-dependencies]
+jpeg-encoder = "0.7.1"
+qrcode = { version = "0.14.1", default-features = false }

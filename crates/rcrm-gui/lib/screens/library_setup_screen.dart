@@ -113,7 +113,9 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
       _passwords.clear();
       _lockedRemaining = 0;
       setState(() => _statusText = 'Server ready — loading library…');
-      Navigator.of(context).pushReplacementNamed('/home');
+      // Home is the ROOT of the stack — never leave anything below it, or
+      // the AppBar would show a spurious back button ("home is just home").
+      Navigator.of(context).pushNamedAndRemoveUntil('/home', (_) => false);
       return;
     }
 
@@ -157,7 +159,8 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
           );
     }
     if (!mounted) return;
-    Navigator.of(context).pushReplacementNamed('/home');
+    // Home is the root of the stack — never leave anything below it.
+    Navigator.of(context).pushNamedAndRemoveUntil('/home', (_) => false);
   }
 
   @override

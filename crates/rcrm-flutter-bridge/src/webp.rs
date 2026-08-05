@@ -13,19 +13,38 @@ pub struct WebpBuf {
 	pub data: *mut u8,
 }
 
-/// Free a `WebpBuf` returned by `rcrm_encode_thumb_webp`.
+/// Free a `WebpBuf` returned by `rcrm_encode_thumb_webp` /
+/// `rcrm_generate_qr_webp`.
 ///
 /// # Safety
-/// `ptr` must be null or a pointer previously returned by
-/// `rcrm_encode_thumb_webp`. Must not be freed twice.
+/// `ptr` must be null or a pointer previously returned by those functions.
+/// Must not be freed twice.
 pub unsafe fn free_webp_buf(ptr: *mut WebpBuf) {
 	if ptr.is_null() {
 		return;
 	}
 	let buf = unsafe { Box::from_raw(ptr) };
 	if !buf.data.is_null() && buf.data_len > 0 {
-		let _ = unsafe { Vec::from_raw_parts(buf.data, buf.data_len, buf.data_len) };
+		// Reconstruct the exact `Box<[u8]>` the encoder created via
+		// `vec_into_webp_buf`. A Box<[u8]>'s layout is determined by its
+		// length alone, so this reconstruction is always sound — no
+		// capacity mismatch, no wrong-Layout dealloc.
+		let slice = std::ptr::slice_from_raw_parts_mut(buf.data, buf.data_len);
+		let _ = unsafe { Box::from_raw(slice) };
 	}
+}
+
+/// Transfer ownership of an encoded byte buffer into a [`WebpBuf`].
+///
+/// The buffer is first converted to a `Box<[u8]>`, whose layout is fixed by
+/// its length. This makes the later `free_webp_buf` reconstruction exact:
+/// transferring a `Vec` with spare capacity would make the free path
+/// deallocate with the wrong layout (undefined behavior).
+pub(crate) fn vec_into_webp_buf(encoded: Vec<u8>) -> Box<WebpBuf> {
+	let boxed: Box<[u8]> = encoded.into_boxed_slice();
+	let data_len = boxed.len();
+	let data = Box::into_raw(boxed).cast::<u8>();
+	Box::new(WebpBuf { data_len, data })
 }
 
 /// Encode RGBA8 pixels (`width * height * 4` bytes) as lossy WebP at
@@ -57,15 +76,7 @@ pub unsafe fn encode_rgba_webp(
 			Ok(b) => b,
 			Err(_) => return None,
 		};
-
-	let mut buf = Box::new(WebpBuf {
-		data_len: encoded.len(),
-		data: std::ptr::null_mut(),
-	});
-	let mut v = encoded;
-	buf.data = v.as_mut_ptr();
-	std::mem::forget(v); // ownership transferred to WebpBuf
-	Some(buf)
+	Some(vec_into_webp_buf(encoded))
 }
 
 #[cfg(test)]

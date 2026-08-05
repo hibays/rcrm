@@ -31,10 +31,8 @@ rustls = { version = "0.23", default-features = false, features = [
 	"std",
 	"tls12",
 ] }
-base64 = "0.22"
+base64 = "0.23"
 crc32fast = "1.5"
-chacha20 = "0.9"
-zeroize = { version = "1.8.2", features = ["simd"] }
 
 [profile.dev]
 overflow-checks = false

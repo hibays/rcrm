@@ -7,8 +7,17 @@
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
+
+/// Native layout of the Rust `WebpBuf` struct (data_len + data pointer),
+/// returned by `rcrm_generate_qr_webp` and `rcrm_encode_thumb_webp`.
+final class _QrWebpBuf extends Struct {
+  @IntPtr()
+  external int dataLen;
+  external Pointer<Uint8> data;
+}
 
 // ── C function typedefs ──────────────────────────────────────────
 
@@ -65,6 +74,45 @@ typedef RcrmSetLogLevelDart = void Function(int level);
 typedef RcrmGenTvCertC = Pointer<Utf8> Function();
 typedef RcrmGenTvCertDart = Pointer<Utf8> Function();
 
+// ── QR decode (cast pairing scanning, all platforms) ──────────────
+
+typedef RcrmDecodeQrC = Pointer<Utf8> Function(Pointer<Uint8> data, IntPtr len);
+typedef RcrmDecodeQrDart = Pointer<Utf8> Function(Pointer<Uint8> data, int len);
+
+typedef RcrmDecodeQrBgraC =
+    Pointer<Utf8> Function(
+      Pointer<Uint8> data,
+      IntPtr len,
+      Uint32 width,
+      Uint32 height,
+      Uint32 rowStride,
+    );
+typedef RcrmDecodeQrBgraDart =
+    Pointer<Utf8> Function(
+      Pointer<Uint8> data,
+      int len,
+      int width,
+      int height,
+      int rowStride,
+    );
+
+typedef RcrmDecodeQrLumaC =
+    Pointer<Utf8> Function(
+      Pointer<Uint8> data,
+      IntPtr len,
+      Uint32 width,
+      Uint32 height,
+      Uint32 rowStride,
+    );
+typedef RcrmDecodeQrLumaDart =
+    Pointer<Utf8> Function(
+      Pointer<Uint8> data,
+      int len,
+      int width,
+      int height,
+      int rowStride,
+    );
+
 // ── Mobile image decoder typedefs (shared with MobileImageDecoder) ──
 
 /// Native callback: Rust calls this from a background thread after decode.
@@ -113,6 +161,11 @@ typedef RcrmWebpBufDart =
       int quality,
     );
 
+typedef RcrmGenerateQrWebpC =
+    Pointer<Void> Function(Pointer<Uint8> data, IntPtr len);
+typedef RcrmGenerateQrWebpDart =
+    Pointer<Void> Function(Pointer<Uint8> data, int len);
+
 typedef RcrmFreeWebpBufC = Void Function(Pointer<Void> ptr);
 typedef RcrmFreeWebpBufDart = void Function(Pointer<Void> ptr);
 
@@ -136,8 +189,12 @@ class RustBridge {
   late RcrmSetLogLevelDart _setLogLevelFfi;
   late RcrmIsBlankFrameDart isBlankFrame;
   late RcrmGenTvCertDart _genTvCert;
+  late RcrmDecodeQrDart _decodeQr;
+  late RcrmDecodeQrBgraDart _decodeQrBgra;
+  late RcrmDecodeQrLumaDart _decodeQrLuma;
   late RcrmWebpBufDart encodeThumbWebp;
   late RcrmFreeWebpBufDart freeWebpBuf;
+  late RcrmGenerateQrWebpDart _generateQrWebp;
 
   /// Raw function addresses for MobileImageDecoder (cached, avoid per-decode
   /// dlsym).
@@ -230,12 +287,27 @@ class RustBridge {
     _genTvCert = _lib!.lookupFunction<RcrmGenTvCertC, RcrmGenTvCertDart>(
       'rcrm_generate_tv_cert',
     );
+    _decodeQr = _lib!.lookupFunction<RcrmDecodeQrC, RcrmDecodeQrDart>(
+      'rcrm_decode_qr',
+    );
+    _decodeQrBgra = _lib!
+        .lookupFunction<RcrmDecodeQrBgraC, RcrmDecodeQrBgraDart>(
+          'rcrm_decode_qr_bgra',
+        );
+    _decodeQrLuma = _lib!
+        .lookupFunction<RcrmDecodeQrLumaC, RcrmDecodeQrLumaDart>(
+          'rcrm_decode_qr_luma',
+        );
     encodeThumbWebp = _lib!.lookupFunction<RcrmWebpBufC, RcrmWebpBufDart>(
       'rcrm_encode_thumb_webp',
     );
     freeWebpBuf = _lib!.lookupFunction<RcrmFreeWebpBufC, RcrmFreeWebpBufDart>(
       'rcrm_free_webp_buf',
     );
+    _generateQrWebp = _lib!
+        .lookupFunction<RcrmGenerateQrWebpC, RcrmGenerateQrWebpDart>(
+          'rcrm_generate_qr_webp',
+        );
     freeWebpBufAddr = _lib!
         .lookup<NativeFunction<RcrmFreeWebpBufC>>('rcrm_free_webp_buf')
         .address;
@@ -386,6 +458,110 @@ class RustBridge {
       return {'cert': cert, 'key': key};
     } catch (_) {
       return const {};
+    }
+  }
+
+  /// Decode the first QR code from a JPEG camera frame.
+  ///
+  /// Returns the QR payload text, or null when no QR code is readable.
+  /// [jpeg] is copied into native heap for the call and freed automatically;
+  /// safe to reuse the same buffer afterwards.
+  String? decodeQrFromJpeg(Uint8List jpeg) {
+    if (!_loaded || jpeg.isEmpty) return null;
+    final ptr = calloc<Uint8>(jpeg.length);
+    ptr.asTypedList(jpeg.length).setAll(0, jpeg);
+    try {
+      return _parseQrResult(_readString(_decodeQr(ptr, jpeg.length)));
+    } finally {
+      calloc.free(ptr);
+    }
+  }
+
+  /// Decode the first QR code from a raw BGRA8888 frame (the format iOS'
+  /// frame stream emits). [rowStride] is the byte distance between row
+  /// starts (iOS CVPixelBuffer rows are 64-byte aligned, so bytesPerRow
+  /// can exceed width*4). Same contract as [decodeQrFromJpeg].
+  String? decodeQrFromBgra(
+    Uint8List bgra,
+    int width,
+    int height,
+    int rowStride,
+  ) {
+    if (!_loaded || bgra.isEmpty) return null;
+    final ptr = calloc<Uint8>(bgra.length);
+    ptr.asTypedList(bgra.length).setAll(0, bgra);
+    try {
+      return _parseQrResult(
+        _readString(_decodeQrBgra(ptr, bgra.length, width, height, rowStride)),
+      );
+    } finally {
+      calloc.free(ptr);
+    }
+  }
+
+  /// Decode the first QR code from a greyscale frame (e.g. the Y plane of a
+  /// yuv420 frame-stream image). [rowStride] is the byte distance between
+  /// row starts (CameraX Y rows are padded). Same contract as
+  /// [decodeQrFromJpeg].
+  String? decodeQrFromLuma(
+    Uint8List luma,
+    int width,
+    int height,
+    int rowStride,
+  ) {
+    if (!_loaded || luma.isEmpty) return null;
+    final ptr = calloc<Uint8>(luma.length);
+    ptr.asTypedList(luma.length).setAll(0, luma);
+    try {
+      return _parseQrResult(
+        _readString(_decodeQrLuma(ptr, luma.length, width, height, rowStride)),
+      );
+    } finally {
+      calloc.free(ptr);
+    }
+  }
+
+  String? _parseQrResult(String? json) {
+    if (json == null) return null;
+    try {
+      final map = jsonDecode(json) as Map<String, dynamic>;
+      return map['content'] as String?;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Generate a pairing QR code as lossless WebP bytes (2048×2048).
+  ///
+  /// Returns null when the bridge is unavailable or generation fails. The
+  /// returned view is backed by the Rust buffer with a finalizer that frees
+  /// it on GC — safe to hand to Image.memory and drop.
+  Uint8List? generateQrWebp(String payload) {
+    if (!_loaded || payload.isEmpty) return null;
+    // UTF-8 bytes (payloads are ASCII today, but stay correct if a QR name
+    // ever carries non-ASCII — the length must match the native buffer).
+    final bytes = utf8.encode(payload);
+    final ptr = calloc<Uint8>(bytes.length);
+    ptr.asTypedList(bytes.length).setAll(0, bytes);
+    try {
+      final out = _generateQrWebp(ptr, bytes.length);
+      if (out == nullptr) return null;
+      final buf = out.cast<_QrWebpBuf>().ref;
+      if (buf.data == nullptr || buf.dataLen <= 0) {
+        freeWebpBuf(out);
+        return null;
+      }
+      final len = buf.dataLen;
+      final addr = freeWebpBufAddr;
+      if (addr != 0) {
+        final fin = Pointer<NativeFunction<RcrmFreeWebpBufC>>.fromAddress(addr);
+        return buf.data.asTypedList(len, finalizer: fin, token: out);
+      }
+      final copy = Uint8List.fromList(buf.data.asTypedList(len));
+      freeWebpBuf(out);
+      return copy;
+    } finally {
+      calloc.free(ptr);
     }
   }
 }

@@ -7,11 +7,9 @@ edition = "2024"
 blake2 = "0.10"
 argon2 = "0.5"
 rand = "0.10"
-hex = "0.4"
 crc32fast = "1.5"
-chacha20 = "0.9"
+chacha20 = "0.10"
 mime_guess = "2"
-dunce = "1.0.5"
 zeroize = { version = "1.8.2", features = ["simd"] }
 
 [target.'cfg(unix)'.dependencies]

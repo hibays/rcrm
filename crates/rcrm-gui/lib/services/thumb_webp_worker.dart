@@ -161,6 +161,17 @@ class ThumbWebpWorker {
       final c = _pending.remove(msg[0] as int);
       if (c != null) {
         c.complete(_EncodeReply(msg[1] as int, msg[2] as int));
+      } else {
+        // Orphaned reply: the request timed out (5 s) and was removed from
+        // _pending, but the worker still finished the encode. Free the Rust
+        // output so it does not leak.
+        final outPtr = msg[1] as int;
+        if (outPtr != 0) {
+          final bridge = _loadedBridge();
+          if (bridge != null) {
+            bridge.freeWebpBuf(Pointer<Void>.fromAddress(outPtr).cast<Void>());
+          }
+        }
       }
     }
   }

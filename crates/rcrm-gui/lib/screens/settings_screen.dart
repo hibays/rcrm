@@ -237,8 +237,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         child: const Text('Stop'),
                       )
                     : TextButton(
-                        onPressed: () =>
-                            Navigator.of(ctx).pushReplacementNamed('/setup'),
+                        onPressed: () => Navigator.of(ctx)
+                            .pushNamedAndRemoveUntil('/setup', (_) => false),
                         child: const Text('Start'),
                       ),
               ),

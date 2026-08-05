@@ -58,6 +58,16 @@ class _State extends ConsumerState<CastRemoteScreen> {
   List<MediaItem> _images = [];
   bool _showImages = false;
   String _currentDir = '/';
+
+  /// The directory whose data is actually in [_subdirs]/[_videos]/[_images].
+  ///
+  /// [_currentDir] changes the moment a navigation starts (toolbar reacts),
+  /// but the browse storage key must NOT follow it until the listing for the
+  /// new directory has arrived. If the key changed while the old data was
+  /// still on screen, the keyed scrollable would remount and PageStorage
+  /// would restore the NEW directory's offset against the OLD directory's
+  /// content — the "flash the previous folder, then jump to the top" bug.
+  String _loadedDir = '/';
   bool _loadingDir = false;
   bool _dirError = false;
   bool _gridMode = false;
@@ -166,6 +176,10 @@ class _State extends ConsumerState<CastRemoteScreen> {
       _subdirs = subdirs;
       _videos = videos;
       _images = images;
+      // Only now does the on-screen data match the requested directory —
+      // bump the storage key together with the content so PageStorage
+      // restores the offset for the directory that is actually shown.
+      _loadedDir = path;
       _loadingDir = false;
     });
   }
@@ -564,9 +578,14 @@ class _State extends ConsumerState<CastRemoteScreen> {
   /// per (directory, tab) pair — going back up to a parent, or toggling
   /// between images/videos, lands where you left off instead of the top.
   /// Shared by list and grid mode so switching layout keeps the position.
+  ///
+  /// Keyed by [_loadedDir] (the directory whose data is on screen), NOT
+  /// [_currentDir]: while a directory listing is loading, the old content
+  /// stays mounted under the old key, so the offset is preserved until the
+  /// new directory's data is ready to replace it.
   Key _browseStorageKey() => PageStorageKey<String>(
-        'cast-browse:$_currentDir#${_showImages ? 'img' : 'vid'}',
-      );
+    'cast-browse:$_loadedDir#${_showImages ? 'img' : 'vid'}',
+  );
 
   Widget _buildList() {
     final files = _showImages ? _images : _videos;
@@ -1161,14 +1180,14 @@ class _FolderPreviewState extends ConsumerState<_FolderPreview> {
             errorWidget: widget.fallback,
           )
         : (_poster != null
-            ? Image.memory(
-                _poster!,
-                fit: BoxFit.cover,
-                cacheWidth: 640,
-                gaplessPlayback: true,
-                errorBuilder: (_, _, _) => widget.fallback,
-              )
-            : widget.fallback);
+              ? Image.memory(
+                  _poster!,
+                  fit: BoxFit.cover,
+                  cacheWidth: 640,
+                  gaplessPlayback: true,
+                  errorBuilder: (_, _, _) => widget.fallback,
+                )
+              : widget.fallback);
     return Stack(
       fit: StackFit.expand,
       children: [

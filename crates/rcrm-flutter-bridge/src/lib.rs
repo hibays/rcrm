@@ -26,6 +26,8 @@ mod decode;
 mod jxl;
 
 mod crypt_ops;
+mod qr_gen;
+mod qr_scan;
 mod server;
 mod tls_cert;
 mod webp;
@@ -330,6 +332,19 @@ pub unsafe extern "C" fn rcrm_decode_avif_async(
 	// A null/zero-length input is rejected up front — Vec::from_raw_parts
 	// requires a non-null, valid allocation of `len` bytes, and dereferencing
 	// a null (or trusting a length that doesn't match the allocation) is UB.
+	//
+	// ALLOCATOR MATCHING: Dart's `calloc` allocates via the C allocator and
+	// Rust's `Vec::drop` frees through the std System allocator.
+	// - Unix (Android/iOS): std System = libc malloc — match by contract
+	//   (std docs: "malloc on Unix").
+	// - Windows: std System = HeapAlloc/GetProcessHeap; UCRT calloc/malloc
+	//   also allocates from GetProcessHeap (no private CRT heap, no header
+	//   offset), so cross-freeing is compatible in practice — verified by a
+	//   runtime test (HeapSize on the process heap returns the malloc'd
+	//   size; HeapFree on a malloc pointer does not fail). This is an
+	//   implementation-detail match, not an API guarantee: if UCRT or std
+	//   ever change their backends, copy into a Rust-allocated Vec instead
+	//   of transferring ownership of the Dart buffer.
 	if data.is_null() || len == 0 {
 		// Still resolve the Dart completer via the callback with a null result.
 		if let Some(cb) = callback {
@@ -419,6 +434,114 @@ pub unsafe extern "C" fn rcrm_free_decode_buf(ptr: *mut decode::DecodeBuf) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcrm_set_log_level(level: u8) {
 	rcrm_core::log_level::set(level);
+}
+
+// =======================
+// QR scanning (cast pairing — all platforms)
+// =======================
+
+/// Decode the first QR code from a JPEG camera frame (e.g. a WebDAV server
+/// served QR on a TV screen). Returns a malloc'd JSON string —
+/// `{"content":"<payload>"}` on success or `{"error":"..."}` on failure.
+/// Caller must `rcrm_free_string`. Never returns null.
+///
+/// # Safety
+/// `data` must be a valid pointer to at least `len` bytes; `len` > 0.
+/// The buffer is copied immediately within the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcrm_decode_qr(data: *const u8, len: usize) -> *mut c_char {
+	if data.is_null() || len == 0 {
+		return str_to_cstring(r#"{"error":"empty"}"#);
+	}
+	let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+	match qr_scan::decode_qr_jpeg(bytes) {
+		Some(content) => {
+			let json = serde_json::json!({ "content": content }).to_string();
+			str_to_cstring(&json)
+		}
+		None => str_to_cstring(r#"{"error":"no qr"}"#),
+	}
+}
+
+/// Generate a pairing QR code as lossless WebP (2048×2048, 2K) for the cast
+/// receiver screen. Returns a `WebpBuf` (see `rcrm_encode_thumb_webp`) or
+/// null on failure; the caller must `rcrm_free_webp_buf`.
+///
+/// # Safety
+/// `data` must be a valid pointer to at least `len` bytes. The payload is
+/// copied immediately within the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcrm_generate_qr_webp(data: *const u8, len: usize) -> *mut webp::WebpBuf {
+	if data.is_null() || len == 0 {
+		return std::ptr::null_mut();
+	}
+	let payload = unsafe { std::slice::from_raw_parts(data, len) };
+	let payload = match std::str::from_utf8(payload) {
+		Ok(s) => s,
+		Err(_) => return std::ptr::null_mut(),
+	};
+	match qr_gen::generate_qr_webp(payload) {
+		Some(webp_bytes) => Box::into_raw(webp::vec_into_webp_buf(webp_bytes)),
+		None => std::ptr::null_mut(),
+	}
+}
+
+/// Decode the first QR code from a raw BGRA8888 frame (4 bytes/pixel,
+/// byte order B,G,R,A) — the format iOS' frame stream emits. `row_stride`
+/// is the distance in bytes between row starts (CVPixelBuffer rows are
+/// 64-byte aligned, so `bytesPerRow >= width * 4`). Same JSON contract as
+/// [`rcrm_decode_qr`]. Caller must `rcrm_free_string`.
+///
+/// # Safety
+/// `data` must point to at least `row_stride * (height - 1) + width * 4`
+/// bytes. The buffer is copied immediately within the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcrm_decode_qr_bgra(
+	data: *const u8,
+	len: usize,
+	width: u32,
+	height: u32,
+	row_stride: u32,
+) -> *mut c_char {
+	if data.is_null() || len == 0 || width == 0 || height == 0 {
+		return str_to_cstring(r#"{"error":"empty"}"#);
+	}
+	let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+	match qr_scan::decode_qr_bgra(width as usize, height as usize, row_stride as usize, bytes) {
+		Some(content) => {
+			let json = serde_json::json!({ "content": content }).to_string();
+			str_to_cstring(&json)
+		}
+		None => str_to_cstring(r#"{"error":"no qr"}"#),
+	}
+}
+
+/// Decode the first QR code from a greyscale YUV420 Y-plane (the format
+/// Android's CameraX / iOS' AVFoundation frame streams deliver). `row_stride`
+/// is the bytes-to-next-row distance (CameraX Y rows are often padded).
+/// Must `rcrm_free_string` the result.
+///
+/// # Safety
+/// `data` must point to at least `row_stride * (height - 1) + width` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcrm_decode_qr_luma(
+	data: *const u8,
+	len: usize,
+	width: u32,
+	height: u32,
+	row_stride: u32,
+) -> *mut c_char {
+	if data.is_null() || len == 0 || width == 0 || height == 0 || row_stride == 0 {
+		return str_to_cstring(r#"{"error":"empty"}"#);
+	}
+	let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+	match qr_scan::decode_qr_luma(width as usize, height as usize, row_stride as usize, bytes) {
+		Some(content) => {
+			let json = serde_json::json!({ "content": content }).to_string();
+			str_to_cstring(&json)
+		}
+		None => str_to_cstring(r#"{"error":"no qr"}"#),
+	}
 }
 
 // =======================

@@ -2,12 +2,17 @@
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- camera_android_camerax merges RECORD_AUDIO in (video recording);
+         this app only scans — camera only, no microphone. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"
+        tools:node="remove"/>
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <!-- Storage access for media folders -->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32"/>
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32"/>
+        android:maxSdkVersion="32"
+        tools:replace="android:maxSdkVersion"/>
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage"/>
     <!-- Android TV support: app runs on TVs and phones; the TV side

@@ -72,7 +72,8 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
       if (!mounted) return;
       final st = ref.read(serverProvider);
       if (st.isRunning) {
-        Navigator.of(context).pushReplacementNamed('/home');
+        // Home is the ROOT of the stack — never leave anything below it.
+        Navigator.of(context).pushNamedAndRemoveUntil('/home', (_) => false);
         return;
       }
       if (st.error == 'BAD_CERT') {
@@ -169,7 +170,8 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
         if (!mounted) return;
         final st = ref.read(serverProvider);
         if (st.isRunning) {
-          Navigator.of(context).pushReplacementNamed('/home');
+          // Home is the ROOT of the stack — never leave anything below it.
+          Navigator.of(context).pushNamedAndRemoveUntil('/home', (_) => false);
         } else {
           _showErr(st.error ?? 'Connection failed');
         }
@@ -379,11 +381,13 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
                           TextButton(
                             onPressed: _isConnecting
                                 ? null
-                                : () => Navigator.of(
-                                    context,
-                                  ).pushReplacementNamed('/home'),
+                                : () => Navigator.of(context)
+                                      .pushNamedAndRemoveUntil(
+                                        '/home',
+                                        (_) => false,
+                                      ),
                             child: const Text(
-                              'Skip — browse read-only library',
+                              'Skip �� browse read-only library',
                             ),
                           ),
                           const SizedBox(height: 8),
@@ -395,9 +399,13 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
                                         .read(settingsServiceProvider)
                                         .setDeployMode(DeployMode.local);
                                     if (mounted) {
-                                      Navigator.of(
-                                        context,
-                                      ).pushReplacementNamed('/setup');
+                                      // Full stack reset: setup must end up
+                                      // as the only route below home.
+                                      Navigator.of(context)
+                                          .pushNamedAndRemoveUntil(
+                                            '/setup',
+                                            (_) => false,
+                                          );
                                     }
                                   },
                             child: const Text('Switch to Local Deploy'),

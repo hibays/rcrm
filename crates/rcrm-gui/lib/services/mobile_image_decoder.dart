@@ -52,12 +52,20 @@ class MobileImageDecoder {
 
   // ── Public decode entry ───────────────────────────────────────
 
+  /// Software-decode AVIF/JXL [bytes] to a `ui.Codec`, or null when [url]
+  /// is not an AVIF/JXL file (Flutter's built-in codec handles the rest).
+  ///
+  /// [format] overrides the URL-derived format detection. Needed when the
+  /// extension is not in the URL path — e.g. the cast receiver fetches
+  /// through a proxy URL (`/cast/stream?path=<real path>`) where the file
+  /// extension lives in the query parameter.
   static Future<ui.Codec?> tryDecode(
     Uint8List bytes,
     String url, {
     int targetWidth = 0,
+    String? format,
   }) async {
-    final addr = switch (_fmt(url)) {
+    final addr = switch (format ?? _fmt(url)) {
       'avif' => RustBridge.decodeAvifAsyncAddr,
       'jxl' => RustBridge.decodeJxlAsyncAddr,
       _ => 0,
@@ -107,6 +115,13 @@ class MobileImageDecoder {
     Pointer<_DB> buf,
     Completer<ui.Codec?> completer,
   ) async {
+    var freed = false;
+    void freeOnce() {
+      if (freed) return;
+      freed = true;
+      _free(buf);
+    }
+
     try {
       if (buf.address == 0) {
         completer.complete(null);
@@ -117,7 +132,7 @@ class MobileImageDecoder {
       final h = buf.ref.height;
       final buffer = await ui.ImmutableBuffer.fromUint8List(rgba);
       // ImmutableBuffer owns its own copy — free the Rust buffer now.
-      _free(buf);
+      freeOnce();
       final descriptor = ui.ImageDescriptor.raw(
         buffer,
         width: w,
@@ -127,8 +142,11 @@ class MobileImageDecoder {
       final codec = await descriptor.instantiateCodec();
       completer.complete(codec);
     } catch (_) {
+      // The descriptor/instantiateCodec path can throw AFTER the buffer was
+      // already freed above — freeOnce() keeps the catch path a single free,
+      // so a decode failure can never double-free the Rust DecodeBuf.
       completer.complete(null);
-      _free(buf);
+      freeOnce();
     }
   }
 

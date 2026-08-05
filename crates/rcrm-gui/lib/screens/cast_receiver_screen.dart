@@ -9,17 +9,21 @@
 // (showBack → AppBar with back).
 
 import 'dart:async';
+import 'dart:io';
+import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 
 import '../providers/server_provider.dart';
 import '../services/cast_protocol.dart';
 import '../services/cast_receiver.dart';
+import '../services/mobile_image_decoder.dart';
+import '../widgets/cast_receiver_qr_view.dart';
 import '../widgets/media_player_keys.dart';
 
 class CastReceiverScreen extends ConsumerStatefulWidget {
@@ -39,12 +43,14 @@ class _State extends ConsumerState<CastReceiverScreen> {
   StreamSubscription? _posSub;
   StreamSubscription? _durSub;
   StreamSubscription? _playingSub;
+  StreamSubscription? _buffSub;
 
   bool _starting = true;
   String? _error;
   CastQrPayload? _qr;
   Timer? _qrTimer;
   bool _playing = false;
+  bool _buffering = false;
   String? _currentPath;
 
   /// Top overlay (progress + filename + stop) visibility. Shown on start /
@@ -201,6 +207,10 @@ class _State extends ConsumerState<CastReceiverScreen> {
     }
 
     // Video cast.
+    // Reset the buffering flag: media_kit's `stream.buffering` only emits on
+    // state transitions, so a stale `true` from a previous session would
+    // otherwise show the spinner until the new player happens to transition.
+    _buffering = false;
     var player = _player;
     if (player == null) {
       player = Player();
@@ -234,6 +244,10 @@ class _State extends ConsumerState<CastReceiverScreen> {
           posMs: _pos.value.inMilliseconds,
           durMs: _dur.value.inMilliseconds,
         );
+      });
+      _buffSub = player.stream.buffering.listen((buffering) {
+        if (!mounted) return;
+        setState(() => _buffering = buffering);
       });
     }
     await player.open(Media(streamUrl));
@@ -283,8 +297,8 @@ class _State extends ConsumerState<CastReceiverScreen> {
   Future<void> _setRate(double rate) async => _player?.setRate(rate);
 
   /// Stop and release the video player. Cancels the progress/duration/
-  /// playing subscriptions FIRST so a disposed Player never delivers stale
-  /// events, then disposes the Player + controller.
+  /// playing/buffering subscriptions FIRST so a disposed Player never
+  /// delivers stale events, then disposes the Player + controller.
   Future<void> _disposePlayer() async {
     _posSub?.cancel();
     _posSub = null;
@@ -292,6 +306,8 @@ class _State extends ConsumerState<CastReceiverScreen> {
     _durSub = null;
     _playingSub?.cancel();
     _playingSub = null;
+    _buffSub?.cancel();
+    _buffSub = null;
     final player = _player;
     if (player != null) {
       try {
@@ -359,67 +375,6 @@ class _State extends ConsumerState<CastReceiverScreen> {
     });
   }
 
-  /// Advertised address row. When several NICs exist (VPN/Hyper-V/Docker
-  /// virtual adapters alongside the real LAN one), shows a picker so the
-  /// user can select the address that is actually reachable by the phone.
-  Widget _buildAddressRow(
-    CastQrPayload qr,
-    CastReceiver receiver, {
-    required bool landscape,
-  }) {
-    final candidates = receiver.localIpv4s;
-    final style = TextStyle(
-      fontSize: landscape ? 15 : 14,
-      color: Colors.white.withValues(alpha: 0.55),
-    );
-    final label = 'Address ${qr.host}:${qr.port}';
-    if (candidates.length <= 1) {
-      return Align(
-        alignment: landscape ? Alignment.centerLeft : Alignment.center,
-        child: Text(label, style: style),
-      );
-    }
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      mainAxisAlignment: landscape
-          ? MainAxisAlignment.start
-          : MainAxisAlignment.center,
-      children: [
-        Text(label, style: style),
-        const SizedBox(width: 4),
-        PopupMenuButton<String>(
-          tooltip: 'Change LAN address',
-          icon: Icon(
-            Icons.swap_horiz,
-            size: 16,
-            color: Colors.white.withValues(alpha: 0.55),
-          ),
-          onSelected: (ip) {
-            receiver.selectLocalIpv4(ip);
-            setState(() => _qr = receiver.currentQr());
-          },
-          itemBuilder: (context) => [
-            for (final ip in candidates)
-              PopupMenuItem<String>(
-                value: ip,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (ip == qr.host)
-                      const Icon(Icons.check, size: 16)
-                    else
-                      const SizedBox(width: 16),
-                    const SizedBox(width: 8),
-                    Text(ip),
-                  ],
-                ),
-              ),
-          ],
-        ),
-      ],
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     if (_starting) {
@@ -467,247 +422,28 @@ class _State extends ConsumerState<CastReceiverScreen> {
   Widget _buildQrPage(CastQrPayload qr, {required bool usable}) {
     final receiver = _receiver!;
     final paired = receiver.isPaired;
-    final badge = usable
-        ? null
-        : (paired ? 'Paired' : 'Expired - generate a new code');
-    return Scaffold(
-      appBar: widget.showBack
-          ? AppBar(title: const Text('RCrm Cast Receiver'))
-          : null,
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Color(0xFF101428), Color(0xFF1A1030), Color(0xFF0B0B14)],
-          ),
-        ),
-        child: SafeArea(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              // Landscape (TV, desktop windows, landscape phones): side-by-side
-              // info + QR. Portrait: stacked, scrollable column.
-              final landscape =
-                  constraints.maxWidth > 700 &&
-                  constraints.maxWidth > constraints.maxHeight * 1.02;
-              if (landscape) {
-                return _buildLandscape(qr, paired, usable, badge, constraints);
-              }
-              return _buildPortrait(qr, paired, usable, badge, constraints);
-            },
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLandscape(
-    CastQrPayload qr,
-    bool paired,
-    bool usable,
-    String? badge,
-    BoxConstraints constraints,
-  ) {
-    final receiver = _receiver!;
-    final qrSize = (constraints.maxHeight * 0.52).clamp(220.0, 520.0);
-    return Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 1280),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              // Left: brand + status + actions.
-              Expanded(
-                flex: 5,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const _BrandHeader(),
-                    const SizedBox(height: 20),
-                    Text(
-                      paired
-                          ? 'Phone connected, waiting to play...'
-                          : usable
-                          ? 'Scan the QR with the RCrm phone app'
-                          : 'Code expired - tap below for a new one',
-                      style: TextStyle(
-                        fontSize: 18,
-                        color: Colors.white.withValues(alpha: 0.75),
-                      ),
-                    ),
-                    const SizedBox(height: 28),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 10,
-                      children: [
-                        _StatusChip(
-                          label: paired ? 'Paired' : 'Waiting to scan',
-                          ok: paired,
-                          icon: paired
-                              ? Icons.check_circle
-                              : Icons.radio_button_checked,
-                        ),
-                        _StatusChip(
-                          label: receiver.serverOk
-                              ? 'Server reachable'
-                              : 'Server not connected',
-                          ok: receiver.serverOk,
-                          icon: receiver.serverOk
-                              ? Icons.cloud_done
-                              : Icons.cloud_off,
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 20),
-                    _buildAddressRow(qr, receiver, landscape: true),
-                    const SizedBox(height: 26),
-                    _PairCountdown(
-                      expiresAt: receiver.pairExpiresAt,
-                      paired: paired,
-                      tick: _qrTimer != null,
-                    ),
-                    const SizedBox(height: 16),
-                    Focus(
-                      child: OutlinedButton.icon(
-                        onPressed: paired ? _unpair : _regenerateQr,
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          side: BorderSide(
-                            color: Colors.white.withValues(alpha: 0.35),
-                          ),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 12,
-                          ),
-                        ),
-                        icon: Icon(paired ? Icons.link_off : Icons.qr_code_2),
-                        label: Text(paired ? 'Unpair' : 'New code'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 48),
-              // Right: the QR card.
-              Expanded(
-                flex: 4,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    _QrCard(qr: qr, size: qrSize, badge: badge),
-                    const SizedBox(height: 14),
-                    Text(
-                      'One-time code, auto-destroys on expiry',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: Colors.white.withValues(alpha: 0.4),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPortrait(
-    CastQrPayload qr,
-    bool paired,
-    bool usable,
-    String? badge,
-    BoxConstraints constraints,
-  ) {
-    final receiver = _receiver!;
-    final shortSide = constraints.maxWidth < constraints.maxHeight
-        ? constraints.maxWidth
-        : constraints.maxHeight;
-    final qrSize = (shortSide * 0.42).clamp(180.0, 430.0);
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-      child: ConstrainedBox(
-        constraints: BoxConstraints(minHeight: constraints.maxHeight - 40),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const _BrandHeader(),
-            const SizedBox(height: 12),
-            Text(
-              paired
-                  ? 'Phone connected, waiting to play...'
-                  : usable
-                  ? 'Scan the QR with the RCrm phone app'
-                  : 'Code expired - tap below for a new one',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 17,
-                color: Colors.white.withValues(alpha: 0.75),
-              ),
-            ),
-            const SizedBox(height: 28),
-            // QR card — the pairing surface.
-            _QrCard(qr: qr, size: qrSize, badge: badge),
-            const SizedBox(height: 20),
-            _PairCountdown(
-              expiresAt: receiver.pairExpiresAt,
-              paired: paired,
-              tick: _qrTimer != null,
-            ),
-            const SizedBox(height: 20),
-            Wrap(
-              spacing: 12,
-              runSpacing: 10,
-              alignment: WrapAlignment.center,
-              children: [
-                _StatusChip(
-                  label: paired ? 'Paired' : 'Waiting to scan',
-                  ok: paired,
-                  icon: paired
-                      ? Icons.check_circle
-                      : Icons.radio_button_checked,
-                ),
-                _StatusChip(
-                  label: receiver.serverOk
-                      ? 'Server reachable'
-                      : 'Server not connected',
-                  ok: receiver.serverOk,
-                  icon: receiver.serverOk ? Icons.cloud_done : Icons.cloud_off,
-                ),
-              ],
-            ),
-            const SizedBox(height: 18),
-            _buildAddressRow(qr, receiver, landscape: false),
-            const SizedBox(height: 22),
-            Focus(
-              child: OutlinedButton.icon(
-                onPressed: paired ? _unpair : _regenerateQr,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.white,
-                  side: BorderSide(color: Colors.white.withValues(alpha: 0.35)),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 20,
-                    vertical: 12,
-                  ),
-                ),
-                icon: Icon(paired ? Icons.link_off : Icons.qr_code_2),
-                label: Text(paired ? 'Unpair' : 'New code'),
-              ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              'One-time code, auto-destroys on expiry',
-              style: TextStyle(
-                fontSize: 13,
-                color: Colors.white.withValues(alpha: 0.4),
-              ),
-            ),
-          ],
-        ),
+    // Keep the badge text short: it sits inside the QR card, and a long
+    // phrase ('Expired - generate a new code') wraps inside small cards and
+    // the strike-through X crosses the multi-line pill. The page text below
+    // the QR already spells out what to do.
+    final badge = usable ? null : (paired ? 'Paired' : 'Expired');
+    return CastReceiverQrView(
+      qr: qr,
+      paired: paired,
+      usable: usable,
+      badge: badge,
+      showBack: widget.showBack,
+      localIpv4s: receiver.localIpv4s,
+      pairExpiresAt: receiver.pairExpiresAt,
+      serverOk: receiver.serverOk,
+      tick: _qrTimer != null,
+      callbacks: CastReceiverQrViewCallbacks(
+        onUnpair: _unpair,
+        onRegenerate: _regenerateQr,
+        onSelectIpv4: (ip) {
+          receiver.selectLocalIpv4(ip);
+          setState(() => _qr = receiver.currentQr());
+        },
       ),
     );
   }
@@ -744,12 +480,14 @@ class _State extends ConsumerState<CastReceiverScreen> {
         onEscape: _stopPlayback,
       ),
       child: PopScope(
-        // While playing, intercept the system back button so the TV
-        // owner does not lose playback silently; confirm first.
+        // While playing, the back key stops PLAYBACK but keeps the receiver
+        // and the cast connection alive (same as the Stop button). Only a
+        // plain back (nothing playing) pops the screen; use the Exit button
+        // to leave the receiver entirely.
         canPop: !_playing,
         onPopInvokedWithResult: (didPop, _) async {
           if (didPop || !_playing) return;
-          await _exitReceiver();
+          await _stopPlayback();
         },
         child: Scaffold(
           // No AppBar: full-screen video. The overlay (shown briefly on
@@ -761,14 +499,11 @@ class _State extends ConsumerState<CastReceiverScreen> {
               children: [
                 Positioned.fill(
                   child: _imageUrl != null
-                      ? Image.network(
-                          _imageUrl!,
-                          fit: BoxFit.contain,
-                          // Decode at the screen width so a low-end TV
-                          // never holds a full-resolution RGBA buffer.
-                          cacheWidth: MediaQuery.of(context).size.width.round(),
-                          gaplessPlayback: true,
-                          errorBuilder: (_, _, _) => const ColoredBox(
+                      ? _CastImage(
+                          key: ValueKey(_imageUrl),
+                          url: _imageUrl!,
+                          filePath: _currentPath ?? '',
+                          errorWidget: const ColoredBox(
                             color: Colors.black,
                             child: Center(
                               child: Text(
@@ -782,6 +517,11 @@ class _State extends ConsumerState<CastReceiverScreen> {
                       ? Video(controller: _vc!, fit: BoxFit.contain)
                       : const ColoredBox(color: Colors.black),
                 ),
+                // Buffering spinner over the video while it loads/seeks.
+                if (_vc != null && _buffering)
+                  const Center(
+                    child: CircularProgressIndicator(color: Colors.white70),
+                  ),
                 // Top overlay: status + thin progress bar. Auto-hides.
                 if (_overlayVisible)
                   Positioned(
@@ -939,250 +679,6 @@ class _State extends ConsumerState<CastReceiverScreen> {
   }
 }
 
-/// The white QR card. When [badge] is non-null the QR is dimmed and struck
-/// through with a badge (expired / already paired) while the layout stays
-/// unchanged.
-class _QrCard extends StatelessWidget {
-  final CastQrPayload qr;
-  final double size;
-  final String? badge;
-  const _QrCard({required this.qr, required this.size, this.badge});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: EdgeInsets.all(size * 0.05),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(size * 0.07),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF4C6FFF).withValues(alpha: 0.35),
-            blurRadius: 40,
-            spreadRadius: 2,
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(size * 0.03),
-        child: Stack(
-          children: [
-            QrImageView(
-              data: qr.encode(),
-              size: size,
-              backgroundColor: Colors.white,
-              eyeStyle: const QrEyeStyle(
-                eyeShape: QrEyeShape.square,
-                color: Color(0xFF101428),
-              ),
-              dataModuleStyle: const QrDataModuleStyle(
-                dataModuleShape: QrDataModuleShape.square,
-                color: Color(0xFF101428),
-              ),
-            ),
-            if (badge != null)
-              Positioned.fill(
-                child: ColoredBox(
-                  color: Colors.black.withValues(alpha: 0.45),
-                  child: CustomPaint(
-                    painter: const _StrikeThroughPainter(),
-                    child: Center(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(
-                            0xFF101428,
-                          ).withValues(alpha: 0.85),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.5),
-                          ),
-                        ),
-                        child: Text(
-                          badge!,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// Paints an X across the QR to mark it invalid.
-class _StrikeThroughPainter extends CustomPainter {
-  const _StrikeThroughPainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.75)
-      ..strokeWidth = size.shortestSide * 0.02
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(
-      Offset(size.width * 0.08, size.height * 0.08),
-      Offset(size.width * 0.92, size.height * 0.92),
-      paint,
-    );
-    canvas.drawLine(
-      Offset(size.width * 0.92, size.height * 0.08),
-      Offset(size.width * 0.08, size.height * 0.92),
-      paint,
-    );
-  }
-
-  @override
-  bool shouldRepaint(_StrikeThroughPainter oldDelegate) => false;
-}
-
-class _BrandHeader extends StatelessWidget {
-  const _BrandHeader();
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 52,
-          height: 52,
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0xFF6C8CFF), Color(0xFF9A6CFF)],
-            ),
-            borderRadius: BorderRadius.circular(14),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFF6C8CFF).withValues(alpha: 0.4),
-                blurRadius: 18,
-              ),
-            ],
-          ),
-          child: const Icon(Icons.cast, color: Colors.white, size: 30),
-        ),
-        const SizedBox(width: 14),
-        const Text(
-          'Cast Receiver',
-          style: TextStyle(
-            fontSize: 30,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.5,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-/// Shows the seconds left until the one-time pair token expires. On expiry
-/// the token is destroyed (receiver stops offering the QR) and the parent
-/// switches to the expired state; this widget itself stays stateless.
-class _PairCountdown extends StatelessWidget {
-  final DateTime? expiresAt;
-  final bool paired;
-  final bool tick;
-  const _PairCountdown({
-    required this.expiresAt,
-    required this.paired,
-    required this.tick,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    if (paired) {
-      return Text(
-        'Paired - QR no longer needed',
-        style: TextStyle(
-          fontSize: 13,
-          color: Colors.white.withValues(alpha: 0.45),
-        ),
-      );
-    }
-    final exp = expiresAt;
-    if (exp == null) return const SizedBox.shrink();
-    final left = exp.difference(DateTime.now());
-    if (left.isNegative) {
-      return Text(
-        'Code expired and destroyed',
-        style: const TextStyle(
-          fontSize: 13,
-          color: Color(0xFFFFB74D),
-          fontWeight: FontWeight.w600,
-        ),
-      );
-    }
-    final secs = (left.inMilliseconds / 1000).ceil();
-    final urgent = secs <= 15;
-    return Text(
-      'Code expires in ${secs}s',
-      style: TextStyle(
-        fontSize: 13,
-        color: urgent
-            ? const Color(0xFFFFB74D)
-            : Colors.white.withValues(alpha: 0.45),
-        fontWeight: urgent ? FontWeight.w600 : FontWeight.normal,
-      ),
-    );
-  }
-}
-
-class _StatusChip extends StatelessWidget {
-  final String label;
-  final bool ok;
-  final IconData icon;
-  const _StatusChip({
-    required this.label,
-    required this.ok,
-    required this.icon,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final bg = ok
-        ? const Color(0xFF1B5E20).withValues(alpha: 0.85)
-        : const Color(0xFF4A148C).withValues(alpha: 0.85);
-    final fg = ok ? const Color(0xFFA5D6A7) : const Color(0xFFCE93D8);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: fg.withValues(alpha: 0.35)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 16, color: fg),
-          const SizedBox(width: 7),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 14,
-              color: fg,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 /// Wires [CastReceiver] commands to the screen's player.
 class _PlayerHost implements CastPlayerHost {
   final _State state;
@@ -1209,4 +705,167 @@ class _PlayerHost implements CastPlayerHost {
 
   @override
   Future<void> setRate(double rate) => state._setRate(rate);
+}
+
+/// Full-screen cast image with AVIF/JXL support and correct physical-pixel
+/// decoding.
+///
+/// The receiver previously used `Image.network`, which has two problems on a
+/// TV: Flutter's built-in codec cannot decode AVIF/JXL (the phone routes
+/// those through the Rust software decoder — this widget does the same), and
+/// `cacheWidth` used the LOGICAL screen width, so on a 4K TV a 4K photo was
+/// decoded at half resolution and upscaled — the "small blurry image" look.
+///
+/// Decoding is capped at the PHYSICAL screen size (fit, aspect preserved):
+/// large photos are downscaled (bounded memory on low-end TVs), small images
+/// decode at their native size (no pointless upscale), matching the phone
+/// viewer's small/large distinction. [filePath] is the original server path
+/// (not the proxy URL) so AVIF/JXL are routed to the Rust decoder.
+class _CastImage extends StatefulWidget {
+  /// Localhost proxy URL of the full image file.
+  final String url;
+
+  /// Original server-side path (used for format detection — the proxy URL's
+  /// extension lives in a query parameter, not the URL path).
+  final String filePath;
+
+  /// Shown when the image cannot be fetched or decoded.
+  final Widget errorWidget;
+
+  const _CastImage({
+    super.key,
+    required this.url,
+    required this.filePath,
+    required this.errorWidget,
+  });
+
+  @override
+  State<_CastImage> createState() => _CastImageState();
+}
+
+class _CastImageState extends State<_CastImage> {
+  ui.Image? _image;
+  bool _failed = false;
+
+  /// Lowercased file extension (e.g. "avif", "jxl") from a path, or null.
+  static String? _extOf(String path) {
+    final p = Uri.tryParse(path)?.path ?? path;
+    final dot = p.lastIndexOf('.');
+    if (dot == -1 || dot == p.length - 1) return null;
+    final ext = p.substring(dot + 1).toLowerCase();
+    return ext.isEmpty ? null : ext;
+  }
+
+  /// Bumped on every URL change so a stale in-flight load (the fetch/decode
+  /// is async) can never clobber the image or error state of the current
+  /// URL. Without this, rapid image casts could flash the wrong picture.
+  int _gen = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(_CastImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url || oldWidget.filePath != widget.filePath) {
+      _gen++; // invalidate any in-flight load
+      _image?.dispose();
+      _image = null;
+      _failed = false;
+      _load();
+    }
+  }
+
+  @override
+  void dispose() {
+    _gen++; // invalidate any in-flight load
+    _image?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final gen = _gen;
+    // The proxy URL is plain http://127.0.0.1:<port> — a bare HttpClient is
+    // fine (no TLS, no certificate decision to make).
+    final client = HttpClient();
+    try {
+      final req = await client.getUrl(Uri.parse(widget.url));
+      final res = await req.close();
+      if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
+      final bytes = await consolidateHttpClientResponseBytes(res);
+      if (!mounted || gen != _gen) return;
+
+      // Physical-pixel decode cap: on a 4K TV this is 3840, so large photos
+      // stay sharp; on a phone-as-receiver it is the screen's own pixels.
+      final dpr = MediaQuery.devicePixelRatioOf(context);
+      final physicalWidth = (MediaQuery.sizeOf(context).width * dpr).round();
+      final physicalHeight = (MediaQuery.sizeOf(context).height * dpr).round();
+
+      // AVIF/JXL → Rust software decoder (available on the Android TV build
+      // via the mobile-decode feature; no-op elsewhere). format is derived
+      // from the REAL path — the proxy URL's query param holds it.
+      final format = _extOf(widget.filePath);
+      var codec = await MobileImageDecoder.tryDecode(
+        bytes,
+        widget.url,
+        targetWidth: physicalWidth,
+        format: format,
+      );
+      if (codec == null) {
+        final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+        // Scale DOWN to fit the physical screen, preserving aspect ratio —
+        // never set width and height independently (that distorts, e.g. a
+        // 4000×3000 photo would decode square). Small images keep native
+        // resolution (no pointless upscale).
+        codec = await ui.instantiateImageCodecWithSize(
+          buffer,
+          getTargetSize: (int w, int h) {
+            if (w <= physicalWidth && h <= physicalHeight) {
+              return const ui.TargetImageSize();
+            }
+            final scale = (physicalWidth / w) < (physicalHeight / h)
+                ? physicalWidth / w
+                : physicalHeight / h;
+            return ui.TargetImageSize(
+              width: (w * scale).round(),
+              height: (h * scale).round(),
+            );
+          },
+        );
+      }
+      final frame = await codec.getNextFrame();
+      if (!mounted || gen != _gen) return;
+      setState(() {
+        _image?.dispose();
+        _image = frame.image;
+      });
+    } catch (_) {
+      if (mounted && gen == _gen) setState(() => _failed = true);
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_failed) return widget.errorWidget;
+    final image = _image;
+    if (image == null) {
+      // Loading: black backdrop + spinner (the fetch and decode are async).
+      return const ColoredBox(
+        color: Colors.black,
+        child: Center(child: CircularProgressIndicator(color: Colors.white70)),
+      );
+    }
+    return RawImage(
+      image: image,
+      fit: BoxFit.contain,
+      // gaplessPlayback analog: keep the previous frame while a new URL
+      // loads so the screen never flashes black between cast images.
+      isAntiAlias: true,
+    );
+  }
 }
