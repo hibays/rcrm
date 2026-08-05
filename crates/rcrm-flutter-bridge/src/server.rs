@@ -101,6 +101,23 @@ fn build_manager(passwords: &[Zeroizing<String>]) -> Manager {
 pub fn start(dirs_json: &str, passwords: &[Zeroizing<String>], bind_addr: &str, port: u16) -> i32 {
 	clear_error();
 
+	// Defensive cleanup: a server from a previous session may still be running
+	// if the host app was torn down without stop() (Android Activity finished
+	// but the process survived). Shut it down and reset the scan/unlock cache —
+	// otherwise a fresh start would stack a SECOND server on the same files AND
+	// reuse the old accepted keys, letting any password unlock everything
+	// (verification bypass). Only reset when a stale server actually exists: the
+	// multi-password flow (start → locked → start with another key) must keep
+	// its incremental cache.
+	if let Some(prev) = SERVER.lock().take() {
+		prev.shutdown.store(true, Ordering::SeqCst);
+		SCANNED_PATHS.lock().clear();
+		LOCKED_PATHS.lock().clear();
+		ACCEPTED_KEYS.lock().clear();
+		CACHED_DIRS.lock().clear();
+		UNLOCKED_COUNT.store(0, Ordering::Relaxed);
+	}
+
 	let bind_addr = bind_addr.to_string();
 	// Keep passwords inside Zeroizing the whole way across the thread
 	// boundary: never copy them into a plain String (which would leave an

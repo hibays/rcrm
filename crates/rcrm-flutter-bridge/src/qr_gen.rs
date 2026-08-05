@@ -111,7 +111,7 @@ mod tests {
 		assert_eq!(w, QR_SIZE);
 		assert_eq!(h, QR_SIZE);
 		let px = |x: usize, y: usize| {
-			let i = (y as usize * QR_SIZE as usize + x as usize) * 4;
+			let i = (y * QR_SIZE as usize + x) * 4;
 			rgba[i]
 		};
 		// Four corners are quiet zone → pixel-exact white (255) in lossless.
