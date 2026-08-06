@@ -218,10 +218,19 @@ class ThumbnailService {
       _tnFreeSlots.isEmpty ? -1 : _tnFreeSlots.removeLast();
 
   static void _tnReleaseSlot(int slot) {
+    // Guard against a stale release: if the pool is ever torn down mid-task
+    // (_tnDisposePool on the idle timer races an in-flight screenshot), the
+    // in-flight task's finally() would push an index that no longer belongs to
+    // the (possibly rebuilt) pool — duplicating a slot so two tasks share one
+    // Player. Drop out-of-range and already-free slots.
+    if (slot < 0 || slot >= _tnPlayers.length) return;
+    if (_tnFreeSlots.contains(slot)) return;
     _tnFreeSlots.add(slot);
   }
 
   static void _tnDisposePool() {
+    _tnIdleTimer?.cancel();
+    _tnIdleTimer = null;
     for (final p in _tnPlayers) {
       try {
         p.dispose();
@@ -230,7 +239,6 @@ class ThumbnailService {
     _tnPlayers.clear();
     _tnControllers.clear();
     _tnFreeSlots.clear();
-    _tnIdleTimer = null;
   }
 
   /// Wait for the player to actually reach [target] after a seek by listening

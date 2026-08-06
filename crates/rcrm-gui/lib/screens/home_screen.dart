@@ -4,6 +4,8 @@
 // Hosts three tab views: Home (recommendations + doctor), Videos (grid),
 // and Images (albums). Each tab manages its own scanning and state.
 
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -16,6 +18,7 @@ import '../widgets/doctor_panel.dart';
 import '../widgets/album_preview.dart';
 import '../widgets/video_card.dart';
 import '../widgets/finger_preview_listener.dart';
+import '../widgets/double_back_exit.dart';
 import '../services/preview_player.dart';
 import '../services/cast_remote.dart';
 import '../services/cast_session_store.dart';
@@ -41,10 +44,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// check). Guards the cast button against re-entry: without it, tapping
   /// repeatedly while the check is in flight stacks a new CastScanScreen /
   /// CastRemoteScreen per tap, and each stacked scanner grabs the camera
-  /// again — the app hangs and the routes pile up ("层层路由").
+  /// again — the app hangs and the routes pile up ("route stacking").
   bool _castBusy = false;
   final _fp = FingerPreviewState();
   bool _fromHomeChip = false;
+  final _exitGuard = DoubleBackGuard();
 
   final List<String> _titles = const ['RCrm', 'Videos', 'Images'];
 
@@ -134,7 +138,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     ref.listen(imageAlbumOpenProvider, (prev, next) {
       if (prev == true && next == false && _fromHomeChip) {
         _fromHomeChip = false;
-        if (_currentIndex == 2) setState(() => _currentIndex = 0);
+        if (_currentIndex == 2) {
+          _exitGuard.reset();
+          setState(() => _currentIndex = 0);
+        }
       }
     });
 
@@ -155,13 +162,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
 
     return PopScope(
-      canPop: _currentIndex == 0,
+      canPop: !Platform.isAndroid && _currentIndex == 0,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
         // When the image tab has an album open, let ImageScreen's own PopScope
         // close it (back → album list) instead of jumping to the Home tab.
         if (_currentIndex == 2 && ref.read(imageAlbumOpenProvider)) return;
-        if (_currentIndex != 0) setState(() => _currentIndex = 0);
+        if (_currentIndex != 0) {
+          _exitGuard.reset();
+          setState(() => _currentIndex = 0);
+          return;
+        }
+        // Android, on the Home tab: nothing else to pop — back would exit the
+        // app. Guard it: first press hints, second exits. Non-Android lets the
+        // route pop normally (canPop above).
+        if (Platform.isAndroid) {
+          if (_exitGuard.handleBack()) return;
+          DoubleBackGuard.hint(context);
+        }
       },
       child: Scaffold(
         appBar: AppBar(
@@ -247,7 +265,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
         bottomNavigationBar: BottomNavigationBar(
           currentIndex: _currentIndex,
-          onTap: (index) => setState(() => _currentIndex = index),
+          onTap: (index) {
+            _exitGuard.reset();
+            setState(() => _currentIndex = index);
+          },
           items: const [
             BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Home'),
             BottomNavigationBarItem(

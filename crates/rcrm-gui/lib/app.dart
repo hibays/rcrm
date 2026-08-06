@@ -1,5 +1,6 @@
 // app.dart
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
 
@@ -17,6 +18,7 @@ import 'screens/home_screen.dart';
 import 'screens/library_setup_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/tv_detector.dart';
+import 'widgets/double_back_exit.dart';
 import 'widgets/desktop_title_bar.dart';
 
 class RcrmApp extends ConsumerStatefulWidget {
@@ -27,7 +29,7 @@ class RcrmApp extends ConsumerStatefulWidget {
   ConsumerState<RcrmApp> createState() => _RcrmAppState();
 }
 
-class _RcrmAppState extends ConsumerState<RcrmApp> with WidgetsBindingObserver {
+class _RcrmAppState extends ConsumerState<RcrmApp> {
   final _navigatorKey = GlobalKey<NavigatorState>();
   DeployMode? _deployMode;
   bool _isTv = false;
@@ -35,7 +37,6 @@ class _RcrmAppState extends ConsumerState<RcrmApp> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     // Load persisted UI settings (image/video layout, columns, preview,
     // thumbnail cache) once at startup — without this they always reset to
     // defaults on launch. Also mirrors the cache flag into ThumbCache.enabled.
@@ -44,28 +45,6 @@ class _RcrmAppState extends ConsumerState<RcrmApp> with WidgetsBindingObserver {
     isAndroidTv().then((tv) {
       if (mounted) setState(() => _isTv = tv);
     });
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    // The in-process Rust WebDAV server belongs to the app PROCESS, not the
-    // Flutter engine. When the Activity is fully destroyed (back button on the
-    // root route, or the app is swiped away) the engine goes away but the
-    // process may survive — without stopping the server its scan/unlock cache
-    // leaks into the next session: a fresh launch would skip password
-    // verification (stale accepted keys still unlock every file) and stack a
-    // second server on the same files. Stop it so the next start is clean.
-    if (state == AppLifecycleState.detached) {
-      try {
-        ref.read(serverProvider.notifier).stop();
-      } catch (_) {}
-    }
   }
 
   Future<void> _loadDeployMode() async {
@@ -97,7 +76,11 @@ class _RcrmAppState extends ConsumerState<RcrmApp> with WidgetsBindingObserver {
         return TitleBarShell(child: child!);
       },
       home: _deployMode == null
-          ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+          ? const DoubleBackExit(
+              child: Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              ),
+            )
           : _isTv
           ? const CastReceiverScreen()
           : isCloud

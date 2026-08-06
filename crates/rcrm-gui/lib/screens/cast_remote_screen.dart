@@ -121,7 +121,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
             : '$e';
       });
       if (wasConnected && unauthorized) {
-        // The TV ended the session (e.g. owner pressed 解除配对). Forget the
+        // The TV ended the session (e.g. owner pressed "Unpair"). Forget the
         // saved pairing so the next entry from home opens the scanner
         // directly instead of resuming a dead session.
         unawaited(CastSessionStore().clear());
@@ -310,7 +310,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
       await ref.read(castHttpsRelayProvider).stop();
     } else {
       // The TV never got the unpair (unreachable): its session is still
-      // alive and it still shows "已配对" with no QR. Keep the saved pairing
+      // alive and it still shows "Paired" with no QR. Keep the saved pairing
       // + relay so the user can resume later; wiping them would strand the
       // TV with no way to re-pair.
       ScaffoldMessenger.of(context).showSnackBar(

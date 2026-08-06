@@ -18,6 +18,7 @@ import 'package:file_picker/file_picker.dart';
 
 import '../models/server_config.dart';
 import '../providers/server_provider.dart';
+import '../widgets/double_back_exit.dart';
 
 class LibrarySetupScreen extends ConsumerStatefulWidget {
   final List<String> initialDirs;
@@ -166,188 +167,194 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
   @override
   Widget build(BuildContext context) {
     final addingMore = _passwords.isNotEmpty;
-    return Scaffold(
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(32),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 500),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Icon(
-                    Icons.play_circle_fill,
-                    size: 64,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'RCrm Media Library',
-                    style: Theme.of(context).textTheme.headlineMedium,
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _hasFolders
-                        ? '${_selectedDirs.length} folder(s) selected'
-                        : 'Select media folders to mount',
-                    style: Theme.of(context).textTheme.bodyMedium,
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 32),
-
-                  // Folder list as tonal group (no nested Card).
-                  if (_selectedDirs.isNotEmpty)
-                    Container(
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Column(
-                        children: _selectedDirs
-                            .map(
-                              (d) => ListTile(
-                                dense: true,
-                                leading: const Icon(Icons.folder, size: 20),
-                                title: Text(
-                                  _displayName(d),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                subtitle: Text(
-                                  d,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                trailing: IconButton(
-                                  icon: const Icon(Icons.close, size: 18),
-                                  onPressed: () =>
-                                      setState(() => _selectedDirs.remove(d)),
-                                ),
-                              ),
-                            )
-                            .toList(),
-                      ),
-                    ),
-                  const SizedBox(height: 8),
-
-                  OutlinedButton.icon(
-                    onPressed: _pickFolder,
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add Folder'),
-                  ),
-                  const SizedBox(height: 24),
-
-                  if (_hasFolders) ...[
-                    Container(
-                      decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            if (addingMore)
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 12),
-                                child: Text(
-                                  '${_passwords.length} password(s) accepted'
-                                  '${_lockedRemaining > 0 ? '  ·  $_lockedRemaining still locked' : ''}',
-                                  style: TextStyle(
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                    fontSize: 13,
-                                  ),
-                                  textAlign: TextAlign.center,
-                                ),
-                              ),
-                            TextField(
-                              controller: _passwordController,
-                              obscureText: true,
-                              autofocus: _hasFolders,
-                              onSubmitted: (_) => _connect(),
-                              decoration: InputDecoration(
-                                labelText: addingMore
-                                    ? 'Next Decryption Password'
-                                    : 'Decryption Password',
-                                hintText: 'Leave empty for plaintext folders',
-                                hintStyle: const TextStyle(color: Colors.grey),
-                                border: const OutlineInputBorder(),
-                                prefixIcon: const Icon(Icons.lock),
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-                            FilledButton.icon(
-                              onPressed: _isLoading ? null : _connect,
-                              icon: _isLoading
-                                  ? const SizedBox(
-                                      width: 20,
-                                      height: 20,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
-                                    )
-                                  : Icon(
-                                      addingMore ? Icons.key : Icons.play_arrow,
-                                    ),
-                              label: Text(
-                                _isLoading
-                                    ? _statusText
-                                    : (addingMore
-                                          ? 'Add Password'
-                                          : 'Unlock & Enter'),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+    return DoubleBackExit(
+      child: Scaffold(
+        body: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(32),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 500),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Icon(
+                      Icons.play_circle_fill,
+                      size: 64,
+                      color: Theme.of(context).colorScheme.primary,
                     ),
                     const SizedBox(height: 16),
-                    if (_error != null)
+                    Text(
+                      'RCrm Media Library',
+                      style: Theme.of(context).textTheme.headlineMedium,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _hasFolders
+                          ? '${_selectedDirs.length} folder(s) selected'
+                          : 'Select media folders to mount',
+                      style: Theme.of(context).textTheme.bodyMedium,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 32),
+
+                    // Folder list as tonal group (no nested Card).
+                    if (_selectedDirs.isNotEmpty)
                       Container(
-                        padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.error.withValues(alpha: 0.1),
+                          color: Theme.of(context).colorScheme.surface,
                           borderRadius: BorderRadius.circular(8),
                         ),
-                        child: Text(
-                          _error!,
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.error,
-                            fontSize: 13,
+                        child: Column(
+                          children: _selectedDirs
+                              .map(
+                                (d) => ListTile(
+                                  dense: true,
+                                  leading: const Icon(Icons.folder, size: 20),
+                                  title: Text(
+                                    _displayName(d),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  subtitle: Text(
+                                    d,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  trailing: IconButton(
+                                    icon: const Icon(Icons.close, size: 18),
+                                    onPressed: () =>
+                                        setState(() => _selectedDirs.remove(d)),
+                                  ),
+                                ),
+                              )
+                              .toList(),
+                        ),
+                      ),
+                    const SizedBox(height: 8),
+
+                    OutlinedButton.icon(
+                      onPressed: _pickFolder,
+                      icon: const Icon(Icons.add),
+                      label: const Text('Add Folder'),
+                    ),
+                    const SizedBox(height: 24),
+
+                    if (_hasFolders) ...[
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.surface,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              if (addingMore)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: Text(
+                                    '${_passwords.length} password(s) accepted'
+                                    '${_lockedRemaining > 0 ? '  ·  $_lockedRemaining still locked' : ''}',
+                                    style: TextStyle(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.primary,
+                                      fontSize: 13,
+                                    ),
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                              TextField(
+                                controller: _passwordController,
+                                obscureText: true,
+                                autofocus: _hasFolders,
+                                onSubmitted: (_) => _connect(),
+                                decoration: InputDecoration(
+                                  labelText: addingMore
+                                      ? 'Next Decryption Password'
+                                      : 'Decryption Password',
+                                  hintText: 'Leave empty for plaintext folders',
+                                  hintStyle: const TextStyle(
+                                    color: Colors.grey,
+                                  ),
+                                  border: const OutlineInputBorder(),
+                                  prefixIcon: const Icon(Icons.lock),
+                                ),
+                              ),
+                              const SizedBox(height: 16),
+                              FilledButton.icon(
+                                onPressed: _isLoading ? null : _connect,
+                                icon: _isLoading
+                                    ? const SizedBox(
+                                        width: 20,
+                                        height: 20,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : Icon(
+                                        addingMore
+                                            ? Icons.key
+                                            : Icons.play_arrow,
+                                      ),
+                                label: Text(
+                                  _isLoading
+                                      ? _statusText
+                                      : (addingMore
+                                            ? 'Add Password'
+                                            : 'Unlock & Enter'),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ),
-                  ],
+                      const SizedBox(height: 16),
+                      if (_error != null)
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.error.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            _error!,
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                    ],
 
-                  if (_hasFolders) const SizedBox(height: 12),
+                    if (_hasFolders) const SizedBox(height: 12),
 
-                  if (!_hasFolders)
-                    TextButton(
-                      onPressed: _isLoading ? null : _skip,
-                      child: const Text('Skip — mount later manually'),
+                    if (!_hasFolders)
+                      TextButton(
+                        onPressed: _isLoading ? null : _skip,
+                        child: const Text('Skip — mount later manually'),
+                      ),
+                    const SizedBox(height: 8),
+                    TextButton.icon(
+                      onPressed: () async {
+                        final nav = Navigator.of(context);
+                        await ref
+                            .read(settingsServiceProvider)
+                            .setDeployMode(DeployMode.cloud);
+                        if (!mounted) return;
+                        nav.pushReplacementNamed('/cloud-setup');
+                      },
+                      icon: const Icon(Icons.cloud, size: 16),
+                      label: const Text('Switch to Cloud Deploy'),
                     ),
-                  const SizedBox(height: 8),
-                  TextButton.icon(
-                    onPressed: () async {
-                      final nav = Navigator.of(context);
-                      await ref
-                          .read(settingsServiceProvider)
-                          .setDeployMode(DeployMode.cloud);
-                      if (!mounted) return;
-                      nav.pushReplacementNamed('/cloud-setup');
-                    },
-                    icon: const Icon(Icons.cloud, size: 16),
-                    label: const Text('Switch to Cloud Deploy'),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
