@@ -524,6 +524,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ),
           ]),
           const Divider(),
+          _sectionHeader('Casting'),
+          const SizedBox(height: 8),
+          _group([
+            SwitchListTile(
+              title: const Text('Cast Auto-Next'),
+              subtitle: const Text(
+                'When the TV goes idle (video ended or failed to start), show '
+                'an up-next strip; untouched for 5s it plays the first one',
+              ),
+              value: ui.castAutoNext,
+              onChanged: (v) {
+                ref.read(uiSettingsProvider.notifier).setCastAutoNext(v);
+              },
+            ),
+          ]),
+          const Divider(),
           _sectionHeader('Cache'),
           const SizedBox(height: 8),
           _group([

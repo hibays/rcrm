@@ -16,6 +16,9 @@ class PlayerControls extends StatefulWidget {
   final VoidCallback onFullscreen;
   final VoidCallback? onSettingsTap;
 
+  /// Opens the episode picker (fullscreen only; null hides the button).
+  final VoidCallback? onEpisodesTap;
+
   final double scale; // 1.0 normal, >1.0 fullscreen
   const PlayerControls({
     super.key,
@@ -23,6 +26,7 @@ class PlayerControls extends StatefulWidget {
     this.onPrev,
     this.onNext,
     this.onSettingsTap,
+    this.onEpisodesTap,
     required this.showFullscreen,
     required this.onFullscreen,
     this.scale = 1.0,
@@ -376,6 +380,21 @@ class _PlayerControlsState extends State<PlayerControls> {
                         visualDensity: VisualDensity.compact,
                         padding: EdgeInsets.zero,
                       ),
+                      if (widget.scale > 1.0 &&
+                          widget.onEpisodesTap != null) ...[
+                        SizedBox(width: 4 * widget.scale),
+                        IconButton(
+                          tooltip: 'Episodes',
+                          icon: Icon(
+                            Icons.playlist_play,
+                            color: Colors.white54,
+                            size: 22 * widget.scale,
+                          ),
+                          onPressed: widget.onEpisodesTap,
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                        ),
+                      ],
                       if (widget.scale > 1.0 &&
                           widget.onSettingsTap != null) ...[
                         SizedBox(width: 4 * widget.scale),

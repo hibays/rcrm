@@ -15,11 +15,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/media_item.dart';
 import '../providers/server_provider.dart';
+import '../providers/settings_provider.dart';
 import '../services/cast_protocol.dart';
 import '../services/cast_remote.dart';
 import '../services/cast_session_store.dart';
 import '../services/thumbnail_service.dart';
 import '../utils/natural_sort.dart';
+import '../utils/format.dart';
+import '../widgets/cast_auto_next_panel.dart';
 import '../widgets/pooled_image.dart';
 import '../widgets/video_card.dart';
 import 'cast_scan_screen.dart';
@@ -32,7 +35,8 @@ class CastRemoteScreen extends ConsumerStatefulWidget {
   ConsumerState<CastRemoteScreen> createState() => _State();
 }
 
-class _State extends ConsumerState<CastRemoteScreen> {
+class _State extends ConsumerState<CastRemoteScreen>
+    with WidgetsBindingObserver {
   Timer? _poll;
 
   /// True while a [/v1/status] poll is awaiting. With a dead/unreachable TV
@@ -72,15 +76,49 @@ class _State extends ConsumerState<CastRemoteScreen> {
   bool _dirError = false;
   bool _gridMode = false;
 
+  // ── auto-next (cast) ─────────────────────────────────────────
+  static const _autoNextDelay = Duration(seconds: 5);
+
+  /// A video play command sent to the TV that status has not confirmed
+  /// playing yet. The receiver opens streams asynchronously; a failed open
+  /// surfaces as `path == null` in the status poll.
+  String? _awaitStartPath;
+  DateTime? _awaitStartSince;
+
+  /// Give up watching a play command after this long without confirmation
+  /// OR failure — the link ate it, and chaining another command would race.
+  static const _awaitStartTimeout = Duration(seconds: 15);
+
+  /// True after the user interacted (picked a video / cancelled the strip /
+  /// touched the transport): no auto-play until the next video actually
+  /// starts. Cleared on a confirmed start or a manual play.
+  bool _autoNextCancelled = false;
+
+  /// True when the current/last play command came from the auto-next strip
+  /// (vs a manual pick) — if THAT file fails to open, the follow-up strip
+  /// offers a manual pick instead of auto-firing again (a folder of
+  /// unplayable files would otherwise be hammered file by file).
+  bool _lastPlayWasAuto = false;
+
+  /// Guards [_showUpNext] against overlapping runs (a slow directory listing
+  /// must not let the next poll show a second strip).
+  bool _upNextInFlight = false;
+
+  /// Directory video listings fetched for auto-next (the playing directory
+  /// is often not the one currently on screen). Cached per directory.
+  final Map<String, List<MediaItem>> _dirVideosCache = {};
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadDir('/');
     _poll = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _poll?.cancel();
     _ui.dispose();
     // Keep the pairing alive: closing the screen must NOT end the session,
@@ -88,6 +126,14 @@ class _State extends ConsumerState<CastRemoteScreen> {
     // the HTTP transport is dropped; the session token survives.
     widget.remote.suspend();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Back from background: OS-throttled timers left the link stale — poll
+    // immediately instead of waiting for the next 1s tick, so the status
+    // (and the auto-next monitor) catch up right away.
+    if (state == AppLifecycleState.resumed) _tick();
   }
 
   Future<void> _tick() async {
@@ -107,8 +153,10 @@ class _State extends ConsumerState<CastRemoteScreen> {
           _pollError = null;
         });
       }
+      _evaluateAutoNext(status);
     } catch (e) {
       if (!mounted) return;
+      _resetAutoNext();
       final unauthorized = e is CastException && e.message.contains('401');
       final wasConnected = _connected;
       _ui.mutate(() => _ui.localPlaying = null);
@@ -131,10 +179,263 @@ class _State extends ConsumerState<CastRemoteScreen> {
     }
   }
 
-  /// Monotonic counter for directory loads. A superseded load (user navigated
-  /// again before the PROPFIND returned — e.g. back into the parent while a
-  /// child listing is still in flight) must not write its stale results over
-  /// the newer navigation's state.
+  // ── auto-next ──────────────────────────────────────────────────
+
+  /// Hide the up-next strip (no opt-out side effect).
+  void _hideUpNext() {
+    if (_ui.upNext == null && _ui.autoNextInSec == null) return;
+    _ui.mutate(() {
+      _ui.upNext = null;
+      _ui.autoNextInSec = null;
+      _ui.upNextOriginPath = null;
+      _ui.upNextFromFailedOpen = false;
+      _ui.upNextAutoFire = true;
+    });
+  }
+
+  /// Stop auto-next monitoring without opting out (link down, setting off):
+  /// it re-arms by itself once the TV is watched again.
+  void _resetAutoNext() {
+    _awaitStartPath = null;
+    _awaitStartSince = null;
+    _hideUpNext();
+  }
+
+  /// The user operated (transport touched / strip cancelled) — opt out of
+  /// auto-play until the next video actually starts or is played manually.
+  void _cancelAutoNext() {
+    _resetAutoNext();
+    _autoNextCancelled = true;
+  }
+
+  /// Transport touched (play/pause, volume, seek). Only an IDLE TV (strip
+  /// possibly counting) opts out of auto-play: a touch during normal
+  /// playback must not poison the NEXT end-of-video cycle — pausing to grab
+  /// a coffee mid-video and resuming is routine, and the user still expects
+  /// the binge to continue after the video ends.
+  void _userTransportTouched() {
+    final st = _ui.status;
+    final idle =
+        !st.playing &&
+        (st.path == null || (st.durMs > 0 && st.posMs >= st.durMs - 1500));
+    if (idle) {
+      _cancelAutoNext();
+    } else {
+      _hideUpNext(); // backstop: no strip may linger while playing
+    }
+  }
+
+  /// Runs on every successful status poll. When the TV is unresponsive — a
+  /// finished video parked at its end, or a play command that never took
+  /// effect — lays out the up-next strip Bilibili-style: untouched for the
+  /// 5s window, the first candidate plays by itself; interacting cancels.
+  void _evaluateAutoNext(CastStatus status) {
+    if (!ref.read(uiSettingsProvider).castAutoNext) {
+      _resetAutoNext();
+      return;
+    }
+
+    // A play command is in flight: confirmed once the TV reports the new
+    // path playing. A null path this late after the command means the open
+    // failed on the TV (unsupported format) or the command was lost.
+    final awaitPath = _awaitStartPath;
+    if (awaitPath != null) {
+      final waited = DateTime.now().difference(
+        _awaitStartSince ?? DateTime.now(),
+      );
+      if (status.playing && status.path == awaitPath) {
+        _awaitStartPath = null;
+        _awaitStartSince = null;
+        _autoNextCancelled = false; // fresh cycle for the new video
+        _hideUpNext();
+      } else if (!status.playing &&
+          status.path == null &&
+          waited >= _autoNextDelay) {
+        _awaitStartPath = null;
+        _awaitStartSince = null;
+        // Failed to start → offer the next ones. An auto-fired file failing
+        // must not arm another auto-fire (see _lastPlayWasAuto).
+        _showUpNext(
+          awaitPath,
+          fromFailedOpen: true,
+          allowAutoFire: !_lastPlayWasAuto,
+        );
+        return;
+      } else if (waited >= _awaitStartTimeout) {
+        // Neither started nor failed — stop watching; chaining another
+        // command into a flaky link would only race the first one.
+        _awaitStartPath = null;
+        _awaitStartSince = null;
+      }
+      return;
+    }
+
+    // Count the visible strip down wherever it came from (an ended video, or
+    // a failed open — the latter keeps path null, so it can't ride the ended
+    // check below).
+    if (_ui.upNext != null) {
+      final origin = _ui.upNextOriginPath;
+      if (origin == null ||
+          !_upNextPremiseHolds(
+            status,
+            origin,
+            fromFailedOpen: _ui.upNextFromFailedOpen,
+          )) {
+        _hideUpNext();
+        return;
+      }
+      final secs = _ui.autoNextInSec ?? 0;
+      if (secs <= 1) {
+        final canFire = _ui.upNextAutoFire;
+        final first = _ui.upNext!.first;
+        _hideUpNext();
+        if (canFire) _autoPlayItem(first);
+      } else {
+        _ui.mutate(() => _ui.autoNextInSec = secs - 1);
+      }
+      return;
+    }
+
+    // Finished video parked at the end with nothing happening. (Images never
+    // report duration, so an image cast can't look "ended".)
+    final ended =
+        !status.playing &&
+        status.path != null &&
+        status.durMs > 0 &&
+        status.posMs >= status.durMs - 1500;
+    if (!ended) {
+      // A started playback closes any leftover strip; a parked-but-not-ended
+      // TV (idle browser, failed open already handled above) just stays.
+      if (status.playing) _hideUpNext();
+      return;
+    }
+    if (!_autoNextCancelled) {
+      _showUpNext(status.path!, fromFailedOpen: false, allowAutoFire: true);
+    }
+  }
+
+  /// Whether the state the strip was armed under still matches [status]: a
+  /// failed-open strip needs a still-idle TV (path null, not playing); an
+  /// ended strip needs the same video still parked at its end. The TV has
+  /// transport controls of its own — a TV-side resume/stop during the
+  /// countdown must cancel the auto-play, not be stomped by it.
+  bool _upNextPremiseHolds(
+    CastStatus status,
+    String originPath, {
+    required bool fromFailedOpen,
+  }) {
+    return fromFailedOpen
+        ? !status.playing && status.path == null
+        : status.path == originPath &&
+              !status.playing &&
+              status.durMs > 0 &&
+              status.posMs >= status.durMs - 1500;
+  }
+
+  String _dirnameOf(String path) {
+    final i = path.lastIndexOf('/');
+    return i <= 0 ? '/' : path.substring(0, i);
+  }
+
+  String _normDir(String d) =>
+      d.length > 1 && d.endsWith('/') ? d.substring(0, d.length - 1) : d;
+
+  /// The [count] videos after [playingPath] in its directory (natural
+  /// order); empty when it is the last one / not found.
+  Future<List<MediaItem>> _upcomingVideos(String playingPath, int count) async {
+    final dir = _dirnameOf(playingPath);
+    final List<MediaItem> videos;
+    if (_normDir(dir) == _normDir(_loadedDir)) {
+      videos = _videos;
+    } else {
+      videos = await _cachedVideosIn(dir);
+    }
+    final idx = videos.indexWhere((v) => v.path == playingPath);
+    if (idx < 0) return const [];
+    return videos.skip(idx + 1).take(count).toList();
+  }
+
+  /// Directory listing for auto-next, cached per directory.
+  Future<List<MediaItem>> _cachedVideosIn(String dir) async {
+    final cached = _dirVideosCache[dir];
+    if (cached != null) return cached;
+    final client = ref.read(serverProvider).client;
+    if (client == null) return const [];
+    final result = await client.listAll(dir);
+    final videos = result.files.where((f) => f.type == MediaType.video).toList()
+      ..sort((a, b) => naturalCompare(a.name, b.name));
+    _dirVideosCache[dir] = videos;
+    if (_dirVideosCache.length > 32) {
+      _dirVideosCache.remove(_dirVideosCache.keys.first);
+    }
+    return videos;
+  }
+
+  /// Lay out the up-next strip for the video that just went idle.
+  /// [fromFailedOpen] arms the premise check for a still-idle TV instead of
+  /// a parked-at-end video; [allowAutoFire] false shows the strip as a plain
+  /// manual pick (no countdown fire).
+  Future<void> _showUpNext(
+    String playingPath, {
+    required bool fromFailedOpen,
+    required bool allowAutoFire,
+  }) async {
+    if (_upNextInFlight || !mounted) return;
+    _upNextInFlight = true;
+    try {
+      final upcoming = await _upcomingVideos(playingPath, 5);
+      if (!mounted) return;
+      // Stale: the user acted or a new play started while listing.
+      if (_autoNextCancelled || _awaitStartPath != null) return;
+      // Stale: the TV moved on while the listing was in flight (its own
+      // transport controls keep working during the listing).
+      if (!_upNextPremiseHolds(
+        _ui.status,
+        playingPath,
+        fromFailedOpen: fromFailedOpen,
+      )) {
+        return;
+      }
+      if (upcoming.isEmpty) {
+        _autoNextCancelled = true; // nothing follows — stay quiet
+        return;
+      }
+      _ui.mutate(() {
+        _ui.upNext = upcoming;
+        _ui.autoNextInSec = _autoNextDelay.inSeconds;
+        _ui.upNextOriginPath = playingPath;
+        _ui.upNextFromFailedOpen = fromFailedOpen;
+        _ui.upNextAutoFire = allowAutoFire;
+      });
+    } catch (_) {
+      if (mounted) _autoNextCancelled = true; // listing failed — stay quiet
+    } finally {
+      _upNextInFlight = false;
+    }
+  }
+
+  /// Send a play command (strip auto-fire or strip pick) and watch it take
+  /// effect, so a failed open offers the next ones again.
+  Future<void> _autoPlayItem(MediaItem item) async {
+    if (_playInFlight || !mounted) return;
+    _lastPlayWasAuto = true;
+    _ui.mutate(() => _ui.localPlaying = true);
+    _awaitStartPath = item.path;
+    _awaitStartSince = DateTime.now();
+    try {
+      await widget.remote.play(item.path);
+    } catch (_) {
+      if (!mounted) return;
+      _ui.mutate(() => _ui.localPlaying = null);
+      _awaitStartPath = null;
+      _awaitStartSince = null;
+    }
+  }
+
+  /// Monotonic counter for directory loads. A superseded load (user
+  /// navigated again before the PROPFIND returned — e.g. back into the
+  /// parent while a child listing is still in flight) must not write its
+  /// stale results over the newer navigation's state.
   int _dirLoadGen = 0;
 
   Future<void> _loadDir(String path) async {
@@ -189,14 +490,29 @@ class _State extends ConsumerState<CastRemoteScreen> {
   Future<void> _play(MediaItem item) async {
     if (_playInFlight) return;
     _playInFlight = true;
+    _autoNextCancelled = false; // manual pick starts a fresh cycle
+    _lastPlayWasAuto = false;
+    _hideUpNext();
     try {
       _ui.mutate(() => _ui.localPlaying = true);
       await widget.remote.play(
         item.path,
         type: item.type == MediaType.image ? 'image' : 'video',
       );
+      // Videos: watch for the TV confirming the new path is actually playing
+      // (opens are async on the TV; a failed open surfaces as path=null).
+      // Images report no playing state — nothing to watch.
+      if (item.type == MediaType.video) {
+        _awaitStartPath = item.path;
+        _awaitStartSince = DateTime.now();
+      } else {
+        _awaitStartPath = null;
+        _awaitStartSince = null;
+      }
     } catch (e) {
       if (!mounted) return;
+      _awaitStartPath = null;
+      _awaitStartSince = null;
       _ui.mutate(() => _ui.localPlaying = null);
       ScaffoldMessenger.of(
         context,
@@ -230,6 +546,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
   }
 
   void _togglePlay() {
+    _userTransportTouched();
     if (_ui.showPlaying) {
       _ui.mutate(() => _ui.localPlaying = false);
       widget.remote.pause().catchError((_) {});
@@ -240,6 +557,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
   }
 
   Future<void> _stop() async {
+    _cancelAutoNext();
     try {
       await widget.remote.stop();
       if (!mounted) return;
@@ -253,6 +571,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
   }
 
   Future<void> _stepVolume(int delta) async {
+    _userTransportTouched();
     try {
       final v = (_ui.status.volume + delta).clamp(0, 100);
       await widget.remote.setVolume(v);
@@ -396,7 +715,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
                       children: [
                         _buildStatusBar(),
                         const Divider(height: 1),
-                        Expanded(child: _buildBrowser()),
+                        Expanded(child: _withUpNext(_buildBrowser())),
                       ],
                     ),
                   ),
@@ -416,7 +735,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
               children: [
                 _buildStatusBar(),
                 const Divider(height: 1),
-                Expanded(child: _buildBrowser()),
+                Expanded(child: _withUpNext(_buildBrowser())),
                 const Divider(height: 1),
                 _buildControls(),
               ],
@@ -424,6 +743,48 @@ class _State extends ConsumerState<CastRemoteScreen> {
           },
         ),
       ),
+    );
+  }
+
+  /// Browser area with the Bilibili-style up-next strip floating at its
+  /// bottom while the auto-play countdown runs. Listens to [_ui] only — the
+  /// per-second countdown never rebuilds the browser behind it.
+  Widget _withUpNext(Widget browser) {
+    return Stack(
+      children: [
+        // Non-positioned on purpose: the Stack sits under an Expanded inside
+        // a Column, whose cross-axis (width) constraints are LOOSE — a Stack
+        // sizes itself only from non-positioned children, so a positioned
+        // browser next to an empty (shrink) strip collapses it to zero
+        // width. SizedBox.expand keeps it at the full available size.
+        SizedBox.expand(child: browser),
+        Positioned.fill(
+          child: ListenableBuilder(
+            listenable: _ui,
+            builder: (context, _) {
+              final up = _ui.upNext;
+              if (up == null) return const SizedBox.shrink();
+              return Align(
+                alignment: Alignment.bottomCenter,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: CastAutoNextPanel(
+                    candidates: up,
+                    secondsLeft: _ui.autoNextInSec ?? 0,
+                    totalSeconds: _autoNextDelay.inSeconds,
+                    autoFire: _ui.upNextAutoFire,
+                    onPick: _play,
+                    onCancel: () {
+                      _autoNextCancelled = true;
+                      _hideUpNext();
+                    },
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -487,7 +848,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
                 )
               else if (connected && !_ui.dragging)
                 Text(
-                  '${_fmtMs(_ui.status.posMs)} / ${_fmtMs(_ui.status.durMs)}',
+                  '${formatMs(_ui.status.posMs)} / ${formatMs(_ui.status.durMs)}',
                   style: const TextStyle(fontSize: 12, color: Colors.white54),
                 ),
             ],
@@ -873,7 +1234,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
             Row(
               children: [
                 Text(
-                  _fmtMs(shownPos.round()),
+                  formatMs(shownPos.round()),
                   style: const TextStyle(fontSize: 11, color: Colors.white54),
                 ),
                 Expanded(
@@ -894,10 +1255,17 @@ class _State extends ConsumerState<CastRemoteScreen> {
                       ),
                       max: dur > 0 ? dur.toDouble() : 1.0,
                       onChangeStart: connected && dur > 0
-                          ? (_) => _ui.mutate(() {
-                              _ui.dragging = true;
-                              _ui.dragMs = pos.toDouble();
-                            })
+                          ? (_) {
+                              // Touching the slider is already an operation:
+                              // opt out (when idle) before the drag can
+                              // finish, so a pending auto-fire can't race
+                              // the seek.
+                              _userTransportTouched();
+                              _ui.mutate(() {
+                                _ui.dragging = true;
+                                _ui.dragMs = pos.toDouble();
+                              });
+                            }
                           : null,
                       onChanged: connected && dur > 0
                           ? (v) => _ui.mutate(() => _ui.dragMs = v)
@@ -905,6 +1273,9 @@ class _State extends ConsumerState<CastRemoteScreen> {
                       onChangeEnd: connected && dur > 0
                           ? (v) {
                               final target = v.round();
+                              // Cancellation already happened at drag start;
+                              // the idleness check there is what keeps a
+                              // mid-video seek from poisoning the cycle.
                               final s = _ui.status;
                               _ui.mutate(() {
                                 _ui.dragging = false;
@@ -927,7 +1298,7 @@ class _State extends ConsumerState<CastRemoteScreen> {
                   ),
                 ),
                 Text(
-                  _fmtMs(dur),
+                  formatMs(dur),
                   style: const TextStyle(fontSize: 11, color: Colors.white54),
                 ),
               ],
@@ -977,16 +1348,6 @@ class _State extends ConsumerState<CastRemoteScreen> {
   }
 
   Widget _buildControls() => _buildControlPanel(asBottomBar: true);
-
-  static String _fmtMs(int ms) {
-    final s = (ms / 1000).round();
-    final h = s ~/ 3600;
-    final m = (s % 3600) ~/ 60;
-    final sec = s % 60;
-    final mm = m.toString().padLeft(2, '0');
-    final ss = sec.toString().padLeft(2, '0');
-    return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
-  }
 }
 
 /// Grid cell for a subdirectory: content thumbnail (first media file inside
@@ -1342,6 +1703,18 @@ class _CastUiState extends ChangeNotifier {
   /// and only /v1/seek is fired once on release.
   bool dragging = false;
   double? dragMs;
+
+  /// Up-next auto-play strip: candidate videos laid out while the countdown
+  /// runs (Bilibili-style). Null = hidden; [autoNextInSec] is the countdown.
+  List<MediaItem>? upNext;
+  int? autoNextInSec;
+
+  /// Why the strip is up: the path it was armed for, whether it came from a
+  /// failed open (vs a finished video), and whether the countdown may fire
+  /// (false = manual-pick-only offer, e.g. after an auto-play failed).
+  String? upNextOriginPath;
+  bool upNextFromFailedOpen = false;
+  bool upNextAutoFire = true;
 
   bool get showPlaying => localPlaying ?? status.playing;
 

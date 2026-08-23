@@ -23,6 +23,8 @@ import '../providers/server_provider.dart';
 import '../services/cast_protocol.dart';
 import '../services/cast_receiver.dart';
 import '../services/mobile_image_decoder.dart';
+import '../services/player_factory.dart';
+import '../utils/format.dart';
 import '../widgets/cast_receiver_qr_view.dart';
 import '../widgets/media_player_keys.dart';
 
@@ -213,7 +215,7 @@ class _State extends ConsumerState<CastReceiverScreen> {
     _buffering = false;
     var player = _player;
     if (player == null) {
-      player = Player();
+      player = PlayerFactory.playback();
       _player = player;
       _vc = VideoController(player);
       _posSub = player.stream.position.listen((pos) {
@@ -592,7 +594,7 @@ class _State extends ConsumerState<CastReceiverScreen> {
                                         return const SizedBox.shrink();
                                       }
                                       return Text(
-                                        _fmtMs(pos.inMilliseconds),
+                                        formatMs(pos.inMilliseconds),
                                         style: TextStyle(
                                           fontSize: 13,
                                           color: Colors.white.withValues(
@@ -666,16 +668,6 @@ class _State extends ConsumerState<CastReceiverScreen> {
         ),
       ),
     );
-  }
-
-  static String _fmtMs(int ms) {
-    final s = (ms / 1000).round();
-    final h = s ~/ 3600;
-    final m = (s % 3600) ~/ 60;
-    final sec = s % 60;
-    final mm = m.toString().padLeft(2, '0');
-    final ss = sec.toString().padLeft(2, '0');
-    return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
   }
 }
 

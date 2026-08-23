@@ -13,11 +13,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data' show BytesBuilder;
 
 import 'package:crypto/crypto.dart';
 
 import '../ffi/rust_bridge.dart';
 import 'cast_protocol.dart';
+import 'http_forward.dart';
 
 /// Bridge between the receiver and the actual media player (UI layer).
 abstract class CastPlayerHost {
@@ -131,9 +133,11 @@ class CastReceiver {
   CastQrPayload? currentQr() {
     if (_server == null) return null;
     final token = _pairToken;
+    // Token check first: once paired (or expired) this is called every second
+    // by the QR timer and must not touch the certificate at all.
+    if (token == null || !DateTime.now().isBefore(_pairExpiresAt)) return null;
     final sha = certSha256;
-    if (token == null || sha == null) return null;
-    if (!DateTime.now().isBefore(_pairExpiresAt)) return null;
+    if (sha == null) return null;
     return CastQrPayload(
       host: localIpv4,
       port: _port,
@@ -153,21 +157,32 @@ class CastReceiver {
 
   /// SHA-256 fingerprint of the current TLS certificate (hex), computed from
   /// the DER body of the PEM cert. Null when not started.
+  ///
+  /// Memoized: the QR timer calls this every second (via [currentQr]), and
+  /// hashing on the main isolate — which also runs the control server and
+  /// media proxy — is pure waste for a certificate that never changes while
+  /// running.
   String? get certSha256 {
     final pem = _certPem;
     if (pem == null) return null;
+    if (_certSha256CachePem == pem) return _certSha256Cache;
     final body = _normalizePem(pem)
         .replaceAll('-----BEGIN CERTIFICATE-----', '')
         .replaceAll('-----END CERTIFICATE-----', '')
         .replaceAll(RegExp(r'\s'), '');
     try {
-      return sha256.convert(base64Decode(body)).toString();
+      final sha = sha256.convert(base64Decode(body)).toString();
+      _certSha256Cache = sha;
+      _certSha256CachePem = pem;
+      return sha;
     } catch (_) {
       return null;
     }
   }
 
   String? _certPem;
+  String? _certSha256Cache;
+  String? _certSha256CachePem;
 
   String _localIpv4 = '127.0.0.1';
 
@@ -364,12 +379,17 @@ class CastReceiver {
     return client;
   }
 
-  void _applyAuth(HttpClientRequest req) {
+  String? get _basicAuthHeader {
     final user = _serverUsername;
     final pass = _serverPassword;
-    if (user != null && pass != null) {
-      final cred = base64Encode(utf8.encode('$user:$pass'));
-      req.headers.set(HttpHeaders.authorizationHeader, 'Basic $cred');
+    if (user == null || pass == null) return null;
+    return 'Basic ${base64Encode(utf8.encode('$user:$pass'))}';
+  }
+
+  void _applyAuth(HttpClientRequest req) {
+    final header = _basicAuthHeader;
+    if (header != null) {
+      req.headers.set(HttpHeaders.authorizationHeader, header);
     }
   }
 
@@ -454,12 +474,23 @@ class CastReceiver {
         castConstantEquals(parts[1], session);
   }
 
+  /// Control requests carry tiny JSON bodies; anything beyond this is a
+  /// broken or hostile client. Cap the accumulation so the TV's main isolate
+  /// (which serves this TLS endpoint) can't be ballooned by an unbounded
+  /// upload.
+  static const int _maxBodyBytes = 64 * 1024;
+
   Future<String> _readBody(HttpRequest req) async {
-    final bytes = await req.fold<List<int>>(
-      <int>[],
-      (acc, chunk) => acc..addAll(chunk),
-    );
-    return utf8.decode(bytes);
+    final bytes = BytesBuilder(copy: false);
+    var total = 0;
+    await for (final chunk in req) {
+      total += chunk.length;
+      if (total > _maxBodyBytes) {
+        throw const CastReceiverException('request body too large');
+      }
+      bytes.add(chunk);
+    }
+    return utf8.decode(bytes.takeBytes());
   }
 
   Future<Map<String, dynamic>> _readJson(HttpRequest req) async {
@@ -717,22 +748,12 @@ class CastReceiver {
       }
       final client = await _upstream();
       final upstreamUri = Uri.parse(serverUrl).resolve(path);
-      final upReq = await client.getUrl(upstreamUri);
-      _applyAuth(upReq);
-      final range = req.headers.value(HttpHeaders.rangeHeader);
-      if (range != null) upReq.headers.set(HttpHeaders.rangeHeader, range);
-      final upRes = await upReq.close();
-      res.statusCode = upRes.statusCode;
-      for (final name in const [
-        HttpHeaders.contentTypeHeader,
-        HttpHeaders.contentLengthHeader,
-        'accept-ranges',
-        'content-range',
-      ]) {
-        final value = upRes.headers.value(name);
-        if (value != null) res.headers.set(name, value);
-      }
-      await upRes.pipe(res);
+      await forwardHttpRequest(
+        client,
+        upstreamUri,
+        req,
+        authHeader: _basicAuthHeader,
+      );
     } catch (e) {
       try {
         if (res.statusCode == HttpStatus.ok) {

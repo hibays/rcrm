@@ -17,6 +17,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import '../models/media_item.dart';
 import '../services/net.dart';
+import '../services/player_factory.dart';
 import '../providers/library_provider.dart';
 import '../providers/settings_provider.dart';
 import '../providers/window_chrome_provider.dart';
@@ -26,6 +27,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../widgets/player_controls.dart';
 import '../widgets/finger_preview_listener.dart';
 import '../widgets/player_settings_panel.dart';
+import '../widgets/episode_picker_panel.dart';
 
 class VideoPlayerScreen extends ConsumerStatefulWidget {
   final MediaItem item;
@@ -79,6 +81,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   }
 
   bool _showSettings = false;
+  bool _showEpisodes = false;
   bool _disposed = false;
   bool _globalImmersive = false;
   double _savedRate = 1.0;
@@ -160,7 +163,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       // sets _navigating): don't spawn a stray Player on the widget
       // being replaced.
       if (!mounted || _disposed || _navigating) return;
-      p = Player();
+      p = PlayerFactory.playback();
       vc = VideoController(p!);
       p!.open(Media(widget.item.url, httpHeaders: sharedAuthHeader));
       p!.play();
@@ -259,6 +262,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
 
   // and lock orientation to the video aspect.
   void _setFullscreen(bool on) {
+    // The episode sheet only exists in fullscreen — drop it on the way out so
+    // re-entering fullscreen does not resurrect a stale sheet.
+    if (!on) _showEpisodes = false;
     setState(() => fullscreen = on);
     _globalImmersive = ref.read(immersiveModeProvider);
     if (_isMobile) {
@@ -569,7 +575,16 @@ class _State extends ConsumerState<VideoPlayerScreen> {
             _volume = (_volume + delta * 100).clamp(0, 100);
             p?.setVolume(_volume);
           },
-          onEscape: fullscreen ? () => _setFullscreen(false) : null,
+          onEscape: () {
+            // Overlays close first; only a bare ESC exits fullscreen.
+            if (_showEpisodes) {
+              _toggleEpisodes();
+            } else if (_showSettings) {
+              _toggleSettings();
+            } else if (fullscreen) {
+              _setFullscreen(false);
+            }
+          },
           onToggleFullscreen: _isMobile
               ? null
               : () => _setFullscreen(!fullscreen),
@@ -605,7 +620,16 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         PopScope(
           canPop: false,
           onPopInvokedWithResult: (didPop, _) {
-            if (!didPop) _setFullscreen(false);
+            if (didPop) return;
+            // Overlays close first; only a bare back exits fullscreen.
+            if (_showEpisodes) {
+              setState(() => _showEpisodes = false);
+              _poke();
+            } else if (_showSettings) {
+              setState(() => _showSettings = false);
+            } else {
+              _setFullscreen(false);
+            }
           },
           child: Scaffold(
             backgroundColor: Colors.black,
@@ -684,6 +708,19 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                     if (show2x) _speedBadge(),
                     if (_gOverlayType != null) _centerOverlay(),
                     if (_showSettings) _settingsOverlay(),
+                    if (_showEpisodes)
+                      EpisodePickerPanel(
+                        items: related,
+                        fingerPreview: _fp,
+                        onPick: (item) {
+                          setState(() => _showEpisodes = false);
+                          _go(item);
+                        },
+                        onDismiss: () {
+                          setState(() => _showEpisodes = false);
+                          _poke();
+                        },
+                      ),
                   ],
                 ),
               ),
@@ -928,12 +965,35 @@ class _State extends ConsumerState<VideoPlayerScreen> {
             player: p!,
             onPrev: null,
             onNext: onNext,
-            onSettingsTap: () => setState(() => _showSettings = !_showSettings),
+            onSettingsTap: _toggleSettings,
+            onEpisodesTap: (_relCache == null || _relCache!.isEmpty)
+                ? null
+                : _toggleEpisodes,
             showFullscreen: fullscreen,
             onFullscreen: () => _setFullscreen(!fullscreen),
             scale: fullscreen ? 1.3 : 1.0,
           ),
         );
+
+  void _toggleSettings() {
+    setState(() {
+      _showEpisodes = false;
+      _showSettings = !_showSettings;
+    });
+  }
+
+  void _toggleEpisodes() {
+    setState(() {
+      _showSettings = false;
+      _showEpisodes = !_showEpisodes;
+    });
+    if (_showEpisodes) {
+      // Keep the bar underneath the sheet from fading while browsing.
+      _hideTimer?.cancel();
+    } else {
+      _poke();
+    }
+  }
 
   // Minimal bottom progress bar shown while horizontal-seeking (no full controls).
   Widget _seekBar() {

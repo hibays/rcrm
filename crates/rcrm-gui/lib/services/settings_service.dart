@@ -29,6 +29,7 @@ class SettingsService {
   static const _keyPlaybackMode =
       'playback_mode'; // 'loopAll' | 'loopOne' | 'pauseAfter'
   static const _keyAutoRotate = 'auto_rotate'; // bool
+  static const _keyCastAutoNext = 'cast_auto_next'; // bool
 
   SharedPreferences? _prefs;
 
@@ -232,5 +233,18 @@ class SettingsService {
   Future<void> setAutoRotate(bool enabled) async {
     final p = await prefs;
     await p.setBool(_keyAutoRotate, enabled);
+  }
+
+  // ── Cast auto-next ────────────────────────────────────────
+  // Default: true — when the TV is unresponsive (video ended, or a picked
+  // video never started) for 5s, the phone plays the next one by itself.
+  Future<bool> getCastAutoNext() async {
+    final p = await prefs;
+    return p.getBool(_keyCastAutoNext) ?? true;
+  }
+
+  Future<void> setCastAutoNext(bool enabled) async {
+    final p = await prefs;
+    await p.setBool(_keyCastAutoNext, enabled);
   }
 }

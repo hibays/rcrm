@@ -17,6 +17,7 @@ import 'package:crypto/crypto.dart';
 
 import '../ffi/rust_bridge.dart';
 import 'cast_protocol.dart';
+import 'http_forward.dart';
 
 class CastHttpsRelay {
   /// [certGenerator] is injectable for tests; defaults to the Rust bridge
@@ -110,22 +111,7 @@ class CastHttpsRelay {
       }
       final q = req.uri.hasQuery ? '?${req.uri.query}' : '';
       final uri = Uri.parse(target).resolve('${req.uri.path}$q');
-      final upReq = await upstream.getUrl(uri);
-      upReq.headers.set(HttpHeaders.authorizationHeader, auth);
-      final range = req.headers.value(HttpHeaders.rangeHeader);
-      if (range != null) upReq.headers.set(HttpHeaders.rangeHeader, range);
-      final upRes = await upReq.close();
-      res.statusCode = upRes.statusCode;
-      for (final name in const [
-        HttpHeaders.contentTypeHeader,
-        HttpHeaders.contentLengthHeader,
-        'accept-ranges',
-        'content-range',
-      ]) {
-        final value = upRes.headers.value(name);
-        if (value != null) res.headers.set(name, value);
-      }
-      await upRes.pipe(res);
+      await forwardHttpRequest(upstream, uri, req, authHeader: auth);
     } catch (e) {
       try {
         if (res.statusCode == HttpStatus.ok) {

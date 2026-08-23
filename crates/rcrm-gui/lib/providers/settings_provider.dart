@@ -28,6 +28,7 @@ class SettingsState {
   final String pipSize; // 'normal' or 'small'
   final String playbackMode; // 'loopAll' | 'loopOne' | 'pauseAfter'
   final bool autoRotate;
+  final bool castAutoNext;
   const SettingsState({
     this.imageLayout = 'masonry',
     this.imageColumns = 3,
@@ -40,6 +41,7 @@ class SettingsState {
     this.pipEnabled = true,
     this.playbackMode = 'pauseAfter',
     this.autoRotate = false,
+    this.castAutoNext = true,
     this.pipSize = 'normal',
   });
 
@@ -55,6 +57,7 @@ class SettingsState {
     bool? pipEnabled,
     String? playbackMode,
     bool? autoRotate,
+    bool? castAutoNext,
     String? pipSize,
   }) {
     return SettingsState(
@@ -69,6 +72,7 @@ class SettingsState {
       playbackMode: playbackMode ?? this.playbackMode,
       pipEnabled: pipEnabled ?? this.pipEnabled,
       autoRotate: autoRotate ?? this.autoRotate,
+      castAutoNext: castAutoNext ?? this.castAutoNext,
       pipSize: pipSize ?? this.pipSize,
     );
   }
@@ -96,6 +100,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
     final pipSize = await _service.getPipSize();
     final playbackMode = await _service.getPlaybackMode();
     final autoRotate = await _service.getAutoRotate();
+    final castAutoNext = await _service.getCastAutoNext();
 
     // Restore video sort/grid columns from persistence.
     ref.read(videoSortProvider.notifier).set(await _service.getVideoSort());
@@ -117,6 +122,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
       pipEnabled: pipEnabled,
       playbackMode: playbackMode,
       autoRotate: autoRotate,
+      castAutoNext: castAutoNext,
       pipSize: pipSize,
     );
   }
@@ -195,6 +201,11 @@ class SettingsNotifier extends Notifier<SettingsState> {
   Future<void> setAutoRotate(bool enabled) async {
     state = state.copyWith(autoRotate: enabled);
     await _service.setAutoRotate(enabled);
+  }
+
+  Future<void> setCastAutoNext(bool enabled) async {
+    state = state.copyWith(castAutoNext: enabled);
+    await _service.setCastAutoNext(enabled);
   }
 }
 

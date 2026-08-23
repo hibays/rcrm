@@ -19,6 +19,7 @@ import '../services/net.dart';
 import '../services/mobile_image_decoder.dart';
 import '../services/animated_detector.dart';
 import '../services/live_photo.dart';
+import '../services/player_factory.dart';
 import '../widgets/pooled_image.dart';
 
 enum _ViewerMode { still, animation, live }
@@ -712,7 +713,7 @@ class _ViewerPageState extends State<_ViewerPage>
       headers: sharedAuthHeader,
     );
     if (!mounted || media == null) return;
-    final p = Player();
+    final p = PlayerFactory.playback();
     _livePlayer = p;
     _liveVC = VideoController(p);
     p.open(media);

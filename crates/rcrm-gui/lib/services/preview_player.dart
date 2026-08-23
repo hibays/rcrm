@@ -8,6 +8,7 @@
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import '../services/net.dart';
+import 'player_factory.dart';
 
 class PreviewClaim {
   final VideoController controller;
@@ -31,7 +32,7 @@ class PreviewPlayer {
   VideoController? _ensure() {
     if (_player != null) return _controller;
     try {
-      _player = Player();
+      _player = PlayerFactory.playback();
       _player!.setVolume(0);
       _controller = VideoController(_player!);
     } catch (_) {

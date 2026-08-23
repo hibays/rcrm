@@ -16,6 +16,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import '../ffi/rust_bridge.dart';
 import 'item_cache_limit.dart';
+import 'player_factory.dart';
 import 'thumb_cache.dart';
 import 'net.dart';
 
@@ -200,7 +201,7 @@ class ThumbnailService {
   static void _tnEnsurePool() {
     final n = ItemCacheLimit.videoPosterConcurrency;
     while (_tnPlayers.length < n) {
-      final p = Player();
+      final p = PlayerFactory.poster();
       p.setVolume(0);
       final c = VideoController(
         p,

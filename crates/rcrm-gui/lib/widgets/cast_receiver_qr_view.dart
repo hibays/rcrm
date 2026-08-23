@@ -86,6 +86,13 @@ class _QrCardState extends State<CastReceiverQrCard> {
   Widget build(BuildContext context) {
     final size = widget.size;
     final webp = _webp;
+    // Decode the 2048×2048 source WebP AT THE DISPLAYED SIZE, not full
+    // resolution: a full-size decode is a ~16 MB bitmap plus a very
+    // expensive lossless-WebP pass on low-end ARMv7 TVs (jank while the
+    // pairing page is up). The source stays 2048² so phones can still scan
+    // from a distance; only the decode is capped.
+    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 1.0;
+    final decodeWidth = (size * dpr).round().clamp(1, 2048);
     return Container(
       // Small padding only — the QR's own 4-module quiet zone (baked into
       // the generated image) is the real white margin. A larger padding
@@ -112,6 +119,7 @@ class _QrCardState extends State<CastReceiverQrCard> {
               child: webp != null
                   ? Image.memory(
                       webp,
+                      cacheWidth: decodeWidth,
                       fit: BoxFit.contain,
                       gaplessPlayback: true,
                       errorBuilder: (_, _, _) => const SizedBox.shrink(),

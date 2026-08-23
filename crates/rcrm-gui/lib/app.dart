@@ -77,9 +77,7 @@ class _RcrmAppState extends ConsumerState<RcrmApp> {
       },
       home: _deployMode == null
           ? const DoubleBackExit(
-              child: Scaffold(
-                body: Center(child: CircularProgressIndicator()),
-              ),
+              child: Scaffold(body: Center(child: CircularProgressIndicator())),
             )
           : _isTv
           ? const CastReceiverScreen()
