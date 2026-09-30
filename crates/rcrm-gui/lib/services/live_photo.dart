@@ -447,7 +447,7 @@ Future<Media?> createLiveMedia(
         headers: headers,
       );
       if (videoBytes.length < 100) return null;
-      return Media.memory(videoBytes);
+      return await Media.memory(videoBytes);
     } catch (_) {
       return null;
     }
@@ -465,7 +465,7 @@ Future<Media?> createLiveMedia(
         headers: headers,
       );
       if (videoBytes.length < 100) return null;
-      return Media.memory(videoBytes);
+      return await Media.memory(videoBytes);
     } catch (_) {
       return null;
     }

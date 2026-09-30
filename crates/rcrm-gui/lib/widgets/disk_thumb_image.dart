@@ -94,7 +94,11 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
       final h = frame.image.height;
       frame.image.dispose();
       if (rgba == null) return null;
-      return ThumbWebpWorker.instance.encode(rgba.buffer.asUint8List(), w, h);
+      return await ThumbWebpWorker.instance.encode(
+        rgba.buffer.asUint8List(),
+        w,
+        h,
+      );
     } catch (_) {
       return null;
     }
