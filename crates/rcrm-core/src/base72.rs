@@ -44,8 +44,8 @@ const CHARS_FOR_BYTES: [usize; 11] = [0, 2, 3, 4, 6, 7, 8, 10, 11, 12, 13];
 pub fn b72_encode_rust(data: &[u8]) -> Vec<u8> {
 	let mut output = Vec::with_capacity(data.len() * 13 / 10 + 13);
 
-	let mut chunks = data.chunks_exact(10);
-	for chunk in &mut chunks {
+	let (chunks, rem) = data.as_chunks::<10>();
+	for chunk in chunks {
 		// 10 bytes → u80（用 u128 存储，高 6 字节为 0）→ 13 个 base72 位（大端）。
 		let mut n_bytes = [0u8; 16];
 		n_bytes[6..16].copy_from_slice(chunk);
@@ -65,7 +65,6 @@ pub fn b72_encode_rust(data: &[u8]) -> Vec<u8> {
 	}
 
 	// 末块（1..=9 字节）→ 最小数量的 base72 字符，无填充。
-	let rem = chunks.remainder();
 	if !rem.is_empty() {
 		let k = rem.len();
 		let c = CHARS_FOR_BYTES[k];

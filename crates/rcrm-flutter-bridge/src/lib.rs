@@ -288,7 +288,7 @@ pub unsafe extern "C" fn rcrm_is_blank_frame(data: *const u8, len: usize) -> i32
 				return -1;
 			}
 			let mut sum: f64 = 0.0;
-			for c in pixels.chunks_exact(3) {
+			for c in pixels.as_chunks::<3>().0 {
 				sum += 0.299 * c[0] as f64 + 0.587 * c[1] as f64 + 0.114 * c[2] as f64;
 			}
 			let avg = sum / (pixels.len() / 3) as f64;

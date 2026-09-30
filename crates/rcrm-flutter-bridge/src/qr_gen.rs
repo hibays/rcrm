@@ -125,7 +125,9 @@ mod tests {
 		}
 		// Something must be dark (modules exist).
 		let dark = rgba
-			.chunks_exact(4)
+			.as_chunks::<4>()
+			.0
+			.iter()
 			.filter(|p| p[0] < 0x40 && p[1] < 0x40 && p[2] < 0x40)
 			.count();
 		assert!(dark > 1000, "QR has dark modules: {dark}");
@@ -146,7 +148,7 @@ mod tests {
 		let (rgba, w, h) = zenwebp::oneshot::decode_rgba(&bytes).expect("decode");
 		// decode_qr_rgb wants tight RGB (3 bytes/px); RGBA → RGB.
 		let mut rgb = Vec::with_capacity((w as usize) * (h as usize) * 3);
-		for px in rgba.chunks_exact(4) {
+		for px in rgba.as_chunks::<4>().0 {
 			rgb.extend_from_slice(&px[..3]);
 		}
 		let out = crate::qr_scan::decode_qr_rgb(w as usize, h as usize, &rgb);
