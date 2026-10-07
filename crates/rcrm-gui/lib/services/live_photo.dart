@@ -14,6 +14,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'net.dart';
+import 'live_media_server.dart';
 import 'package:media_kit/media_kit.dart';
 
 // ── Result types ───────────────────────────────────────────────
@@ -447,7 +448,10 @@ Future<Media?> createLiveMedia(
         headers: headers,
       );
       if (videoBytes.length < 100) return null;
-      return await Media.memory(videoBytes);
+      // Served from RAM over loopback: Media.memory() would write the
+      // decrypted payload to a temp file. No httpHeaders — this is our own
+      // listener, and the server credentials have no business going to it.
+      return Media(await LiveMediaServer.instance.register(videoBytes));
     } catch (_) {
       return null;
     }
@@ -465,7 +469,10 @@ Future<Media?> createLiveMedia(
         headers: headers,
       );
       if (videoBytes.length < 100) return null;
-      return await Media.memory(videoBytes);
+      // Served from RAM over loopback: Media.memory() would write the
+      // decrypted payload to a temp file. No httpHeaders — this is our own
+      // listener, and the server credentials have no business going to it.
+      return Media(await LiveMediaServer.instance.register(videoBytes));
     } catch (_) {
       return null;
     }

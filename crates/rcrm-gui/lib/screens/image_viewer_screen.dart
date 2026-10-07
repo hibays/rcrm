@@ -19,6 +19,7 @@ import '../services/net.dart';
 import '../services/mobile_image_decoder.dart';
 import '../services/animated_detector.dart';
 import '../services/live_photo.dart';
+import '../services/live_media_server.dart';
 import '../services/player_factory.dart';
 import '../widgets/pooled_image.dart';
 
@@ -429,6 +430,10 @@ class _ViewerPageState extends State<_ViewerPage>
   VoidCallback? _dismissListener;
   Player? _livePlayer;
   VideoController? _liveVC;
+
+  /// Loopback URL of the currently-registered live-photo payload, released
+  /// when the player is torn down so the bytes do not linger in RAM.
+  String? _liveMediaUri;
   bool _showFullRes = false;
   bool _isZoomed = false;
   // Page-drag tracking in global coordinates: [_dragStartGlobal] anchors the
@@ -638,6 +643,8 @@ class _ViewerPageState extends State<_ViewerPage>
     _livePlayer?.dispose();
     _livePlayer = null;
     _liveVC = null;
+    LiveMediaServer.instance.release(_liveMediaUri);
+    _liveMediaUri = null;
     _liveReadySub?.cancel();
     _liveDurSub?.cancel();
     _dismissCtrl.removeStatusListener(_dismissStatusListener);
@@ -712,7 +719,15 @@ class _ViewerPageState extends State<_ViewerPage>
       widget.item.url,
       headers: sharedAuthHeader,
     );
-    if (!mounted || media == null) return;
+    if (!mounted) {
+      // Screen went away while the payload was being registered — drop it
+      // instead of leaving it in the proxy until LRU evicts it.
+      LiveMediaServer.instance.release(media?.uri);
+      return;
+    }
+    if (media == null) return;
+    LiveMediaServer.instance.release(_liveMediaUri);
+    _liveMediaUri = media.uri;
     final p = PlayerFactory.playback();
     _livePlayer = p;
     _liveVC = VideoController(p);
@@ -769,6 +784,8 @@ class _ViewerPageState extends State<_ViewerPage>
     _livePlayer?.dispose();
     _livePlayer = null;
     _liveVC = null;
+    LiveMediaServer.instance.release(_liveMediaUri);
+    _liveMediaUri = null;
     if (mounted) setState(() => _mode = _ViewerMode.still);
   }
 

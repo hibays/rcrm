@@ -44,7 +44,10 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
     if (existing != null) return existing;
     final future = _generate(url, width, key);
     _inflight[key] = future;
-    future.whenComplete(() => _inflight.remove(key));
+    // `ignore()` is load-bearing: this derived future is discarded, and if it
+    // completed with an error that error would be re-reported as an unhandled
+    // exception even though the caller awaiting `future` already handles it.
+    future.whenComplete(() => _inflight.remove(key)).ignore();
     return future;
   }
 

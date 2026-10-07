@@ -124,7 +124,7 @@ class _VideoGridState extends State<_VideoGrid> {
       );
     }
 
-    final child = widget.isGrid ? _grid(c, videos) : _list(c, videos);
+    final child = widget.isGrid ? _grid(c, videos) : _list(videos);
     if (!FingerPreviewState.isMobile) return child;
     return Listener(
       onPointerDown: (e) => _fp.onPointerDown(e, setState),
@@ -162,7 +162,7 @@ class _VideoGridState extends State<_VideoGrid> {
     );
   }
 
-  Widget _list(BuildContext c, List<MediaItem> videos) {
+  Widget _list(List<MediaItem> videos) {
     return ListView.builder(
       padding: const EdgeInsets.all(8),
       itemCount: videos.length,
@@ -171,55 +171,14 @@ class _VideoGridState extends State<_VideoGrid> {
         final v = videos[i];
         return Padding(
           padding: const EdgeInsets.only(bottom: 8),
-          child: SizedBox(
-            height: 100,
-            child: Row(
-              children: [
-                Expanded(
-                  flex: 2,
-                  child: VideoCard(
-                    key: _fp.keyFor(v.path),
-                    item: v,
-                    preview: _fp.isActive(v.path),
-                    compact: true,
-                    onTap: () => widget.onOpen(v),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  flex: 3,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => widget.onOpen(v),
-                    child: _listInfo(c, v),
-                  ),
-                ),
-              ],
-            ),
+          child: VideoListTile(
+            item: v,
+            cardKey: _fp.keyFor(v.path),
+            preview: _fp.isActive(v.path),
+            onTap: () => widget.onOpen(v),
           ),
         );
       },
     );
   }
-
-  Widget _listInfo(BuildContext c, MediaItem item) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    mainAxisAlignment: MainAxisAlignment.center,
-    children: [
-      Text(
-        item.name,
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
-        style: Theme.of(c).textTheme.titleMedium,
-      ),
-      const SizedBox(height: 4),
-      if (item.durationSeconds != null)
-        Text(item.formattedDuration, style: Theme.of(c).textTheme.bodyMedium),
-      const SizedBox(height: 2),
-      Text(
-        '${item.formattedSize} • ${item.extension.toUpperCase()}',
-        style: Theme.of(c).textTheme.bodyMedium,
-      ),
-    ],
-  );
 }

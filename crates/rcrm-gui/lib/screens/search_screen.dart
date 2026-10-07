@@ -4,7 +4,6 @@
 //
 // Video cards match the home screen's Recent Videos proportions (280×180).
 
-import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/album.dart';
@@ -93,7 +92,6 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     final videos = ref.watch(videosListProvider);
     final albums = ref.watch(albumsProvider);
     final q = _query.toLowerCase().trim();
-    final isMobile = Platform.isAndroid || Platform.isIOS;
 
     return PopScope(
       canPop: true,
@@ -125,7 +123,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
               ),
           ],
         ),
-        body: _buildBody(context, videos, albums, scanState, q, isMobile),
+        body: _buildBody(context, videos, albums, scanState, q),
       ),
     );
   }
@@ -136,7 +134,6 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     List<Album> albums,
     ScanState scanState,
     String q,
-    bool isMobile,
   ) {
     if (scanState.isLoading && allVideos.isEmpty) {
       return const Center(child: CircularProgressIndicator());
@@ -304,7 +301,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
               if (isGrid)
                 _buildVideoGrid(context, videos, videoCols, videoAR)
               else
-                _buildVideoList(context, videos, isMobile),
+                _buildVideoList(context, videos),
             ],
 
             // ── Images ────────────────────────────
@@ -389,39 +386,19 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
 
   // ── List ───────────────────────────────────────────────
 
-  Widget _buildVideoList(
-    BuildContext context,
-    List<MediaItem> videos,
-    bool isMobile,
-  ) {
+  Widget _buildVideoList(BuildContext context, List<MediaItem> videos) {
     return SliverList(
       delegate: SliverChildBuilderDelegate((ctx, index) {
         final item = videos[index];
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-          child: SizedBox(
-            height: 140,
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 200,
-                  child: VideoCard(
-                    key: ValueKey(item.url),
-                    item: item,
-                    compact: true,
-                    onTap: () => _openVideo(item),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => _openVideo(item),
-                    child: _listInfo(context, item),
-                  ),
-                ),
-              ],
-            ),
+          child: VideoListTile(
+            item: item,
+            // Search results are rebuilt in place as the query changes, so the
+            // card needs a per-item key to keep its poster state from being
+            // reused for a different video.
+            cardKey: ValueKey(item.url),
+            onTap: () => _openVideo(item),
           ),
         );
       }, childCount: videos.length),
@@ -465,6 +442,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     );
   }
 
+  /// Metadata column for the image list. The video list uses the shared
+  /// [VideoListTile] instead, so this stays specific to images.
   Widget _listInfo(BuildContext c, MediaItem item) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     mainAxisAlignment: MainAxisAlignment.center,

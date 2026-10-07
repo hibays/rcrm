@@ -314,3 +314,80 @@ class _VideoCardState extends State<VideoCard> {
     ),
   );
 }
+
+/// One row of the list layout: compact poster on the left, metadata on the
+/// right.
+///
+/// Shared by the video screen and the search screen. They previously each
+/// carried their own copy of this row and drifted apart — 100 px vs 140 px
+/// tall, and a flexed vs a fixed-width poster — so the same video looked
+/// different depending on where it was listed. Keeping one widget is what
+/// stops that from happening again.
+class VideoListTile extends StatelessWidget {
+  final MediaItem item;
+  final VoidCallback? onTap;
+  final bool preview;
+
+  /// Key handed to the inner [VideoCard]. Mobile finger-preview hit-tests the
+  /// card's render box through it, so it must land on the card, not the row.
+  final Key? cardKey;
+
+  const VideoListTile({
+    super.key,
+    required this.item,
+    this.onTap,
+    this.preview = false,
+    this.cardKey,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 100,
+      child: Row(
+        children: [
+          Expanded(
+            flex: 2,
+            child: VideoCard(
+              key: cardKey,
+              item: item,
+              preview: preview,
+              compact: true,
+              onTap: onTap,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            flex: 3,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: onTap,
+              child: _info(context),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _info(BuildContext c) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisAlignment: MainAxisAlignment.center,
+    children: [
+      Text(
+        item.name,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(c).textTheme.titleMedium,
+      ),
+      const SizedBox(height: 4),
+      if (item.durationSeconds != null)
+        Text(item.formattedDuration, style: Theme.of(c).textTheme.bodyMedium),
+      const SizedBox(height: 2),
+      Text(
+        '${item.formattedSize} • ${item.extension.toUpperCase()}',
+        style: Theme.of(c).textTheme.bodyMedium,
+      ),
+    ],
+  );
+}
