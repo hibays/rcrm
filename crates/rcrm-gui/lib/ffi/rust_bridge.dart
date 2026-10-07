@@ -142,6 +142,64 @@ typedef RcrmDecodeAsyncDart =
 typedef RcrmFreeDecodeBufC = Void Function(Pointer<Void> ptr);
 typedef RcrmFreeDecodeBufDart = void Function(Pointer<Void> ptr);
 
+/// Thumbnail generator from an **encoded image** (mobile): AVIF/JXL bytes →
+/// downscaled WebP, decoding in Rust so no pixels enter Dart.
+///
+/// The pixel counterpart is [RcrmWebpBufC]/`encodeThumbWebp`
+/// (`rcrm_encode_thumb_webp`), which takes RGBA that some other decoder
+/// produced. See `rcrm_generate_thumb_webp_from_image`'s doc for the pair.
+///
+/// The input is BORROWED (the caller keeps and frees it); the reply is a
+/// `WebpBuf` freed with `rcrm_free_webp_buf`.
+typedef RcrmGenerateThumbWebpFromImageC =
+    Pointer<Void> Function(
+      Pointer<Uint8> data,
+      IntPtr len,
+      Uint32 targetWidth,
+      Uint8 quality,
+      Uint8 kindHint,
+    );
+typedef RcrmGenerateThumbWebpFromImageDart =
+    Pointer<Void> Function(
+      Pointer<Uint8> data,
+      int len,
+      int targetWidth,
+      int quality,
+      int kindHint,
+    );
+
+// ── Media metadata (EXIF / track) — all platforms ─────────────────
+
+/// Native callback: Rust calls this from a background thread with the JSON
+/// result of a metadata parse. The string must be freed with
+/// `rcrm_free_string`; Dart routes the call through `NativeCallable.listener`.
+typedef RcrmMetadataResultC =
+    Void Function(Pointer<Utf8> json, Pointer<Void> ctx);
+
+/// Async metadata parse. Rust takes ownership of the buffer, so Dart must not
+/// free it (or touch it) after the call — the bytes are handed over in place,
+/// with no copy. `cap` is the size the buffer was really allocated with: the
+/// caller fetches a fixed-size head and usually fills only part of it, and Rust
+/// needs the real capacity to rebuild (and free) the allocation exactly.
+typedef RcrmMetadataAsyncC =
+    Void Function(
+      Pointer<Uint8> data,
+      IntPtr len,
+      IntPtr cap,
+      Uint8 kindHint,
+      Pointer<NativeFunction<RcrmMetadataResultC>> callback,
+      Pointer<Void> ctx,
+    );
+typedef RcrmMetadataAsyncDart =
+    void Function(
+      Pointer<Uint8> data,
+      int len,
+      int cap,
+      int kindHint,
+      Pointer<NativeFunction<RcrmMetadataResultC>> callback,
+      Pointer<Void> ctx,
+    );
+
 // ── Thumbnail WebP encoding (all platforms) ──────────────────
 
 typedef RcrmWebpBufC =
@@ -201,6 +259,18 @@ class RustBridge {
   static int decodeAvifAsyncAddr = 0;
   static int decodeJxlAsyncAddr = 0;
   static int freeDecodeBufAddr = 0;
+
+  /// Raw address of `rcrm_generate_thumb_webp_from_image` — the mobile
+  /// thumbnail generator that takes an **encoded image** (AVIF/JXL bytes) and
+  /// decodes it in Rust, so no pixels pass through Dart. 0 on desktop, where
+  /// the `mobile-decode` feature is omitted and the engine supplies pixels to
+  /// `encodeThumbWebp` (the other half of the pair) instead.
+  static int generateThumbWebpFromImageAddr = 0;
+
+  /// Raw address of `rcrm_media_metadata_async` (EXIF / track parsing).
+  /// 0 when the loaded bridge predates it — callers then fall back to
+  /// "no metadata" instead of failing.
+  static int mediaMetadataAsyncAddr = 0;
 
   /// Raw address of `rcrm_free_webp_buf`, for the NativeFinalizer that
   /// auto-frees WebP output buffers when the Dart view is GC'd (zero-copy
@@ -311,6 +381,20 @@ class RustBridge {
     freeWebpBufAddr = _lib!
         .lookup<NativeFunction<RcrmFreeWebpBufC>>('rcrm_free_webp_buf')
         .address;
+    // Metadata parsing is not feature-gated. The hand-off takes the caller's
+    // native buffer without copying, which changed the arity, so the export is
+    // versioned: a .dll/.so built before that still has `..._v1` and simply
+    // lacks v2 — the app then degrades to "no metadata" instead of calling a
+    // shorter function with mismatched arguments.
+    try {
+      mediaMetadataAsyncAddr = _lib!
+          .lookup<NativeFunction<RcrmMetadataAsyncC>>(
+            'rcrm_media_metadata_async',
+          )
+          .address;
+    } catch (_) {
+      mediaMetadataAsyncAddr = 0;
+    }
     // mobile-decode gated — present on mobile builds; absent on desktop.
     // Decode symbols are #[cfg(mobile-decode)] gated — absent on desktop.
     // On mobile a missing symbol is a build bug: let it throw (fail-fast).
@@ -323,6 +407,11 @@ class RustBridge {
           .address;
       freeDecodeBufAddr = _lib!
           .lookup<NativeFunction<RcrmFreeDecodeBufC>>('rcrm_free_decode_buf')
+          .address;
+      generateThumbWebpFromImageAddr = _lib!
+          .lookup<NativeFunction<RcrmGenerateThumbWebpFromImageC>>(
+            'rcrm_generate_thumb_webp_from_image',
+          )
           .address;
     } else {
       try {
@@ -338,6 +427,13 @@ class RustBridge {
       try {
         freeDecodeBufAddr = _lib!
             .lookup<NativeFunction<RcrmFreeDecodeBufC>>('rcrm_free_decode_buf')
+            .address;
+      } catch (_) {}
+      try {
+        generateThumbWebpFromImageAddr = _lib!
+            .lookup<NativeFunction<RcrmGenerateThumbWebpFromImageC>>(
+              'rcrm_generate_thumb_webp_from_image',
+            )
             .address;
       } catch (_) {}
     }

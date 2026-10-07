@@ -30,11 +30,22 @@ class AuthImage extends ImageProvider<AuthImage> {
   }
 
   Future<ui.Codec> _load() async {
+    // Software-decoded formats first, copy-free: the compressed bytes land in
+    // native memory and go straight to Rust, so they never become a Dart list.
+    final soft = await MobileImageDecoder.fetchForDecode(url);
+    if (soft != null) {
+      final codec = await MobileImageDecoder.tryDecodeNative(
+        soft,
+        url,
+        targetWidth: targetWidth ?? 0,
+      );
+      if (codec != null) return codec;
+    }
+
     final uri = Uri.parse(Uri.encodeFull(url));
     final req = await sharedHttpClient.getUrl(uri);
-    if (sharedAuthHeader != null) {
-      req.headers.set('Authorization', sharedAuthHeader!['Authorization']!);
-    }
+    final token = sharedAuthHeader?['Authorization'];
+    if (token != null) req.headers.set('Authorization', token);
     final resp = await req.close();
     if (resp.statusCode != 200) {
       throw HttpException('HTTP ${resp.statusCode} fetching $url');

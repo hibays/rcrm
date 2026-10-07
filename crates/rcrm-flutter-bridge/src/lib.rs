@@ -26,6 +26,7 @@ mod decode;
 mod jxl;
 
 mod crypt_ops;
+mod metadata;
 mod qr_gen;
 mod qr_scan;
 mod server;
@@ -415,6 +416,162 @@ pub unsafe extern "C" fn rcrm_decode_jxl_async(
 	});
 }
 
+// =======================
+// WebP THUMBNAILS from compressed images (mobile)
+// =======================
+
+/// Generate a WebP **thumbnail** from an encoded image (AVIF/JXL bytes).
+///
+/// Decode → downscale to `target_width` → lossy WebP, in one call, entirely
+/// inside Rust: the pixels never enter the Dart heap.
+///
+/// **The two thumbnail generators, and why there are two:**
+/// | function | input | available on | used by |
+/// |---|---|---|---|
+/// | `rcrm_encode_thumb_webp` | raw RGBA pixels | every platform | the engine-decoded path (all of desktop; JPEG/PNG/WebP on mobile) |
+/// | `rcrm_generate_thumb_webp_from_image` | an encoded image | mobile only (`mobile-decode`) | the AVIF/JXL thumbnail cache, where Dart has no pixels to give |
+/// Desktop builds have no AVIF/JXL decoder at all, so the pixel function could
+/// not be replaced by this one; and this one exists because asking the engine
+/// for pixels first would add three full-frame copies per cached thumbnail.
+///
+/// **Where this one is used:** Dart fetches the original into native memory
+/// (`services/native_bytes.dart`) and calls this from the WebP worker isolate
+/// (`services/thumb_webp_worker.dart`, op `generateThumbFromImage`) via
+/// `DiskThumbImage._makeThumbInRust` (`widgets/disk_thumb_image.dart`), then
+/// stores the returned bytes as the cached `.webp` entry — a cold thumbnail
+/// costs one fetch and zero full-frame copies.
+///
+/// The input is **borrowed**, not consumed: `data` stays the caller's and is
+/// never freed here, so a failure costs nothing to recover from (the caller
+/// frees the buffer and retries through the general path).
+///
+/// `kind_hint`: 1 = AVIF, 2 = JXL, anything else sniffs the container header.
+/// Returns null when the bytes could not be decoded or encoded; the reply is a
+/// `WebpBuf` the caller frees with `rcrm_free_webp_buf`.
+///
+/// # Safety
+/// `data` must be a valid pointer to at least `len` bytes, and must stay valid
+/// and unmodified for the duration of the call.
+#[cfg(feature = "mobile-decode")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcrm_generate_thumb_webp_from_image(
+	data: *const u8,
+	len: usize,
+	target_width: u32,
+	quality: u8,
+	kind_hint: u8,
+) -> *mut webp::WebpBuf {
+	if data.is_null() || len == 0 {
+		return std::ptr::null_mut();
+	}
+	let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+	let decoded = match kind_hint {
+		1 => decode::decode_avif(bytes, target_width),
+		2 => decode::decode_jxl(bytes, target_width),
+		_ => decode::decode_avif(bytes, target_width)
+			.or_else(|| decode::decode_jxl(bytes, target_width)),
+	};
+	let Some(pixels) = decoded else {
+		return std::ptr::null_mut();
+	};
+	let encoded = unsafe {
+		webp::encode_rgba_webp(
+			pixels.data,
+			pixels.data_len,
+			pixels.width,
+			pixels.height,
+			quality,
+		)
+	};
+	// The decoded pixels are dead either way — keep them out of Dart entirely.
+	unsafe { decode::free_decode_buf(Box::into_raw(pixels)) };
+	match encoded {
+		Some(buf) => Box::into_raw(buf),
+		None => std::ptr::null_mut(),
+	}
+}
+
+// =======================
+// Media metadata (EXIF / track) — all platforms
+// =======================
+
+/// Callback invoked from a spawned thread when metadata parsing completes.
+/// `result` is a JSON C string (never null) that Dart must free with
+/// `rcrm_free_string`. `ctx` is the opaque user pointer passed to the async
+/// call (an integer request id).
+type MetadataCallback = unsafe extern "C" fn(*mut c_char, *mut std::ffi::c_void);
+
+/// Asynchronous metadata parse: media bytes → JSON.
+///
+/// One entry point for both kinds of source — EXIF for images, track info for
+/// video/audio containers — dispatched by the container header unless
+/// `kind_hint` says otherwise (0 = auto, 1 = image, 2 = track). The JSON shape
+/// is documented in `metadata.rs`.
+///
+/// The hand-off copies nothing: Dart fetches the head **straight into a native
+/// buffer** and passes that pointer, so the bytes travel socket → native
+/// buffer → parser without ever being duplicated. Rust takes ownership of the
+/// buffer and frees it when the parse finishes, so Dart must not touch it after
+/// this call.
+///
+/// `cap` is the size the buffer was really allocated with, which is NOT always
+/// `len`: the caller fetches a fixed-size head and usually fills only part of
+/// it. It is what the `Vec` is rebuilt with — and therefore what gets freed.
+///
+/// # Safety
+/// `data` must point to a `calloc`-allocated buffer of `cap` bytes, with
+/// `len <= cap`, and must not be used again from Dart. `callback` may be null
+/// (no-op). `ctx` is passed through verbatim and must stay valid for the
+/// duration of the spawned thread (it is an opaque integer id).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcrm_media_metadata_async(
+	data: *const u8,
+	len: usize,
+	cap: usize,
+	kind_hint: u8,
+	callback: Option<MetadataCallback>,
+	ctx: *mut std::ffi::c_void,
+) {
+	if data.is_null() || len == 0 || cap < len {
+		// Dart only calls this with a filled buffer, so this is a contract
+		// violation rather than a case to serve: answer with an error document
+		// instead of leaving the caller waiting. Ownership is NOT accepted
+		// here, so the buffer is not freed either.
+		if let Some(cb) = callback {
+			let json = str_to_cstring(r#"{"kind":"unknown","error":"empty"}"#);
+			unsafe { cb(json, ctx) };
+		}
+		return;
+	}
+	// Ownership transfer: rebuilding the `Vec` with the real capacity makes
+	// `Vec::drop` free exactly what calloc allocated — the same
+	// allocator-matching contract the decode path relies on and documents.
+	let bytes = unsafe { Vec::from_raw_parts(data as *mut u8, len, cap) };
+	let hint = metadata::KindHint::from_code(kind_hint);
+	let ctx_raw = ctx as usize;
+	let spawned = std::thread::Builder::new().spawn(move || {
+		// A panic while parsing hostile bytes must not unwind out of the
+		// closure: that would kill the thread before the callback and leave
+		// the Dart future pending forever.
+		let json = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			metadata::parse_json(bytes, hint)
+		}))
+		.unwrap_or_else(|_| r#"{"kind":"unknown","error":"parser panicked"}"#.to_string());
+		if let Some(cb) = callback {
+			unsafe { cb(str_to_cstring(&json), ctx_raw as *mut std::ffi::c_void) };
+		}
+	});
+	if spawned.is_err() {
+		// No thread could be created. The failed spawn dropped the closure,
+		// which dropped `bytes`, so the Dart buffer is already freed; answer on
+		// the caller's thread rather than leave the future pending.
+		if let Some(cb) = callback {
+			let json = str_to_cstring(r#"{"kind":"unknown","error":"spawn failed"}"#);
+			unsafe { cb(json, ctx) };
+		}
+	}
+}
+
 /// Free a DecodeBuf returned by `rcrm_decode_avif_async` or `rcrm_decode_jxl_async`.
 ///
 /// # Safety
@@ -573,6 +730,15 @@ pub unsafe extern "C" fn rcrm_generate_tv_cert() -> *mut c_char {
 
 /// Encode raw RGBA pixels as lossy WebP (for the on-disk thumbnail cache).
 ///
+/// Encode a WebP **thumbnail** from raw RGBA pixels.
+///
+/// This is the pixel function of the pair: whatever decoded the image (Flutter's
+/// engine on every platform, or the Rust decoder on mobile) hands over the
+/// pixels it already has. `rcrm_generate_thumb_webp_from_image` is the other
+/// half — it takes an encoded AVIF/JXL instead and does the decoding itself,
+/// which is what the mobile thumbnail cache uses so the pixels never enter
+/// Dart. See that function's doc for the full comparison.
+///
 /// # Arguments
 /// * `data` — RGBA8 pixels, `width * height * 4` bytes
 /// * `len` — byte length (must equal `width * height * 4`)
@@ -600,11 +766,12 @@ pub unsafe extern "C" fn rcrm_encode_thumb_webp(
 	}
 }
 
-/// Free a `WebpBuf` returned by `rcrm_encode_thumb_webp`.
+/// Free a `WebpBuf` returned by `rcrm_encode_thumb_webp`,
+/// `rcrm_generate_thumb_webp_from_image` or `rcrm_generate_qr_webp`.
 ///
 /// # Safety
-/// `ptr` must be null or a pointer previously returned by
-/// `rcrm_encode_thumb_webp`. Must not be freed twice.
+/// `ptr` must be null or a pointer previously returned by one of those
+/// functions. Must not be freed twice.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcrm_free_webp_buf(ptr: *mut webp::WebpBuf) {
 	unsafe { webp::free_webp_buf(ptr) }
@@ -667,5 +834,119 @@ mod tests {
 			2,
 			"null input must yield a null result (no crash / no UB)"
 		);
+	}
+}
+
+// =======================
+// Tests — metadata FFI callback contract
+// =======================
+
+/// Dart stores a completer per request and ONLY the callback can complete it,
+/// so "the callback fires exactly once, whatever the input" is the contract
+/// this pins. A parsers' panic is covered by the `catch_unwind` in the FFI;
+/// forcing nom-exif to panic is not reproducible, so the reachable paths
+/// (garbage bytes, empty input) are what the tests drive.
+#[cfg(test)]
+mod metadata_ffi_tests {
+	use std::sync::mpsc;
+	use std::time::Duration;
+
+	/// Hands `bytes` to the FFI the way Dart does: a buffer Rust will free by
+	/// rebuilding the `Vec`. Dart allocates a fixed-size head, so the capacity
+	/// is deliberately larger than the payload here too.
+	fn into_ffi_buffer(bytes: &[u8], slack: usize) -> (*const u8, usize, usize) {
+		let cap = bytes.len() + slack;
+		let mut v = Vec::with_capacity(cap);
+		v.extend_from_slice(bytes);
+		let len = v.len();
+		let ptr = v.as_ptr();
+		std::mem::forget(v);
+		(ptr, len, cap)
+	}
+
+	/// Mirrors Dart's `_onParsed`: read the JSON, free it with
+	/// `rcrm_free_string`, then deliver it to the waiting test.
+	unsafe extern "C" fn on_json(json: *mut std::ffi::c_char, ctx: *mut std::ffi::c_void) {
+		let text = if json.is_null() {
+			String::new()
+		} else {
+			let s = unsafe { std::ffi::CStr::from_ptr(json) }
+				.to_string_lossy()
+				.into_owned();
+			unsafe { crate::rcrm_free_string(json) };
+			s
+		};
+		let tx = unsafe { &*(ctx as *const mpsc::Sender<String>) };
+		let _ = tx.send(text);
+	}
+
+	fn ctx_of(tx: &mpsc::Sender<String>) -> *mut std::ffi::c_void {
+		tx as *const mpsc::Sender<String> as *mut std::ffi::c_void
+	}
+
+	#[test]
+	fn unparsable_bytes_still_answer() {
+		let (tx, rx) = mpsc::channel();
+		let (ptr, len, cap) = into_ffi_buffer(&[0u8; 64], 4096);
+		unsafe {
+			crate::rcrm_media_metadata_async(ptr, len, cap, 0, Some(on_json), ctx_of(&tx));
+		}
+		let json = rx
+			.recv_timeout(Duration::from_secs(5))
+			.expect("callback must fire for garbage bytes");
+		assert!(json.contains(r#""kind":"unknown""#), "{json}");
+		assert!(json.contains("error"), "{json}");
+	}
+
+	#[test]
+	fn valid_jpeg_reports_an_image() {
+		let (tx, rx) = mpsc::channel();
+		// SOI + EOI: a real, empty JPEG envelope.
+		let (ptr, len, cap) = into_ffi_buffer(&[0xff, 0xd8, 0xff, 0xd9], 0);
+		unsafe {
+			crate::rcrm_media_metadata_async(ptr, len, cap, 1, Some(on_json), ctx_of(&tx));
+		}
+		let json = rx
+			.recv_timeout(Duration::from_secs(5))
+			.expect("callback must fire for a valid container");
+		assert!(json.contains(r#""kind":"image""#), "{json}");
+	}
+
+	#[test]
+	fn null_and_empty_input_are_answered_on_the_calling_thread() {
+		let (tx, rx) = mpsc::channel();
+		unsafe {
+			crate::rcrm_media_metadata_async(
+				std::ptr::null(),
+				0,
+				0,
+				0,
+				Some(on_json),
+				ctx_of(&tx),
+			);
+		}
+		let json = rx
+			.recv_timeout(Duration::from_secs(5))
+			.expect("callback must fire for a null buffer");
+		assert!(json.contains("empty"), "{json}");
+	}
+
+	#[test]
+	fn a_capacity_smaller_than_the_payload_is_refused_not_read() {
+		// `cap < len` would make Vec::from_raw_parts unsound, so it must be
+		// rejected before anything is touched — and without taking ownership.
+		let (tx, rx) = mpsc::channel();
+		let v = vec![0u8; 32];
+		let ptr = v.as_ptr();
+		std::mem::forget(v);
+		unsafe {
+			crate::rcrm_media_metadata_async(ptr, 32, 16, 0, Some(on_json), ctx_of(&tx));
+		}
+		let json = rx
+			.recv_timeout(Duration::from_secs(5))
+			.expect("callback must fire for a bad capacity");
+		assert!(json.contains("empty"), "{json}");
+		// The buffer was not consumed, so the test still owns it.
+		unsafe { drop(Vec::from_raw_parts(ptr as *mut u8, 32, 32)) };
 	}
 }

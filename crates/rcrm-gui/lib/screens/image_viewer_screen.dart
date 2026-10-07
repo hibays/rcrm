@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'dart:io' show Platform;
+import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../widgets/image_wall_strip.dart';
 
@@ -21,7 +22,10 @@ import '../services/animated_detector.dart';
 import '../services/live_photo.dart';
 import '../services/live_media_server.dart';
 import '../services/player_factory.dart';
+import '../services/media_metadata.dart';
 import '../widgets/pooled_image.dart';
+import '../widgets/viewer_zoom.dart';
+import '../widgets/image_info_sheet.dart';
 
 enum _ViewerMode { still, animation, live }
 
@@ -68,6 +72,20 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
   TransformationController _ctrlFor(int i) =>
       _controllers.putIfAbsent(i, () => TransformationController());
 
+  /// One viewport key per page: zoom commands (chrome buttons, the info
+  /// sheet's 1:1 chip) are geometry-aware, so they run inside the page.
+  final Map<int, GlobalKey<ZoomableViewportState>> _viewports = {};
+  GlobalKey<ZoomableViewportState> _viewportFor(int i) =>
+      _viewports.putIfAbsent(i, () => GlobalKey<ZoomableViewportState>());
+
+  /// Decoded pixel size per page, for the info sheet and the 1:1 chip.
+  final Map<int, Size> _pixelSizes = {};
+
+  /// Pages whose container header confirmed real animation frames (webp/avif
+  /// and friends, which the extension alone cannot tell apart). The info sheet
+  /// reports the same fact the badge and long-press use.
+  final Set<int> _animatedPages = {};
+
   @override
   void initState() {
     super.initState();
@@ -87,32 +105,41 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
     super.dispose();
   }
 
+  /// The info sheet: what the file is, in the gallery-panel shape people
+  /// already read — one big date, the name, the camera block, labelled rows.
+  /// EXIF comes from the Rust parser (fetched once per URL, then cached).
   void _showInfo() {
-    final item = widget.items[_currentIndex];
-    showDialog(
+    final index = _currentIndex;
+    final item = widget.items[index];
+    final viewport = _viewportFor(index).currentState;
+    final metadata = MediaMetadataService.forUrl(
+      item.url,
+      kind: MetadataKind.image,
+    );
+    showModalBottomSheet<void>(
       context: context,
-      builder: (_) => AlertDialog(
-        title: Text(item.name),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text("Type: ${item.extension.toUpperCase()}"),
-            const SizedBox(height: 4),
-            Text("Size: ${item.formattedSize}"),
-            if (item.durationSeconds != null)
-              Text("Duration: ${item.formattedDuration}"),
-            if (item.resolution != null) Text("Resolution: ${item.resolution}"),
-            if (item.modified != null)
-              Text("Modified: ${item.modified.toString().substring(0, 19)}"),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("OK"),
-          ),
-        ],
+      backgroundColor: Colors.transparent,
+      // The panel is the point of this sheet — let it size to its content
+      // instead of the default half-screen cap (its own scroll view handles a
+      // short screen or a large text scale).
+      isScrollControlled: true,
+      // Light scrim: the photo stays the subject, the sheet is a layer over it.
+      barrierColor: Colors.black.withValues(alpha: 0.35),
+      builder: (sheetContext) => ImageInfoSheet(
+        item: item,
+        index: index + 1,
+        total: widget.items.length,
+        pixelSize: _pixelSizes[index],
+        metadata: metadata,
+        // Same verdict the badge and long-press use: the extension test, plus
+        // a container header that really confirmed animation frames.
+        animated: item.isAnimated || _animatedPages.contains(index),
+        onActualSize: viewport != null && viewport.canShowActualSize
+            ? () {
+                Navigator.of(sheetContext).pop();
+                viewport.zoomToActualSize();
+              }
+            : null,
       ),
     );
   }
@@ -123,11 +150,11 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
     Navigator.of(context).pop();
   }
 
-  void _zoom(double factor) {
-    final c = _ctrlFor(_currentIndex);
-    final s = (c.value.getMaxScaleOnAxis() * factor).clamp(1.0, 6.0);
-    c.value = Matrix4.identity()..scaleByDouble(s, s, s, 1.0);
-  }
+  /// Zoom the current page; the page owns the geometry (viewport + image size)
+  /// so the transform can never push the picture off screen.
+  void _zoom(double factor) => _viewportFor(_currentIndex).currentState?.zoomBy(
+    factor,
+  );
 
   /// Page ±1 with the same animated navigation the arrow buttons use.
   void _goTo(int delta) {
@@ -179,16 +206,101 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
     return _chrome(arrow);
   }
 
-  Widget _buildPrevArrow() => _ArrowButton(
+  Widget _buildPrevArrow() => _RoundButton(
     icon: Icons.chevron_left,
     onTap: () => _goTo(-1),
     isDesktop: _isDesktop,
   );
 
-  Widget _buildNextArrow() => _ArrowButton(
+  Widget _buildNextArrow() => _RoundButton(
     icon: Icons.chevron_right,
     onTap: () => _goTo(1),
     isDesktop: _isDesktop,
+  );
+
+  /// Top chrome, floating over the photo: a scrim instead of a bar, round
+  /// buttons instead of a toolbar, the file name plus its position as the one
+  /// line of text. Zoom buttons belong to the pointer platforms — touch has
+  /// pinch and double-tap, and stock mobile viewers carry no zoom chrome.
+  Widget _topChrome() => Container(
+    decoration: const BoxDecoration(
+      gradient: LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xB3000000), Color(0x00000000)],
+      ),
+    ),
+    child: SafeArea(
+      bottom: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(8, 4, 8, 22),
+        child: Row(
+          children: [
+            _RoundButton(
+              icon: Icons.arrow_back,
+              tooltip: 'Close',
+              onTap: _close,
+              isDesktop: _isDesktop,
+              size: 40,
+              iconSize: 22,
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.items[_currentIndex].name,
+                    style: const TextStyle(
+                      color: RCrmColors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${_currentIndex + 1} / ${widget.items.length}',
+                    style: const TextStyle(
+                      color: RCrmColors.silver,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (_isDesktop) ...[
+              _RoundButton(
+                icon: Icons.zoom_out,
+                tooltip: 'Zoom out',
+                onTap: () => _zoom(1 / 1.5),
+                isDesktop: true,
+                size: 40,
+                iconSize: 20,
+              ),
+              _RoundButton(
+                icon: Icons.zoom_in,
+                tooltip: 'Zoom in',
+                onTap: () => _zoom(1.5),
+                isDesktop: true,
+                size: 40,
+                iconSize: 20,
+              ),
+            ],
+            _RoundButton(
+              icon: Icons.info_outline,
+              tooltip: 'Info',
+              onTap: _showInfo,
+              isDesktop: _isDesktop,
+              size: 40,
+              iconSize: 20,
+            ),
+          ],
+        ),
+      ),
+    ),
   );
 
   @override
@@ -261,6 +373,7 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
                         });
                       },
                       itemBuilder: (context, index) => _ViewerPage(
+                        viewportKey: _viewportFor(index),
                         item: widget.items[index],
                         controller: _ctrlFor(index),
                         pageController: _pageController,
@@ -268,6 +381,16 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
                         isDesktop: _isDesktop,
                         onZoomChanged: (_) {
                           if (mounted) setState(() {});
+                        },
+                        onImageSize: (size) {
+                          if (!mounted || _pixelSizes[index] == size) return;
+                          setState(() => _pixelSizes[index] = size);
+                        },
+                        onAnimated: () {
+                          if (!mounted || _animatedPages.contains(index)) {
+                            return;
+                          }
+                          setState(() => _animatedPages.add(index));
                         },
                         onToggleUi: () => _showUI.value = !_showUI.value,
                         onHideUi: () => _showUI.value = false,
@@ -278,62 +401,7 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
                     top: 0,
                     left: 0,
                     right: 0,
-                    child: _chrome(
-                      SafeArea(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
-                          ),
-                          color: Colors.black.withValues(alpha: 0.6),
-                          child: Row(
-                            children: [
-                              IconButton(
-                                icon: const Icon(
-                                  Icons.arrow_back,
-                                  color: Colors.white,
-                                ),
-                                onPressed: _close,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  widget.items[_currentIndex].name,
-                                  style: const TextStyle(color: Colors.white),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                              Text(
-                                '${_currentIndex + 1} / ${widget.items.length}',
-                                style: const TextStyle(color: Colors.white70),
-                              ),
-                              IconButton(
-                                icon: const Icon(
-                                  Icons.zoom_in,
-                                  color: Colors.white,
-                                ),
-                                onPressed: () => _zoom(1.5),
-                              ),
-                              IconButton(
-                                icon: const Icon(
-                                  Icons.zoom_out,
-                                  color: Colors.white,
-                                ),
-                                onPressed: () => _zoom(1 / 1.5),
-                              ),
-                              IconButton(
-                                icon: const Icon(
-                                  Icons.info,
-                                  color: Colors.white70,
-                                ),
-                                onPressed: _showInfo,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
+                    child: _chrome(_topChrome()),
                   ),
 
                   // ── Bottom strip ──
@@ -400,6 +468,17 @@ class _ViewerPage extends StatefulWidget {
   final VoidCallback onToggleUi;
   final VoidCallback onHideUi;
   final ValueChanged<bool> onZoomChanged;
+
+  /// Reports the decoded pixel size once (info sheet + the 1:1 affordance).
+  final ValueChanged<Size> onImageSize;
+
+  /// Reports that the container header confirmed real animation frames, so the
+  /// info sheet can state the same fact as the badge.
+  final VoidCallback onAnimated;
+
+  /// Key of the zoom viewport, so the viewer chrome can zoom this page.
+  final GlobalKey<ZoomableViewportState> viewportKey;
+
   final bool isDesktop;
   const _ViewerPage({
     required this.item,
@@ -409,6 +488,9 @@ class _ViewerPage extends StatefulWidget {
     required this.onToggleUi,
     required this.onHideUi,
     required this.onZoomChanged,
+    required this.onImageSize,
+    required this.onAnimated,
+    required this.viewportKey,
     required this.isDesktop,
   });
 
@@ -418,9 +500,7 @@ class _ViewerPage extends StatefulWidget {
 
 class _ViewerPageState extends State<_ViewerPage>
     with SingleTickerProviderStateMixin {
-  TapDownDetails? _tap;
   _ViewerMode _mode = _ViewerMode.still;
-  bool _dragging = false;
   bool _dragEngaged = false;
   bool _confirmedAnimated = false;
   Timer? _tapTimer;
@@ -430,6 +510,27 @@ class _ViewerPageState extends State<_ViewerPage>
   VoidCallback? _dismissListener;
   Player? _livePlayer;
   VideoController? _liveVC;
+
+  /// Decoded pixel size of this photo, once the full-res decode lands.
+  Size? _imageSize;
+
+  /// True while the picture is pinned to the top of the viewport, i.e. a
+  /// downward drag has nothing left to pan and may become a dismissal.
+  final ValueNotifier<bool> _atTopEdge = ValueNotifier(true);
+
+  /// Velocity of the current pull, so a quick flick closes the viewer even
+  /// when it travelled less than the distance threshold.
+  VelocityTracker _pullVelocity = VelocityTracker.withKind(
+    PointerDeviceKind.touch,
+  );
+
+  /// Set while a pull-to-dismiss owns the gesture: the image must not pan at
+  /// the same time, or the photo moves twice as fast as the finger.
+  bool _pulling = false;
+
+  /// Full-res stream subscription, for the decoded size.
+  ImageStream? _sizeStream;
+  ImageStreamListener? _sizeListener;
 
   /// Loopback URL of the currently-registered live-photo payload, released
   /// when the player is torn down so the bytes do not linger in RAM.
@@ -452,7 +553,6 @@ class _ViewerPageState extends State<_ViewerPage>
     );
     _detectAnimation();
     _isZoomed = widget.controller.value.getMaxScaleOnAxis() > 1.01;
-    widget.controller.addListener(_onZoomChange);
     // Arm the full-res decode only after the push transition AND any page
     // scroll animation have finished. The full-res texture upload on first
     // paint is this screen's largest single-frame cost; landing inside a
@@ -475,6 +575,7 @@ class _ViewerPageState extends State<_ViewerPage>
     final idle = pos == null || !pos.isScrollingNotifier.value;
     if (routeDone && idle) {
       setState(() => _showFullRes = true);
+      _watchDecodedSize();
       return;
     }
     if (!routeDone) {
@@ -504,12 +605,57 @@ class _ViewerPageState extends State<_ViewerPage>
     }
   }
 
-  void _onZoomChange() {
-    final z = widget.controller.value.getMaxScaleOnAxis() > 1.01;
-    if (z != _isZoomed && mounted) {
-      setState(() => _isZoomed = z);
-      widget.onZoomChanged(z);
+  void _onZoomChanged(bool zoomed) {
+    if (!mounted || zoomed == _isZoomed) return;
+    setState(() => _isZoomed = zoomed);
+    widget.onZoomChanged(zoomed);
+  }
+
+  /// Single tap toggles the chrome; a second tap within 300ms zooms to the
+  /// point (or back out). Kept out of the gesture arena's double-tap
+  /// recognizer so a single tap still acts immediately.
+  void _onTapAt(Offset point) {
+    if (_tapTimer == null) {
+      _tapTimer = Timer(const Duration(milliseconds: 300), () {
+        _tapTimer = null;
+        widget.onToggleUi();
+      });
+      return;
     }
+    _tapTimer!.cancel();
+    _tapTimer = null;
+    final viewport = widget.viewportKey.currentState;
+    if (viewport == null) return;
+    if (_isZoomed) {
+      viewport.reset();
+    } else {
+      viewport.zoomAt(point, 2.5);
+    }
+    widget.onHideUi();
+  }
+
+  /// Picks up the decoded pixel size off the full-res stream (the same
+  /// provider the layer paints from, so the cache is shared — no extra
+  /// decode). Feeds the info sheet and the "1:1" affordance.
+  void _watchDecodedSize() {
+    if (_sizeListener != null) return;
+    final stream = _FullResImageProvider(
+      widget.item.url,
+    ).resolve(ImageConfiguration.empty);
+    _sizeStream = stream;
+    _sizeListener = ImageStreamListener(
+      (info, _) {
+        final size = Size(
+          info.image.width.toDouble(),
+          info.image.height.toDouble(),
+        );
+        if (!mounted || size == _imageSize) return;
+        setState(() => _imageSize = size);
+        widget.onImageSize(size);
+      },
+      onError: (_, _) {},
+    );
+    stream.addListener(_sizeListener!);
   }
 
   void _onInteractionStart(ScaleStartDetails d) {
@@ -527,6 +673,13 @@ class _ViewerPageState extends State<_ViewerPage>
 
   void _onInteractionUpdate(ScaleUpdateDetails d) {
     if (_isZoomed) {
+      _dragStartGlobal = null;
+      return;
+    }
+    // A pull-to-dismiss owns the whole gesture once it engages — including
+    // any sideways drift the finger picks up afterwards. Dragging down and
+    // drifting left must never also slide the pager to the next picture.
+    if (_pulling) {
       _dragStartGlobal = null;
       return;
     }
@@ -551,13 +704,41 @@ class _ViewerPageState extends State<_ViewerPage>
     }
   }
 
+  /// Set while a pull-to-dismiss owns the current gesture: the page drag and
+  /// the picture's own panning both stand down for the rest of it.
+  bool _pullGesture = false;
+
+  /// Snap the pager onto the nearest page without changing which one it is.
+  void _settlePager() {
+    if (!widget.pageController.hasClients) return;
+    final pageWidth = widget.pageController.position.viewportDimension;
+    if (pageWidth <= 0) return;
+    final offset = widget.pageController.offset;
+    final nearest = (offset / pageWidth).round();
+    if ((offset - nearest * pageWidth).abs() <= 0.5) return;
+    widget.pageController.animateToPage(
+      nearest,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+    );
+  }
+
   void _onInteractionEnd(ScaleEndDetails d) {
     // The route may have been popped mid-gesture (e.g. Esc while a swipe is
     // in flight): the controller is then detached, and any position access
     // would throw "PageController not attached".
     if (!mounted || !widget.pageController.hasClients) return;
+    final wasPull = _pullGesture;
     final wasPageDrag = _dragStartGlobal != null;
     _dragStartGlobal = null;
+    _pullGesture = false;
+    // A pull never decides a page: put the pager back on the page it belongs
+    // to (a sideways move can land before the pull is recognised, and the
+    // pager must not be left parked between two pictures).
+    if (wasPull) {
+      _settlePager();
+      return;
+    }
     // When zoomed, never trigger page change — just spring back.
     if (!wasPageDrag || _isZoomed) {
       return;
@@ -630,14 +811,20 @@ class _ViewerPageState extends State<_ViewerPage>
     );
     if (mounted && animated) {
       setState(() => _confirmedAnimated = true);
+      widget.onAnimated();
     }
   }
 
   @override
   void dispose() {
-    widget.controller.removeListener(_onZoomChange);
     _routeAnim?.removeStatusListener(_onRouteStatus);
     _scrollPos?.isScrollingNotifier.removeListener(_onScrollIdle);
+    if (_sizeListener != null) {
+      _sizeStream?.removeListener(_sizeListener!);
+      _sizeListener = null;
+      _sizeStream = null;
+    }
+    _atTopEdge.dispose();
     _liveDoneTimer?.cancel();
     _tapTimer?.cancel();
     _livePlayer?.dispose();
@@ -704,9 +891,13 @@ class _ViewerPageState extends State<_ViewerPage>
     return e == 'jpg' || e == 'jpeg' || e == 'heic' || e == 'heif';
   }
 
-  double get _dist => _dismissOffset.distance;
-  double get _t => (_dist / _threshold).clamp(0.0, 1.0);
-  double get _threshold => MediaQuery.of(context).size.height * 0.17;
+  double get _viewportHeight => MediaQuery.sizeOf(context).height;
+
+  /// Vertical travel of the pull. The dismissal is a vertical gesture, so
+  /// sideways drift must never count toward the threshold.
+  double get _dist => _dismissOffset.dy > 0 ? _dismissOffset.dy : 0;
+
+  double get _t => dismissProgress(_dist, _viewportHeight);
 
   Timer? _liveDoneTimer;
   bool _liveReady = false;
@@ -795,40 +986,77 @@ class _ViewerPageState extends State<_ViewerPage>
   }
 
   void _onPtrDown(PointerDownEvent e) {
-    _dragging = false;
     _dragEngaged = false;
+    _pulling = false;
+    _pullGesture = false;
     _dragStart = e.localPosition;
+    _pullVelocity = VelocityTracker.withKind(e.kind)
+      ..addPosition(e.timeStamp, e.position);
+  }
+
+  /// A pull may begin when the picture has nothing left to pan: always at
+  /// rest, and while zoomed only when pinned to the top edge and heading
+  /// further down — otherwise the drag is a pan.
+  bool _pullAllowed(PointerMoveEvent e) {
+    if (!_isZoomed) return true;
+    if (!_atTopEdge.value) return false;
+    return e.localDelta.dy > 0 || _dismissOffset.dy > 0;
   }
 
   void _onPtrMove(PointerMoveEvent e) {
-    if (widget.controller.value.getMaxScaleOnAxis() > 1.01) return;
+    _pullVelocity.addPosition(e.timeStamp, e.position);
     if (!_dragEngaged) {
+      if (!_pullAllowed(e)) return;
       final dx = (e.localPosition.dx - _dragStart.dx).abs();
       final dy = e.localPosition.dy - _dragStart.dy;
-      if (dy < 10 || dx > dy * 2) return;
+      // Engage on vertical intent: a short downward travel that is clearly
+      // more vertical than horizontal. (Was 10px and 2:1 — both stricter than
+      // the gesture people actually make.)
+      if (dy < 8 || dx > dy * 1.5) return;
       _dragEngaged = true;
-      widget.onToggleUi();
+      _pulling = true;
+      _pullGesture = true;
+      // Drop any page drag that slipped in before the pull was recognised.
+      _dragStartGlobal = null;
+      widget.onHideUi();
     }
-    if (!_dragging) _dragging = true;
-    setState(() => _dismissOffset += e.localDelta);
+    // Sideways tremor is damped so the photo tracks the pull, and upward
+    // travel is resisted so a change of mind is smooth rather than a wall.
+    final pulled = pullOffsetDelta(e.localDelta);
+    setState(() => _dismissOffset += pulled);
   }
 
   void _onPtrUp(PointerUpEvent e) {
-    _dragging = false;
+    final wasPulling = _dragEngaged;
     _dragEngaged = false;
+    _pulling = false;
+    if (!wasPulling) return;
     if (_dismissOffset == Offset.zero) return;
 
-    if (_dist > _threshold) {
-      final dir = _dismissOffset / _dist;
-      final target = dir * MediaQuery.of(context).size.longestSide;
+    // Velocity as well as distance: a flick closes the viewer even when it
+    // travelled less than the threshold.
+    final velocity = _pullVelocity.getVelocity().pixelsPerSecond.dy;
+    if (shouldDismissPull(
+      distance: _dist,
+      velocity: velocity,
+      viewportHeight: _viewportHeight,
+    )) {
       final from = _dismissOffset;
-      // Pop only once the forward animation completes; guard with mounted
-      // so we never navigate after dispose or on a stale listener.
-      _animateDismiss((t) => Offset.lerp(from, target, t)!, popOnEnd: true);
+      final dir = from.distance == 0 ? const Offset(0, 1) : from / from.distance;
+      final target = dir * _viewportHeight * 1.1;
+      // Commit at the speed the finger was already moving.
+      _dismissCtrl.duration = Duration(
+        milliseconds: (110 + 190 * (1 - _t)).round(),
+      );
+      _animateDismiss(
+        (t) => Offset.lerp(from, target, Curves.easeOut.transform(t))!,
+        popOnEnd: true,
+      );
     } else {
       final from = _dismissOffset;
+      _dismissCtrl.duration = const Duration(milliseconds: 200);
       _animateDismiss(
-        (t) => Offset.lerp(from, Offset.zero, Curves.easeOut.transform(t))!,
+        (t) => Offset.lerp(from, Offset.zero, Curves.easeOutCubic.transform(t))!,
       );
     }
   }
@@ -875,52 +1103,28 @@ class _ViewerPageState extends State<_ViewerPage>
   Widget build(BuildContext context) {
     final isMobile = Platform.isAndroid || Platform.isIOS;
     final showBadge = widget.item.isAnimated || _confirmedAnimated;
-    final bgOp = (1.0 - _t).clamp(0.0, 1.0);
+    // The photo lifts off the wall as it is pulled away: it shrinks and the
+    // backdrop opens up behind it, but never all the way to nothing.
+    final bgOp = (1.0 - _t * 0.92).clamp(0.0, 1.0);
     final scale = (1.0 - _t * 0.4).clamp(0.6, 1.0);
 
-    final imageContent = InteractiveViewer(
-      transformationController: widget.controller,
-      scaleEnabled: true,
-      minScale: 1.0,
-      maxScale: 6.0,
-      // Desktop: only enable InteractiveViewer pan when zoomed — at scale 1
-      // the drag passes through to PageView's native PageScrollPhysics
-      // (eliminates jumpTo-vs-physics jitter).
-      panEnabled: !widget.isDesktop || _isZoomed,
-      onInteractionStart: _onInteractionStart,
-      onInteractionUpdate: _onInteractionUpdate,
-      onInteractionEnd: _onInteractionEnd,
+    final imageContent = ZoomableViewport(
+      key: widget.viewportKey,
+      controller: widget.controller,
+      contentSize: _imageSize,
+      fallbackAspect: _imageSize == null
+          ? PooledImage.knownAspectRatio(widget.item.url)
+          : null,
+      panEnabled: !_pulling,
+      onZoomChanged: _onZoomChanged,
+      atTopEdge: _atTopEdge,
+      onTapAt: _onTapAt,
+      onScaleStart: _onInteractionStart,
+      onScaleUpdate: _onInteractionUpdate,
+      onScaleEnd: _onInteractionEnd,
       child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onTapDown: (d) => _tap = d,
-        onTap: () {
-          if (_tapTimer == null) {
-            _tapTimer = Timer(const Duration(milliseconds: 300), () {
-              _tapTimer = null;
-              widget.onToggleUi();
-            });
-          } else {
-            _tapTimer!.cancel();
-            _tapTimer = null;
-            final c = widget.controller;
-            final zoomed = c.value.getMaxScaleOnAxis() > 1.01;
-            if (zoomed) {
-              c.value = Matrix4.identity();
-            } else {
-              const scale = 2.5;
-              final p = _tap?.localPosition ?? Offset.zero;
-              c.value = Matrix4.identity()
-                ..translateByDouble(
-                  -p.dx * (scale - 1),
-                  -p.dy * (scale - 1),
-                  0,
-                  1.0,
-                )
-                ..scaleByDouble(scale, scale, scale, 1.0);
-            }
-            widget.onHideUi();
-          }
-        },
+        behavior: HitTestBehavior.opaque,
+        // Long-press belongs to the photo itself (play animation / live photo).
         onLongPressStart: isMobile && (_animatable || _couldBeLive)
             ? (_) async {
                 if (_couldBeLive && _mode != _ViewerMode.live) {
@@ -1260,6 +1464,16 @@ class _FullResImageProvider extends ImageProvider<_FullResImageProvider> {
     String url,
     ImageDecoderCallback decode,
   ) async {
+    // Software-decoded formats first, copy-free: the compressed bytes land in
+    // native memory and go straight to Rust. (The decoded RGBA still has to be
+    // copied once into Dart — dart:ui can only build a ui.Image from a Dart
+    // buffer — but the input no longer is.)
+    final soft = await MobileImageDecoder.fetchForDecode(url);
+    if (soft != null) {
+      final swCodec = await MobileImageDecoder.tryDecodeNative(soft, url);
+      if (swCodec != null) return swCodec;
+    }
+
     final uri = Uri.parse(Uri.encodeFull(url));
     final req = await sharedHttpClient.getUrl(uri);
     final auth = sharedAuthHeader;
@@ -1292,22 +1506,30 @@ class _FullResImageProvider extends ImageProvider<_FullResImageProvider> {
   }
 }
 
-// ── Polished arrow button: dark circular bg, white icon, hover/press states ──
+// ── Round chrome button: dark circular bg, white icon, hover/press states ──
 
-class _ArrowButton extends StatefulWidget {
+class _RoundButton extends StatefulWidget {
   final IconData icon;
   final VoidCallback onTap;
   final bool isDesktop;
-  const _ArrowButton({
+  final String? tooltip;
+  final double size;
+  final double iconSize;
+
+  const _RoundButton({
     required this.icon,
     required this.onTap,
     required this.isDesktop,
+    this.tooltip,
+    this.size = 44,
+    this.iconSize = 28,
   });
+
   @override
-  State<_ArrowButton> createState() => _ArrowButtonState();
+  State<_RoundButton> createState() => _RoundButtonState();
 }
 
-class _ArrowButtonState extends State<_ArrowButton> {
+class _RoundButtonState extends State<_RoundButton> {
   bool _hovered = false;
   bool _pressed = false;
 
@@ -1316,7 +1538,7 @@ class _ArrowButtonState extends State<_ArrowButton> {
     if (_hovered && widget.isDesktop) {
       return Colors.black.withValues(alpha: 0.40);
     }
-    return Colors.black.withValues(alpha: 0.45);
+    return Colors.black.withValues(alpha: 0.32);
   }
 
   double get _scale {
@@ -1327,7 +1549,7 @@ class _ArrowButtonState extends State<_ArrowButton> {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    Widget button = GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: widget.onTap,
       onTapDown: (_) => setState(() => _pressed = true),
@@ -1341,6 +1563,10 @@ class _ArrowButtonState extends State<_ArrowButton> {
             )
           : _buildButton(),
     );
+    if (widget.tooltip != null) {
+      button = Tooltip(message: widget.tooltip!, child: button);
+    }
+    return button;
   }
 
   Widget _buildButton() => Container(
@@ -1350,10 +1576,10 @@ class _ArrowButtonState extends State<_ArrowButton> {
       duration: const Duration(milliseconds: 120),
       curve: Curves.easeOutCubic,
       child: Container(
-        width: 44,
-        height: 44,
+        width: widget.size,
+        height: widget.size,
         decoration: BoxDecoration(color: _bgColor, shape: BoxShape.circle),
-        child: Icon(widget.icon, color: Colors.white, size: 28),
+        child: Icon(widget.icon, color: Colors.white, size: widget.iconSize),
       ),
     ),
   );

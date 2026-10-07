@@ -16,6 +16,7 @@ import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
+import '../ffi/rust_bridge.dart';
 import '../services/image_load_gate.dart';
 import '../services/thumb_cache.dart';
 import '../services/thumb_webp_worker.dart';
@@ -76,7 +77,14 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
   /// Fetch the original, downscale to [width] during decode, and re-encode the
   /// small frame as lossy WebP (Rust FFI). Returns the small thumbnail bytes
   /// (never the original).
+  ///
+  /// The pixel path: something already decoded the original (the engine, or the
+  /// Rust software decoder via [MobileImageDecoder]) and the pixels exist in
+  /// Dart, so they are copied into native memory once for the encoder.
+  /// [_makeThumbInRust] short-circuits this for the formats Rust decodes itself.
   static Future<Uint8List?> _makeThumb(String u, int width) async {
+    final inRust = await _makeThumbInRust(u, width);
+    if (inRust != null) return inRust;
     final orig = await _fetch(u);
     if (orig == null || orig.isEmpty) return null;
     try {
@@ -97,7 +105,7 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
       final h = frame.image.height;
       frame.image.dispose();
       if (rgba == null) return null;
-      return await ThumbWebpWorker.instance.encode(
+      return await ThumbWebpWorker.instance.encodeRgba(
         rgba.buffer.asUint8List(),
         w,
         h,
@@ -105,6 +113,30 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Thumbnail straight from the **encoded** original, for the formats Rust can
+  /// decode itself: fetch the bytes into native memory and let
+  /// `rcrm_generate_thumb_webp_from_image` decode → downscale → WebP-encode (on
+  /// the worker isolate), so the pixels never enter the Dart heap — the pixel
+  /// path above copies them twice instead. Null whenever that is not available:
+  /// desktop builds (no decoder), other formats, or a server that would not let
+  /// the buffer be sized exactly.
+  static Future<Uint8List?> _makeThumbInRust(String url, int width) async {
+    if (RustBridge.generateThumbWebpFromImageAddr == 0) return null;
+    final kind = MobileImageDecoder.kindHintFor(url);
+    if (kind == 0) return null;
+    final head = await MobileImageDecoder.fetchForDecode(url);
+    if (head == null || head.len == 0) {
+      head?.free();
+      return null;
+    }
+    // Ownership passes to the worker, which frees it once Rust is done.
+    return ThumbWebpWorker.instance.generateThumbFromImage(
+      head,
+      targetWidth: width,
+      kindHint: kind,
+    );
   }
 
   static Future<Uint8List?> _fetch(String u) async {

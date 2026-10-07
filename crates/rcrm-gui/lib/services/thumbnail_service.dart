@@ -111,7 +111,10 @@ class ThumbnailService {
     // If auth isn't available yet, don't generate — retry later.
     if (sharedAuthHeader == null) return null;
 
-    final authVal = sharedAuthHeader!['Authorization']!;
+    // The header map exists but is not guaranteed to carry the key: a missing
+    // one must degrade to "no poster yet", not throw a null-check error.
+    final authVal = sharedAuthHeader?['Authorization'];
+    if (authVal == null) return null;
     final headerLine = 'Authorization: $authVal';
     final safe = safeUrl(videoUrl); // no creds in URL
 

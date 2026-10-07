@@ -19,6 +19,9 @@ zeroize = { version = "1.8.2", features = ["simd"] }
 dunce = "1.0.5"
 rand = "0.10"
 zune-jpeg = "0.5"
+# EXIF + video/audio track metadata (pure Rust, no ffmpeg/libexif). Parses from
+# an in-memory buffer, so the viewer's decrypted bytes never touch disk.
+nom-exif = { version = "3.8", default-features = false }
 # Pure-Rust WebP encode for thumbnail caching (AGPL-3.0, rcrm is open-source).
 zenwebp = { version = "0.4", default-features = false, features = ["std"] }
 # Self-signed cert generation for the TV cast receiver (ECDSA P-256).

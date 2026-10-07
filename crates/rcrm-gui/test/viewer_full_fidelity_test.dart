@@ -1,12 +1,16 @@
-// Full-fidelity replica of _ViewerPage's gesture stack, testing large swipes
-// on both touch and mouse. Mirrors image_viewer_screen.dart exactly:
-//   Listener(onPointerDown/Move/Up)  -> vertical dismiss only
+// Replica of _ViewerPage's page-swipe protocol, testing large swipes on both
+// touch and mouse. The protocol below is what image_viewer_screen.dart still
+// runs — the zoom surface changed (InteractiveViewer → ZoomableViewport, see
+// viewer_zoom_test.dart for that geometry), but the swipe contract is intact:
+//   Listener(onPointerDown/Move/Up)  -> vertical pull-to-dismiss
 //   Transform.translate/scale        -> dismiss visuals
-//   InteractiveViewer(panEnabled: !isDesktop || _isZoomed, scale/pan handlers)
-//   GestureDetector(onTapDown/onTap) -> tap/zoom UI
+//   onScaleStart/Update/End          -> global-focal page drag + release snap
+//   GestureDetector tap handling     -> tap/zoom UI
 //   ColoredBox -> stand-in for PooledImage
 // Inside: PageView(NeverScrollableScrollPhysics, pageSnapping: false) with the
 // same ScrollConfiguration(dragDevices: {touch, mouse, trackpad}).
+// The pan-at-rest rule it relied on ("desktop pans only when zoomed") is now
+// built into the viewport: at scale 1 there is nothing to pan.
 
 import 'dart:async';
 import 'package:flutter/gestures.dart';

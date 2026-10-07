@@ -136,6 +136,46 @@ mod tests {
 		cmp_ffmpeg_jxl("jxl/4x-IMG_20250716_002259_095.jxl", "JXL");
 	}
 
+	#[test]
+	fn thumb_webp_from_image_is_a_scaled_thumbnail_in_one_call() {
+		let data = test_read("avif/test1.avif");
+		let buf = unsafe {
+			crate::rcrm_generate_thumb_webp_from_image(data.as_ptr(), data.len(), 400, 82, 1)
+		};
+		assert!(!buf.is_null(), "decode + encode must succeed");
+		let webp = unsafe { &*buf };
+		let bytes = unsafe { std::slice::from_raw_parts(webp.data, webp.data_len) };
+		// A real WebP container, not a partial buffer.
+		assert_eq!(&bytes[0..4], b"RIFF");
+		assert_eq!(&bytes[8..12], b"WEBP");
+		// And it is the SCALED one: 400 wide, aspect preserved — the pixels
+		// never passed through Dart to get there.
+		let (rgba, w, h) = zenwebp::oneshot::decode_rgba(bytes).expect("decode back");
+		// test1.avif is 3072x4096, so 400 wide scales to 533 tall — the scale
+		// happened inside Rust, on pixels Dart never saw.
+		assert_eq!(w, 400);
+		assert_eq!(h, 533);
+		assert_eq!(rgba.len(), (w * h * 4) as usize);
+		// The input was borrowed: the caller's buffer is untouched and still
+		// its own to free (this is what lets a failure fall back safely).
+		assert_eq!(&data[4..8], b"ftyp", "input buffer must still be intact");
+		unsafe { crate::webp::free_webp_buf(buf) };
+	}
+
+	#[test]
+	fn thumb_webp_from_image_rejects_unparsable_bytes() {
+		let junk = vec![0u8; 4096];
+		let buf = unsafe {
+			crate::rcrm_generate_thumb_webp_from_image(junk.as_ptr(), junk.len(), 400, 82, 0)
+		};
+		assert!(buf.is_null(), "garbage must not produce a buffer");
+		let empty: Vec<u8> = Vec::new();
+		let buf = unsafe {
+			crate::rcrm_generate_thumb_webp_from_image(empty.as_ptr(), 0, 400, 82, 0)
+		};
+		assert!(buf.is_null(), "an empty input must be refused");
+	}
+
 	fn cmp_ffmpeg_avif(path: &str, label: &str) {
 		let data = test_read(path);
 		let buf = decode_avif(&data, 0).expect("decode");

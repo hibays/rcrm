@@ -224,9 +224,21 @@ Surfaces are flat at rest. Shadows appear only as a response to state — hover,
 ### Controls Overlay (Video Player)
 
 - **Gradient:** Vertical `0x80000000` to `0x00000000` — from opaque black at bottom to transparent
-- **Auto-hide:** After 2s idle on desktop (reappears on mouse move or tap)
+- **Auto-hide:** After 2s idle on desktop (reappears on mouse move or tap). Never while a panel is open — settings, episodes, or the speed menu; that panel's own button is the way out
 - **Controls bar:** Transparent background (the gradient IS the background)
+- **Fullscreen top bar:** Back (left), title, playback-settings gear (right) — present on every platform, fades with the controls, and respects notch/camera-cutout insets. The gear belongs at the top right, never in the transport bar
+- **Width budget:** The transport bar admits optional controls by priority (time → skip → rate → episodes) and gives the volume slider whatever width is left; below ~64dp of travel the slider hides and the mute button carries volume alone. Controls are never squeezed or shrunk to fit
+- **Density:** Chosen from the window's shortest side — compact < 400dp, regular < 600dp, expanded above. Fullscreen alone never inflates the controls. When the bar itself is narrower than the compact tier can afford (140dp), the targets step down once more rather than overflow: no minimum window size is set, so a desktop window can really be dragged that narrow
 - **Speed popup:** Semi-transparent dark surface with white text
+
+### Image Viewer
+
+- **The transform is the photo, never the letterbox:** the picture is laid out at fit-contain size and only the picture is scaled. Panning is clamped so a zoomed photo always covers the viewport and a smaller one is locked to the centre — no drag, at any scale, can reveal empty space
+- **Zoom:** pinch and wheel zoom about the focal point, double-tap zooms to the tapped point (2.5×) or resets, 1:1 caps at 6× fit. Max zoom is 6× fit
+- **Chrome floats over the photo:** round translucent buttons (40dp, `Colors.black` 32% at rest) over a top scrim, plus the file name and its position as the only text — no toolbar, no bar background, no divider
+- **Filmstrip:** bottom scrim `0xCC000000` → transparent behind the thumbnail strip; the selected tile keeps the Marquee Orange border
+- **Pull-to-dismiss:** vertical travel 1:1 with sideways damping (0.35) and upward resistance; closing takes 12% of the viewport height (clamped 72–132px) **or** a downward flick over 700 px/s. The photo shrinks to 0.6 and the backdrop opens to ~8% as it goes. While zoomed, the pull only engages at the top edge
+- **Info sheet:** ash sheet, 14px top radius, hairline top border, light scrim (`black` 35%) so the photo stays the subject. Anatomy: drag handle → large date (EXIF capture time when known, else the file timestamp) with the `1:1` chip → file name → location line, or a dimmed "No location information" → camera block (camera · lens · exposure · dimensions) or the honest "No camera information" → labelled rows (folder, position, animated). Marquee Orange appears only on the `1:1` chip
 
 ### Info Dialogs
 

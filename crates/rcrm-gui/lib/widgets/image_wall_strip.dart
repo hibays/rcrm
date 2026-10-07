@@ -76,7 +76,15 @@ class _ImageWallStripState extends State<ImageWallStrip> {
   Widget build(BuildContext context) {
     return Container(
       height: 80,
-      decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.7)),
+      // A scrim rather than a bar: the strip stays legible over a bright photo
+      // without cutting a hard band out of it.
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.bottomCenter,
+          end: Alignment.topCenter,
+          colors: [Color(0xCC000000), Color(0x00000000)],
+        ),
+      ),
       child: Listener(
         // Map a vertical mouse wheel onto this horizontal strip (desktop).
         onPointerSignal: (signal) {

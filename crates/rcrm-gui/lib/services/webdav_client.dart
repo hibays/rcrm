@@ -1,7 +1,7 @@
 // services/webdav_client.dart
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show HandshakeException, TlsException;
+import 'dart:io' show HandshakeException, HttpDate, TlsException;
 import 'net.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:http/http.dart' as http;
@@ -253,12 +253,11 @@ List<MediaItem> _parsePropfind(String xml, String currentPath, String baseUrl) {
                 '0',
           ) ??
           0;
-      DateTime? lastModified;
       final ts = okProp
           .findElements('D:getlastmodified')
           .firstOrNull
           ?.innerText;
-      if (ts != null) lastModified = DateTime.tryParse(ts);
+      final lastModified = _parseLastModified(ts);
       items.add(
         MediaItem.fromWebDavProps(
           name: displayName,
@@ -277,6 +276,25 @@ List<MediaItem> _parsePropfind(String xml, String currentPath, String baseUrl) {
 String _fileName(String p) {
   final s = p.split('/').where((x) => x.isNotEmpty).toList();
   return s.isNotEmpty ? s.last : p;
+}
+
+/// `getlastmodified` may be either RFC 1123 ("Wed, 30 Sep 2026 02:24:11 GMT",
+/// which is what rcrm's own server writes and what RFC 4918 asks for) or
+/// ISO-8601 — and `DateTime.tryParse` only understands the latter. Losing this
+/// silently cost the viewer's info sheet its "file timestamp" fallback and
+/// left date sorting with nothing to sort by.
+///
+/// An RFC 1123 value parses to **UTC**; callers that display it must convert
+/// (`.toLocal()`), while comparisons and sorting do not care.
+DateTime? _parseLastModified(String? raw) {
+  if (raw == null) return null;
+  final iso = DateTime.tryParse(raw);
+  if (iso != null) return iso;
+  try {
+    return HttpDate.parse(raw);
+  } catch (_) {
+    return null;
+  }
 }
 
 String _albumName(String fp, String cp) {
@@ -349,12 +367,11 @@ ListAllResult _parseAll(String xml, String currentPath, String baseUrl) {
                   '0',
             ) ??
             0;
-        DateTime? lm;
         final ts = okProp
             .findElements('D:getlastmodified')
             .firstOrNull
             ?.innerText;
-        if (ts != null) lm = DateTime.tryParse(ts);
+        final lm = _parseLastModified(ts);
         files.add(
           MediaItem.fromWebDavProps(
             name: displayName,

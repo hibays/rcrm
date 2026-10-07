@@ -3,8 +3,9 @@
 //   - ScrollConfiguration(dragDevices: {touch, mouse, trackpad})
 //   - PageView physics: NeverScrollableScrollPhysics (current, broken?)
 //     vs PageScrollPhysics (previous, working)
-//   - InteractiveViewer panEnabled: !isDesktop || _isZoomed  (false on desktop
-//     at scale 1)
+//   - zoom surface: ZoomableViewport, which only pans once zoomed (see
+//     viewer_zoom_test.dart) — so a desktop drag at scale 1 is always the
+//     page's to take.
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';

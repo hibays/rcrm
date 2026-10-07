@@ -5,17 +5,28 @@
 // engine's ui.Image cannot cross isolates), and the synchronous Rust FFI WebP
 // encode would otherwise block the UI thread ~10-40ms per cold cell — the
 // frame-drop source on a freshly-opened image wall. This service runs the
-// encode in one long-lived worker isolate:
+// encode in one long-lived worker isolate.
 //
-//   main:   calloc(rgba) → send [token, ptr, len, w, h, q]  (ints, zero-copy)
+// Two ops, one per kind of input (the two Rust generators they call):
+//   * [encodeRgba]            — RGBA pixels the engine already decoded
+//     → `rcrm_encode_thumb_webp`. The one Dart must copy (dart:ui hands over
+//     Dart memory), used for JPEG/PNG/WebP/HEIC everywhere and for everything
+//     on desktop.
+//   * [generateThumbFromImage] — the encoded AVIF/JXL original
+//     → `rcrm_generate_thumb_webp_from_image`, which decodes, downscales and
+//     encodes inside Rust. Mobile only; no pixels enter Dart at all.
+//
+//   main:   calloc(rgba) → send [token, op, ptr, …]      (ints, zero-copy)
 //   worker: view the SAME native buffer via Pointer.fromAddress, encode
-//           → reply [token, outPtr, outLen]                (ints, zero-copy)
-//   main:   free the input, wrap the output in a NativeFinalizer view
+//           → reply [token, outPtr, outLen]              (ints, zero-copy)
+//   main:   wrap the output in a NativeFinalizer view
 //
-// Copy budget per thumbnail: 1 RGBA memcpy into calloc (same as before) and
-// zero copies of the encoded WebP output. The FFI stall moves entirely off the
-// UI thread. On any worker failure the call falls back to a synchronous
-// encode on the caller's thread (the old behavior).
+// The worker OWNS the input buffer for the duration of a request and frees it
+// when the call returns — including the timeout case, where the old code freed
+// a buffer the worker could still be reading.
+//
+// Copy budget: one memcpy into calloc for [encodeRgba], ZERO for
+// [generateThumbFromImage]. The encoded output is never copied either way.
 
 import 'dart:async';
 import 'dart:ffi';
@@ -25,6 +36,7 @@ import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 
 import '../ffi/rust_bridge.dart';
+import 'native_bytes.dart';
 
 /// Mirrors Rust `webp::WebpBuf { data_len: usize, data: *mut u8 }`.
 final class _WebpBuf extends Struct {
@@ -51,6 +63,10 @@ final class _EncodeReply {
   const _EncodeReply(this.bufPtr, this.len);
 }
 
+/// Request tags for the worker protocol.
+const int _opEncodeRgba = 0;
+const int _opGenerateThumbFromImage = 1;
+
 class ThumbWebpWorker {
   ThumbWebpWorker._();
   static final ThumbWebpWorker instance = ThumbWebpWorker._();
@@ -64,21 +80,83 @@ class ThumbWebpWorker {
   final Map<int, Completer<_EncodeReply>> _pending = {};
   Future<bool>? _spawnFuture;
 
-  /// Encode [rgba] (w × h × 4) as lossy WebP via the worker isolate.
-  /// Falls back to a synchronous encode on the caller thread when the worker
-  /// is unavailable or a request fails.
-  Future<Uint8List?> encode(
+  /// Encode [rgba] (w × h × 4) as lossy WebP via the worker isolate —
+  /// `rcrm_encode_thumb_webp`, the pixel-input generator. Falls back to a
+  /// synchronous encode on the caller thread when the worker is unavailable.
+  Future<Uint8List?> encodeRgba(
     Uint8List rgba,
     int w,
     int h, {
     int quality = 82,
   }) async {
-    final reply = await _ensure() ? await _request(rgba, w, h, quality) : null;
-    if (reply != null && reply.bufPtr != 0) {
-      final bytes = _attachFinalizerView(reply.bufPtr, reply.len);
-      if (bytes != null) return bytes;
+    final owned = NativeBytes(
+      calloc<Uint8>(rgba.length),
+      rgba.length,
+      rgba.length,
+    );
+    owned.view.setAll(0, rgba);
+    Uint8List? out;
+    try {
+      if (await _ensure()) {
+        final reply = await _request(owned, [
+          _opEncodeRgba,
+          owned.ptr.address,
+          rgba.length,
+          w,
+          h,
+          quality,
+        ]);
+        if (reply != null && reply.bufPtr != 0) {
+          out = _attachFinalizerView(reply.bufPtr, reply.len);
+        }
+      }
+    } finally {
+      // No-op once the worker owns the buffer (see [_request]).
+      owned.free();
     }
-    return _encodeSync(rgba, w, h, quality: quality);
+    return out ?? _encodeSync(rgba, w, h, quality: quality);
+  }
+
+  /// Builds a thumbnail **straight from the encoded original**: [head] holds
+  /// AVIF/JXL bytes in native memory and Rust decodes → downscales → encodes
+  /// WebP (`rcrm_generate_thumb_webp_from_image`), so the pixels never enter
+  /// the Dart heap — three full-frame copies saved per cached thumbnail.
+  ///
+  /// The image-input half of the pair; [encodeRgba] is the pixel half. Called
+  /// by `DiskThumbImage._makeThumbInRust` for the on-disk thumbnail cache.
+  /// Takes ownership of [head] — freed on every path, including this one
+  /// failing. Returns null when the worker or the bridge cannot do it, and the
+  /// caller then uses the general path (which fetches its own bytes).
+  Future<Uint8List?> generateThumbFromImage(
+    NativeBytes head, {
+    required int targetWidth,
+    required int kindHint,
+    int quality = 82,
+  }) async {
+    if (RustBridge.generateThumbWebpFromImageAddr == 0 || targetWidth <= 0) {
+      head.free();
+      return null;
+    }
+    final address = head.ptr.address;
+    final len = head.len;
+    try {
+      // No synchronous fallback on purpose: a full decode + encode on the UI
+      // thread is exactly what this worker exists to avoid.
+      if (!await _ensure()) return null;
+      final reply = await _request(head, [
+        _opGenerateThumbFromImage,
+        address,
+        len,
+        targetWidth,
+        quality,
+        kindHint,
+      ]);
+      if (reply == null || reply.bufPtr == 0) return null;
+      return _attachFinalizerView(reply.bufPtr, reply.len);
+    } finally {
+      // No-op once the worker owns the buffer (see [_request]).
+      head.free();
+    }
   }
 
   Future<bool> _ensure() {
@@ -112,20 +190,20 @@ class ThumbWebpWorker {
     }
   }
 
-  Future<_EncodeReply?> _request(
-    Uint8List rgba,
-    int w,
-    int h,
-    int quality,
-  ) async {
+  /// Sends one request. The worker takes ownership of [owned] once the send
+  /// succeeds: it frees the buffer when the FFI call returns, so a timeout here
+  /// can never free memory the worker is still reading.
+  Future<_EncodeReply?> _request(NativeBytes owned, List<Object> payload) async {
     final gen = _generation;
     final token = ++_nextToken;
     final completer = Completer<_EncodeReply>();
     _pending[token] = completer;
-    final buf = calloc<Uint8>(rgba.length);
-    buf.asTypedList(rgba.length).setAll(0, rgba);
-    _port!.send([token, buf.address, rgba.length, w, h, quality]);
+    var handedOver = false;
     try {
+      _port!.send([token, ...payload]);
+      // The worker frees it; nothing on this side may touch it again.
+      handedOver = true;
+      owned.disown();
       return await completer.future.timeout(const Duration(seconds: 5));
     } on TimeoutException {
       // Only condemn the CURRENT worker; an older generation may have
@@ -135,8 +213,10 @@ class ThumbWebpWorker {
         debugPrint('ThumbWebpWorker: encode timed out — respawning');
       }
       return null;
+    } catch (_) {
+      return null;
     } finally {
-      calloc.free(buf);
+      if (!handedOver) owned.free();
       _pending.remove(token);
     }
   }
@@ -245,9 +325,14 @@ class ThumbWebpWorker {
   }
 }
 
-/// Worker isolate entry point. Binds the two WebP symbols and serves encode
-/// requests until the isolate dies. All replies go back to [mainPort]; the
-/// first message is this isolate's request port (handshake).
+/// Worker isolate entry point. Binds the two WebP symbols (plus the one-call
+/// decoder when the build has it) and serves requests until the isolate dies.
+/// All replies go back to [mainPort]; the first message is this isolate's
+/// request port (handshake).
+///
+/// The worker frees the input buffer of every request: it owns it from the
+/// moment the main isolate sent it, and only the worker knows when Rust has
+/// finished reading it.
 @pragma('vm:entry-point')
 void thumbWebpWorkerMain(SendPort mainPort) {
   final requests = ReceivePort();
@@ -261,17 +346,43 @@ void thumbWebpWorkerMain(SendPort mainPort) {
   requests.listen((msg) {
     final req = msg as List<dynamic>;
     final token = req[0] as int;
+    final op = req[1] as int;
+    final input = Pointer<Uint8>.fromAddress(req[2] as int);
+    Pointer<Void> out = nullptr;
+    var outLen = 0;
     try {
-      final input = Pointer<Uint8>.fromAddress(req[1] as int);
-      final len = req[2] as int;
-      final w = req[3] as int;
-      final h = req[4] as int;
-      final q = req[5] as int;
-      final out = RustBridge().encodeThumbWebp(input, len, w, h, q);
-      final outLen = out.cast<_WebpBuf>().ref.dataLen;
-      mainPort.send([token, out.address, outLen]);
+      final bridge = RustBridge();
+      if (op == _opEncodeRgba) {
+        final result = bridge.encodeThumbWebp(
+          input,
+          req[3] as int,
+          req[4] as int,
+          req[5] as int,
+          req[6] as int,
+        );
+        out = result;
+        if (result != nullptr) outLen = result.cast<_WebpBuf>().ref.dataLen;
+      } else {
+        final generate = Pointer<NativeFunction<RcrmGenerateThumbWebpFromImageC>>
+            .fromAddress(RustBridge.generateThumbWebpFromImageAddr)
+            .asFunction<RcrmGenerateThumbWebpFromImageDart>();
+        final result = generate(
+          input,
+          req[3] as int,
+          req[4] as int,
+          req[5] as int,
+          req[6] as int,
+        );
+        out = result;
+        if (result != nullptr) outLen = result.cast<_WebpBuf>().ref.dataLen;
+      }
     } catch (_) {
-      mainPort.send([token, 0, 0]);
+      out = nullptr;
+      outLen = 0;
+    } finally {
+      // Rust borrowed the input for the call; the worker owns the allocation.
+      calloc.free(input);
     }
+    mainPort.send([token, out.address, outLen]);
   });
 }

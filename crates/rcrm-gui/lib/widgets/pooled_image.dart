@@ -32,6 +32,12 @@ class PooledImage extends StatefulWidget {
     this.errorWidget,
   });
 
+  /// Aspect ratio (width / height) already known for [url] — filled by any
+  /// PooledImage that has decoded it, which in practice means the grid cell
+  /// that was just tapped. Lets the viewer lay out its zoom geometry on the
+  /// first frame instead of waiting for its own decode.
+  static double? knownAspectRatio(String url) => _PooledImageState.ratioFor(url);
+
   @override
   State<PooledImage> createState() => _PooledImageState();
 }
@@ -52,6 +58,9 @@ class _PooledImageState extends State<PooledImage> {
   // set out of memory. A rare hash collision only suppresses a spinner for
   // a never-seen image — cosmetic, harmless.
   static final Set<int> _seenLoaded = {};
+
+  /// Exposed through [PooledImage.knownAspectRatio].
+  static double? ratioFor(String url) => _ratioCache[url];
 
   ImageProvider? _provider;
   bool _ready = false;

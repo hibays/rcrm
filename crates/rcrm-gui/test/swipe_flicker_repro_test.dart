@@ -2,8 +2,10 @@
 // position race (image_viewer_screen.dart).
 //
 // Root cause (verified against Flutter 3.44 sources): the page offset is
-// driven manually via pageController.jumpTo inside InteractiveViewer's
-// onInteractionUpdate. jumpTo ends with goBallistic(0.0), and PageView's
+// driven manually via pageController.jumpTo inside the zoom surface's
+// onScaleUpdate (InteractiveViewer when this was written, ZoomableViewport
+// now — the protocol is unchanged). jumpTo ends with goBallistic(0.0), and
+// PageView's
 // default pageSnapping wraps the physics in PageScrollPhysics whose
 // createBallisticSimulation snaps to the nearest page even at velocity 0.
 // So every jumpTo starts a snap-back spring; while the finger holds still at

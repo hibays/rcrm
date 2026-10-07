@@ -3,6 +3,13 @@
 // Rust copies data synchronously, spawns a thread, then calls back into
 // Dart via NativeCallable.listener when done. The callback lands on the
 // main isolate's event loop automatically, so UI work is safe.
+//
+// The compressed bytes are handed over **in native memory**: either the caller
+// fetched them straight into a native buffer ([fetchForDecode] +
+// [tryDecodeNative], zero copies) or they arrive as a Dart list and are copied
+// into an exactly-sized buffer once ([tryDecode]). The decoded RGBA comes back
+// as a native view in [MobileImageDecoder]'s result handling — the return path
+// has never copied.
 
 import 'dart:async';
 import 'dart:ffi';
@@ -12,6 +19,7 @@ import 'dart:ui' as ui;
 import 'package:ffi/ffi.dart';
 
 import '../ffi/rust_bridge.dart';
+import 'native_bytes.dart';
 
 final class _DB extends Struct {
   @Uint32()
@@ -65,13 +73,82 @@ class MobileImageDecoder {
     int targetWidth = 0,
     String? format,
   }) async {
-    final addr = switch (format ?? _fmt(url)) {
-      'avif' => RustBridge.decodeAvifAsyncAddr,
-      'jxl' => RustBridge.decodeJxlAsyncAddr,
-      _ => 0,
-    };
+    final addr = _addrFor(format ?? _fmt(url));
     if (addr == 0) return null;
 
+    // The decode ABI rebuilds its `Vec` from the length alone, so the buffer
+    // must be exactly the payload: allocate it that way and copy once. Callers
+    // that can fetch straight into native memory (see [fetchForDecode]) skip
+    // even this copy.
+    final buffer = calloc<Uint8>(bytes.length);
+    buffer.asTypedList(bytes.length).setAll(0, bytes);
+    return _dispatch(addr, buffer, bytes.length, targetWidth);
+  }
+
+  /// Decodes a payload that already lives in **native memory**, so the
+  /// compressed bytes never enter the Dart heap.
+  ///
+  /// Takes ownership of [head]: every path leaves the buffer either with Rust
+  /// (which frees it when the decode finishes) or freed here, so the caller
+  /// must not touch it afterwards.
+  static Future<ui.Codec?> tryDecodeNative(
+    NativeBytes head,
+    String url, {
+    int targetWidth = 0,
+    String? format,
+  }) async {
+    final addr = _addrFor(format ?? _fmt(url));
+    if (addr == 0 || head.len == 0 || head.len != head.cap) {
+      // `len != cap` cannot come from [fetchForDecode] (a whole-file fetch is
+      // sized exactly); refusing beats handing Rust a buffer whose capacity
+      // disagrees with its length.
+      head.free();
+      return null;
+    }
+    final data = head.ptr;
+    final len = head.len;
+    head.disown(); // Rust owns it from here on
+    return _dispatch(addr, data, len, targetWidth);
+  }
+
+  /// Fetches [url] into native memory for a software decode — null when the
+  /// copy-free path does not apply (not an AVIF/JXL file, no decoder in this
+  /// build, or the server would not let the buffer be sized exactly). Callers
+  /// then fall back to fetching Dart bytes and calling [tryDecode].
+  ///
+  /// Used by the three places that show an original: `AuthImage` (grid and
+  /// strip), the viewer's full-res provider, and `DiskThumbImage`.
+  static Future<NativeBytes?> fetchForDecode(String url) async {
+    if (_addrFor(_fmt(url)) == 0) return null;
+    final fetched = await fetchNativeBytes(url);
+    return fetched.bytes;
+  }
+
+  /// Rust's `kind_hint` for [url]: 1 = AVIF, 2 = JXL, 0 = neither.
+  static int kindHintFor(String url) => switch (_fmt(url)) {
+    'avif' => 1,
+    'jxl' => 2,
+    _ => 0,
+  };
+
+  static int _addrFor(String? format) => switch (format) {
+    'avif' => RustBridge.decodeAvifAsyncAddr,
+    'jxl' => RustBridge.decodeJxlAsyncAddr,
+    _ => 0,
+  };
+
+  /// How long a decode may take before it counts as unanswered. A lost
+  /// callback (a decoder panic, a torn-down isolate) would otherwise leave the
+  /// caller's future pending forever.
+  static const Duration _decodeTimeout = Duration(seconds: 20);
+
+  /// Hands one buffer to the decoder. Rust takes ownership of `data`.
+  static Future<ui.Codec?> _dispatch(
+    int addr,
+    Pointer<Uint8> data,
+    int len,
+    int targetWidth,
+  ) async {
     _ensureInit();
 
     final completer = Completer<ui.Codec?>();
@@ -82,18 +159,22 @@ class MobileImageDecoder {
       addr,
     ).asFunction<RcrmDecodeAsyncDart>();
 
-    final dp = calloc<Uint8>(bytes.length);
-    dp.asTypedList(bytes.length).setAll(0, bytes);
-    // Rust takes ownership of dp via Vec::from_raw_parts — never free it here.
     decodeFn(
-      dp,
-      bytes.length,
+      data,
+      len,
       targetWidth,
       _callback!.nativeFunction,
       Pointer<Void>.fromAddress(id),
     );
 
-    return completer.future;
+    try {
+      return await completer.future.timeout(_decodeTimeout);
+    } on TimeoutException {
+      // Drop the completer only: the Rust thread still owns the buffer and
+      // frees it when it finishes, and a late answer finds nothing to complete.
+      _pending.remove(id);
+      return null;
+    }
   }
 
   // ── Result callback (main isolate event loop) ──────────────────

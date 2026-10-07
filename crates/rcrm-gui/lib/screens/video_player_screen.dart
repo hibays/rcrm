@@ -28,6 +28,7 @@ import '../widgets/player_controls.dart';
 import '../widgets/finger_preview_listener.dart';
 import '../widgets/player_settings_panel.dart';
 import '../widgets/episode_picker_panel.dart';
+import '../utils/format.dart';
 
 class VideoPlayerScreen extends ConsumerStatefulWidget {
   final MediaItem item;
@@ -52,6 +53,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   StreamSubscription? _bufSub;
   StreamSubscription? _playingSub;
   StreamSubscription? _completedSub;
+  StreamSubscription? _volumeSub;
+  StreamSubscription? _rateSub;
   bool show2x = false;
   bool fullscreen = false;
   Duration _fadeMs = const Duration(milliseconds: 200);
@@ -71,7 +74,6 @@ class _State extends ConsumerState<VideoPlayerScreen> {
 
   static SharedPreferences? _volPrefs;
   Timer? _gOverlayTimer;
-  double _volume = 100;
   Timer? _videoTapTimer;
   bool _navigating = false;
   // The route being popped if its animation is reversing or the route is gone.
@@ -93,6 +95,29 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   final ValueNotifier<Duration> _miniPos = ValueNotifier(Duration.zero);
   final ValueNotifier<Duration> _miniDur = ValueNotifier(Duration.zero);
   final ValueNotifier<Duration> _miniBuf = ValueNotifier(Duration.zero);
+
+  // Playback state the chrome renders from. One owner (this screen), one
+  // value per fact: the control bar is a pure widget fed by these, so volume
+  // can no longer diverge between the bar, the keyboard and the swipe gesture.
+  final ValueNotifier<bool> _playing = ValueNotifier(false);
+  final ValueNotifier<double> _volume = ValueNotifier(100);
+  final ValueNotifier<double> _rate = ValueNotifier(1.0);
+  late final Listenable _chromeState = Listenable.merge([
+    _miniPos,
+    _miniDur,
+    _miniBuf,
+    _playing,
+    _volume,
+    _rate,
+  ]);
+
+  /// Last non-zero volume, so unmute never lands on silence.
+  double _prevVolume = 100;
+  Timer? _volSaveTimer;
+
+  /// True while the speed menu is open — it is a panel, so the chrome must not
+  /// fade out from under it.
+  bool _speedMenuOpen = false;
   int _miniLastMs = 0;
   ScrollController? _scrollCtrl;
   bool _pip = false;
@@ -120,11 +145,39 @@ class _State extends ConsumerState<VideoPlayerScreen> {
 
   static Future<void> _initVolPrefs() async {
     _volPrefs ??= await SharedPreferences.getInstance();
-    // volume loaded below after init in initState
   }
 
-  void _prefsSetVol() {
-    _volPrefs?.setDouble('player_volume', _volume);
+  // ── Volume ────────────────────────────────────────────────
+  // One entry point for every volume path (slider, wheel, arrow keys, swipe),
+  // so the bar, the player and the persisted value can never disagree.
+
+  void _setVolume(double v, {bool persist = true}) {
+    final nv = v.clamp(0.0, 100.0);
+    if (nv > 0) _prevVolume = nv;
+    _volume.value = nv;
+    p?.setVolume(nv);
+    if (persist) _queueVolSave();
+  }
+
+  /// Debounced: a slider drag must not fire a platform write per frame, and
+  /// the value still lands well before the route is popped.
+  void _queueVolSave() {
+    _volSaveTimer?.cancel();
+    _volSaveTimer = Timer(const Duration(milliseconds: 300), _flushVolSave);
+  }
+
+  void _flushVolSave() {
+    _volSaveTimer?.cancel();
+    _volSaveTimer = null;
+    _volPrefs?.setDouble('player_volume', _volume.value);
+  }
+
+  void _toggleMute() {
+    if (_volume.value > 0) {
+      _setVolume(0);
+    } else {
+      _setVolume(_prevVolume > 0 ? _prevVolume : 100);
+    }
   }
 
   @override
@@ -132,9 +185,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     super.initState();
     _initVolPrefs().then((_) {
       if (_volPrefs != null && mounted) {
-        final v = _volPrefs!.getDouble('player_volume') ?? 100;
-        _volume = v;
-        p?.setVolume(v);
+        _setVolume(
+          _volPrefs!.getDouble('player_volume') ?? 100,
+          persist: false,
+        );
       }
     });
     _scrollCtrl = ScrollController();
@@ -167,7 +221,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       vc = VideoController(p!);
       p!.open(Media(widget.item.url, httpHeaders: sharedAuthHeader));
       p!.play();
-      p!.setVolume(_volume);
+      p!.setVolume(_volume.value);
       if (_disposed && p != null) {
         // Disposed before the player finished initializing — tear down now.
         p!.dispose();
@@ -189,8 +243,17 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         if (mounted) _miniBuf.value = b;
       });
       bool hasBeenPlaying = p!.state.playing;
+      _playing.value = p!.state.playing;
       _playingSub = p!.stream.playing.listen((isPlaying) {
         if (isPlaying) hasBeenPlaying = true;
+        if (mounted) _playing.value = isPlaying;
+      });
+      _volumeSub = p!.stream.volume.listen((v) {
+        if (mounted && v != _volume.value) _volume.value = v;
+      });
+      _rate.value = p!.state.rate;
+      _rateSub = p!.stream.rate.listen((r) {
+        if (mounted) _rate.value = r;
       });
       bool handlingCompletion = false;
       _completedSub = p!.stream.completed.listen((_) {
@@ -228,12 +291,19 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _bufSub?.cancel();
     _playingSub?.cancel();
     _completedSub?.cancel();
+    _volumeSub?.cancel();
+    _rateSub?.cancel();
     _videoTapTimer?.cancel();
     _gOverlayTimer?.cancel();
     _scrollCtrl?.dispose();
+    // Persist the live volume before the notifiers go away.
+    _flushVolSave();
     _miniPos.dispose();
     _miniDur.dispose();
     _miniBuf.dispose();
+    _playing.dispose();
+    _volume.dispose();
+    _rate.dispose();
     _hideTimer?.cancel();
     _exitTimer?.cancel();
     p?.stop();
@@ -330,6 +400,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
 
   void _resetIdle() {
     _hideTimer?.cancel();
+    // An open sheet — or the speed menu, which is a panel too — owns the
+    // screen: fading the bar (and the gear that closes the panel) out from
+    // under the user is never what they asked for.
+    if (_showSettings || _showEpisodes || _speedMenuOpen) return;
     _fadeMs = const Duration(milliseconds: 200);
     _hideTimer = Timer(const Duration(seconds: _idleSecs), () {
       if (mounted) setState(() => _showControls = false);
@@ -417,24 +491,27 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         _gOverlayValue = (_brightness * 100).round();
       });
     } else if (_gMode == 3) {
-      final v = (p!.state.volume - (d.delta.dy / size.height) * 100).clamp(
-        0.0,
-        100.0,
+      // The swipe feeds the shared volume setter, so the bar's slider and the
+      // persisted value follow the gesture; only the write is deferred.
+      _setVolume(
+        _volume.value - (d.delta.dy / size.height) * 100,
+        persist: false,
       );
-      p!.setVolume(v);
       setState(() {
         _gOverlayType = _OverlayType.volume;
-        _gOverlayValue = v.round();
+        _gOverlayValue = _volume.value.round();
       });
     }
   }
 
   void _onPanEnd(_) {
     if (!_isMobile) return;
-    if (_gMode == 1 && p != null) {
+    final mode = _gMode;
+    if (mode == 1 && p != null) {
       p!.seek(Duration(milliseconds: _seekPreviewMs.round()));
     }
     _gMode = 0;
+    if (mode == 3) _queueVolSave();
     setState(() {
       _seeking = false;
       _gOverlayType = null;
@@ -532,6 +609,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _bufSub?.cancel();
     _playingSub?.cancel();
     _completedSub?.cancel();
+    _volumeSub?.cancel();
+    _rateSub?.cancel();
     _scrollCtrl?.removeListener(_onScroll);
     p?.stop();
     p?.dispose();
@@ -572,8 +651,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
             p!.seek(Duration(seconds: pos.inSeconds.clamp(0, 999999)));
           },
           onVolume: (delta) {
-            _volume = (_volume + delta * 100).clamp(0, 100);
-            p?.setVolume(_volume);
+            _setVolume(_volume.value + delta * 100);
           },
           onEscape: () {
             // Overlays close first; only a bare ESC exits fullscreen.
@@ -616,20 +694,21 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         : size.width > 900;
     final video = _video();
     if (fullscreen) {
+      // Notch / camera cutout insets. viewPadding (not padding): immersive
+      // mode hides the system bars, and padding collapses to zero with them —
+      // exactly when the back arrow would slide under the cutout.
+      final view = MediaQuery.viewPaddingOf(c);
+      final safe = EdgeInsets.only(
+        left: view.left,
+        top: view.top,
+        right: view.right,
+      );
       return _withShortcuts(
         PopScope(
           canPop: false,
           onPopInvokedWithResult: (didPop, _) {
             if (didPop) return;
-            // Overlays close first; only a bare back exits fullscreen.
-            if (_showEpisodes) {
-              setState(() => _showEpisodes = false);
-              _poke();
-            } else if (_showSettings) {
-              setState(() => _showSettings = false);
-            } else {
-              _setFullscreen(false);
-            }
+            _handleBack();
           },
           child: Scaffold(
             backgroundColor: Colors.black,
@@ -642,19 +721,17 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                   if (event is PointerScrollEvent) {
                     final dy = event.scrollDelta.dy;
                     if (dy.abs() > 0) {
-                      final step = dy > 0 ? -5 : 5;
-                      final nv = (_volume + step).clamp(0.0, 100.0);
-                      if (nv != _volume) {
-                        _volume = nv;
-                        p?.setVolume(_volume);
-                        _prefsSetVol();
+                      final step = dy > 0 ? -5.0 : 5.0;
+                      final nv = (_volume.value + step).clamp(0.0, 100.0);
+                      if (nv != _volume.value) {
+                        _setVolume(nv);
                         _resetIdle();
                       }
                       _gOverlayTimer?.cancel();
                       if (mounted) {
                         setState(() {
                           _gOverlayType = _OverlayType.volume;
-                          _gOverlayValue = _volume.round();
+                          _gOverlayValue = _volume.value.round();
                         });
                       }
                       _gOverlayTimer = Timer(const Duration(seconds: 1), () {
@@ -677,20 +754,27 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                             : const SizedBox(),
                       ),
                     ),
-                    if (_isMobile)
-                      Positioned(
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        child: IgnorePointer(
-                          ignoring: !_showControls,
-                          child: AnimatedOpacity(
-                            opacity: _showControls ? 1.0 : 0.0,
-                            duration: _fadeMs,
-                            child: _topTitleBar(),
+                    // Top chrome on every platform: back on the left, title,
+                    // settings on the right. It used to exist on mobile only —
+                    // which is why desktop fullscreen had no way back.
+                    Positioned(
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      child: IgnorePointer(
+                        ignoring: !_showControls,
+                        child: AnimatedOpacity(
+                          opacity: _showControls ? 1.0 : 0.0,
+                          duration: _fadeMs,
+                          child: PlayerTopBar(
+                            title: widget.item.name,
+                            onBack: _handleBack,
+                            onSettings: _toggleSettings,
+                            safe: safe,
                           ),
                         ),
                       ),
+                    ),
                     Positioned(
                       bottom: 0,
                       left: 0,
@@ -700,13 +784,13 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                         child: AnimatedOpacity(
                           opacity: _showControls ? 1.0 : 0.0,
                           duration: _fadeMs,
-                          child: _bar(),
+                          child: _bar(safe: EdgeInsets.only(bottom: view.bottom)),
                         ),
                       ),
                     ),
                     if (_seeking) _seekBar(),
-                    if (show2x) _speedBadge(),
-                    if (_gOverlayType != null) _centerOverlay(),
+                    _speedBadge(top: safe.top + 52),
+                    _gestureChip(),
                     if (_showSettings) _settingsOverlay(),
                     if (_showEpisodes)
                       EpisodePickerPanel(
@@ -907,7 +991,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                 bottom: false,
                 child: IconButton(
                   icon: const Icon(Icons.arrow_back, color: Colors.white70),
-                  onPressed: () => Navigator.pop(context),
+                  tooltip: 'Back',
+                  onPressed: _handleBack,
                 ),
               ),
             ),
@@ -926,52 +1011,71 @@ class _State extends ConsumerState<VideoPlayerScreen> {
             ),
           ),
         ),
-        if (show2x) _speedBadge(),
         if (_seeking) _seekBar(),
-        if (_gOverlayType != null) _centerOverlay(),
+        _speedBadge(top: 8),
+        _gestureChip(),
       ],
     ),
   );
 
-  // Fullscreen top title bar (mobile): fades with the controls.
-  Widget _topTitleBar() => Container(
-    padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-    decoration: const BoxDecoration(
-      gradient: LinearGradient(
-        begin: Alignment.topCenter,
-        end: Alignment.bottomCenter,
-        colors: [Color(0xB3000000), Color(0x00000000)],
-      ),
-    ),
-    child: Text(
-      widget.item.name,
-      style: const TextStyle(
-        color: Colors.white,
-        fontSize: 15,
-        fontWeight: FontWeight.w500,
-      ),
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-    ),
-  );
+  /// Windowed back: leaves the player. Fullscreen back (top bar) exits
+  /// fullscreen first — overlays close before either.
+  void _handleBack() {
+    if (_showEpisodes) {
+      setState(() => _showEpisodes = false);
+      _poke();
+      return;
+    }
+    if (_showSettings) {
+      setState(() => _showSettings = false);
+      _poke();
+      return;
+    }
+    if (fullscreen) {
+      _setFullscreen(false);
+      return;
+    }
+    Navigator.pop(context);
+  }
 
-  Widget _bar() => p == null
+  Widget _bar({EdgeInsets safe = EdgeInsets.zero}) => p == null
       ? const SizedBox.shrink()
       : MouseRegion(
           key: _barKey,
           onEnter: _onBarEnter,
           onExit: _onBarExit,
-          child: PlayerControls(
-            player: p!,
-            onPrev: null,
-            onNext: onNext,
-            onSettingsTap: _toggleSettings,
-            onEpisodesTap: (_relCache == null || _relCache!.isEmpty)
-                ? null
-                : _toggleEpisodes,
-            showFullscreen: fullscreen,
-            onFullscreen: () => _setFullscreen(!fullscreen),
-            scale: fullscreen ? 1.3 : 1.0,
+          child: ListenableBuilder(
+            listenable: _chromeState,
+            builder: (_, _) => PlayerControlBar(
+              playing: _playing.value,
+              position: _miniPos.value,
+              duration: _miniDur.value,
+              buffer: _miniBuf.value,
+              volume: _volume.value,
+              speed: _rate.value,
+              fullscreen: fullscreen,
+              hasPrev: hist.isNotEmpty,
+              hasNext: _relCache?.isNotEmpty ?? false,
+              // The episode sheet only exists in fullscreen.
+              hasEpisodes: fullscreen && (_relCache?.isNotEmpty ?? false),
+              safe: safe,
+              onPlayPause: _togglePlayPause,
+              onSeek: (d) => p?.seek(d),
+              onVolumeChanged: (v) => _setVolume(v, persist: false),
+              onVolumeChangeEnd: _queueVolSave,
+              onToggleMute: _toggleMute,
+              onSpeedChanged: (s) => p?.setRate(s),
+              onPrev: onPrev,
+              onNext: onNext,
+              onEpisodes: _toggleEpisodes,
+              onFullscreen: () => _setFullscreen(!fullscreen),
+              onMenuVisibilityChanged: (open) {
+                _speedMenuOpen = open;
+                // Closing the menu hands the idle timer back (the pointer has
+                // usually left the bar by then, so nothing else would).
+                if (!open) _poke();
+              },
+            ),
           ),
         );
 
@@ -979,13 +1083,21 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     setState(() {
       _showEpisodes = false;
       _showSettings = !_showSettings;
+      if (_showSettings) _showControls = true;
     });
+    if (_showSettings) {
+      // Pin the chrome: the gear is the way back out of the panel.
+      _hideTimer?.cancel();
+    } else {
+      _poke();
+    }
   }
 
   void _toggleEpisodes() {
     setState(() {
       _showSettings = false;
       _showEpisodes = !_showEpisodes;
+      if (_showEpisodes) _showControls = true;
     });
     if (_showEpisodes) {
       // Keep the bar underneath the sheet from fading while browsing.
@@ -1009,7 +1121,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
             child: Text(
-              '${_fmt(_seekPreviewMs)} / ${_fmt(dur)}',
+              '${formatMs(_seekPreviewMs.round())} / ${formatMs(dur.round())}',
               style: const TextStyle(color: Colors.white, fontSize: 13),
             ),
           ),
@@ -1069,7 +1181,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            '${_fmt(_pipSeekMs)} / ${_fmt(dur)}',
+            '${formatMs(_pipSeekMs.round())} / ${formatMs(dur.round())}',
             style: const TextStyle(color: Colors.white, fontSize: 11),
           ),
           const SizedBox(height: 2),
@@ -1231,60 +1343,21 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     );
   }
 
-  // Center chip for brightness/volume gesture feedback.
-  Widget _centerOverlay() {
-    final isBrightness = _gOverlayType == _OverlayType.brightness;
-    final icon = isBrightness ? Icons.brightness_6 : Icons.volume_up;
-    final pct = _gOverlayValue / 100;
-    return Positioned.fill(
-      child: IgnorePointer(
-        child: Center(
-          child: Container(
-            width: 160,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.6),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, color: Colors.white, size: 28),
-                const SizedBox(height: 8),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(2),
-                  child: LinearProgressIndicator(
-                    value: pct,
-                    minHeight: 4,
-                    backgroundColor: const Color(0x33FFFFFF),
-                    valueColor: AlwaysStoppedAnimation(
-                      isBrightness
-                          ? const Color(0xFFFFD600)
-                          : const Color(0xFFFF6B00),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '$_gOverlayValue%',
-                  style: const TextStyle(color: Colors.white, fontSize: 13),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  // Centre chip for brightness/volume gesture feedback. Always mounted so the
+  // fade-out can finish; null value means "hidden".
+  Widget _gestureChip() => Positioned.fill(
+    child: PlayerGestureChip(
+      brightness: _gOverlayType == _OverlayType.brightness,
+      value: _gOverlayType == null ? null : _gOverlayValue,
+    ),
+  );
 
-  Widget _speedBadge() {
+  Widget _speedBadge({required double top}) {
     return Positioned(
-      top: 8,
+      top: top,
       left: 0,
       right: 0,
-      child: IgnorePointer(
-        child: Center(child: _SpeedBadgeWidget(visible: show2x)),
-      ),
+      child: Center(child: PlayerSpeedBadge(visible: show2x)),
     );
   }
 
@@ -1302,16 +1375,14 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           // Re-apply orientation immediately when toggled.
           _applyOrientation();
         },
-        onDismiss: () => setState(() => _showSettings = false),
+        onDismiss: () {
+          setState(() => _showSettings = false);
+          // Re-arm the idle timer: the panel's own dismiss affordance is a way
+          // out too, and nothing else would restart it.
+          _poke();
+        },
       ),
     );
-  }
-
-  String _fmt(double ms) {
-    final t = ms.round();
-    final m = (t ~/ 60000);
-    final s = (t % 60000) ~/ 1000;
-    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
   Widget _meta() => Container(
@@ -1446,111 +1517,4 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       ),
     ),
   );
-}
-
-// ── Animated 2x speed badge ─────────────────────────────────────────
-
-class _SpeedBadgeWidget extends StatefulWidget {
-  final bool visible;
-  const _SpeedBadgeWidget({required this.visible});
-
-  @override
-  State<_SpeedBadgeWidget> createState() => _SpeedBadgeWidgetState();
-}
-
-class _SpeedBadgeWidgetState extends State<_SpeedBadgeWidget>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 900),
-    );
-    if (widget.visible) _ctrl.repeat();
-  }
-
-  @override
-  void didUpdateWidget(covariant _SpeedBadgeWidget old) {
-    super.didUpdateWidget(old);
-    if (widget.visible && !old.visible) {
-      _ctrl.forward(from: 0);
-      _ctrl.repeat();
-    } else if (!widget.visible && old.visible) {
-      _ctrl.stop();
-      _ctrl.reset();
-    }
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  static const _accent = Color(0xFFFF6B00);
-
-  // Single play-arrow triangle, opacity driven by animation value.
-  Widget _triangle(double phase) {
-    final t = (_ctrl.value - phase) % 1.0;
-    final opacity = 0.75 + 0.25 * cos(pi * 2 * t);
-    return Icon(
-      Icons.play_arrow,
-      color: _accent.withValues(alpha: opacity),
-      size: 18,
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedScale(
-      scale: widget.visible ? 1.0 : 0.5,
-      duration: const Duration(milliseconds: 200),
-      curve: Curves.easeOutBack,
-      child: AnimatedOpacity(
-        opacity: widget.visible ? 1.0 : 0.0,
-        duration: const Duration(milliseconds: 150),
-        child: AnimatedBuilder(
-          animation: _ctrl,
-          builder: (_, child) => Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            decoration: BoxDecoration(
-              color: _accent.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: _accent.withValues(alpha: 0.5)),
-            ),
-            child: child!,
-          ),
-          // Static subtree extracted so AnimatedBuilder only rebuilds
-          // the Container wrapper; the Row content stays cached.
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SizedBox(
-                width: 34,
-                child: Stack(
-                  children: [
-                    _triangle(0.0),
-                    Positioned(left: 10, child: _triangle(1 / 3)),
-                    Positioned(left: 20, child: _triangle(2 / 3)),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 6),
-              const Text(
-                '2x',
-                style: TextStyle(
-                  color: _accent,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }
