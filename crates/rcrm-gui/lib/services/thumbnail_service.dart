@@ -15,6 +15,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import '../ffi/rust_bridge.dart';
+import '../utils/ffmpeg_thumb_args.dart';
 import '../utils/poster_queue.dart';
 import 'item_cache_limit.dart';
 import 'player_factory.dart';
@@ -222,54 +223,24 @@ class ThumbnailService {
     // one must degrade to "no poster yet", not throw a null-check error.
     final authVal = sharedAuthHeader?['Authorization'];
     if (authVal == null) return null;
-    final headerLine = 'Authorization: $authVal';
+    final headers = {'Authorization': authVal};
     final safe = safeUrl(videoUrl); // no creds in URL
 
     const positions = [0.0, 30.0, 15.0, 0.5, 3.0, 60.0, 120.0, 240.0];
     for (final inputSeek in [true, false]) {
       for (final pos in positions) {
-        final ss = pos.toString();
-        final args = inputSeek
-            ? [
-                '-headers',
-                headerLine,
-                '-ss',
-                ss,
-                '-an',
-                '-i',
-                safe,
-                '-vframes',
-                '1',
-                '-q:v',
-                '3',
-                '-vf',
-                'scale=$_posterWidth:-1',
-                '-f',
-                'image2',
-                '-c:v',
-                'mjpeg',
-                'pipe:1',
-              ]
-            : [
-                '-headers',
-                headerLine,
-                '-an',
-                '-i',
-                safe,
-                '-ss',
-                ss,
-                '-vframes',
-                '1',
-                '-q:v',
-                '3',
-                '-vf',
-                'scale=$_posterWidth:-1',
-                '-f',
-                'image2',
-                '-c:v',
-                'mjpeg',
-                'pipe:1',
-              ];
+        // Built by `ffmpegThumbArgs` so the option ORDER is testable:
+        // `-hide_banner` first (global), `-tls_verify 0` an input option before
+        // the `-i` it applies to (the scoped TLS relaxation — see that
+        // function's comment).
+        final args = ffmpegThumbArgs(
+          url: safe,
+          headers: headers,
+          seekSeconds: pos,
+          frames: 1,
+          width: _posterWidth,
+          inputSeek: inputSeek,
+        );
         Uint8List? bytes;
         try {
           final r = await Process.run(

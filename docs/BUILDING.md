@@ -155,7 +155,11 @@ about), so video poster generation over HTTPS fails with:
 Error opening input: I/O error
 ```
 
-Plain-HTTP (local mode) is unaffected. Options, in order of preference:
+Plain-HTTP (local mode) is unaffected. Mobile posters use `media_kit` and are
+unaffected. The desktop video-thumbnail path passes `-hide_banner -tls_verify 0`
+on every fetch (`lib/utils/ffmpeg_thumb_args.dart`): option 3 below, scoped
+to that one subprocess — the Dart client still pins. The alternatives remain for
+other fetches:
 
 1. Route ffmpeg to a loopback HTTP relay that performs the pinned HTTPS upstream.
 2. Pass `-ca_file <pem>` when the server's certificate is file-backed and its
