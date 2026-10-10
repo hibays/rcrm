@@ -163,6 +163,16 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
     factor,
   );
 
+  /// How long an arrow/keyboard page change takes to slide.
+  ///
+  /// This is also the viewer's only switching cooldown: [_goTo] drops any
+  /// further press until this animation ends, so the duration IS the window in
+  /// which a second "next"/"previous" does nothing. It was 300ms, which made
+  /// deliberate rapid switching feel swallowed; 200ms still reads as a slide
+  /// while letting the next press land sooner. The guard itself is unchanged —
+  /// one press still advances exactly one image, only the window shrank.
+  static const Duration _pageChangeDuration = Duration(milliseconds: 200);
+
   /// Page ±1 with the same animated navigation the arrow buttons use.
   void _goTo(int delta) {
     if (_navAnimating) return;
@@ -172,7 +182,7 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
     _pageController
         .animateToPage(
           target,
-          duration: const Duration(milliseconds: 300),
+          duration: _pageChangeDuration,
           curve: Curves.easeInOut,
         )
         .whenComplete(() {

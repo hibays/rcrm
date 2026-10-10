@@ -129,8 +129,16 @@ abstract final class ViewerZoom {
 
 /// Pull-to-dismiss threshold in logical pixels: a fixed ceiling with a
 /// proportional floor, so a tall phone does not demand a marathon drag.
+///
+/// All three numbers are the original 132 / 72 / 0.12 raised by 30%: the pull
+/// away was easy enough that an accidental or casual drag at the top edge
+/// closed the viewer, and the distance the finger must travel is the only part
+/// of the gesture that can be felt while dragging. The raise is deliberately a
+/// modest +30% — a deliberate pull still dismisses comfortably — and it is
+/// distance-only: the flick path, the damping, the spring-back and the release
+/// animation are untouched. Restore 132 / 72 / 0.12 to get the old feel back.
 double dismissThreshold(double viewportHeight) =>
-    math.min(132, math.max(72, viewportHeight * 0.12));
+    math.min(172, math.max(94, viewportHeight * 0.156));
 
 /// 0..1 progress of a pull, used for the fade and the shrink.
 double dismissProgress(double distance, double viewportHeight) =>

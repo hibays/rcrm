@@ -10,6 +10,7 @@
 // or it has quietly turned the page.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/config/theme.dart';
 import 'package:rcrm_gui/models/media_item.dart';
@@ -77,6 +78,11 @@ double paintedDy(WidgetTester tester) {
   return pulled + panned;
 }
 
+/// The pager's own settled page, 0-based, read off the real `PageController`.
+/// A switch has to land ON a page (not mid-slide) and move exactly one page.
+double settledPage(WidgetTester tester) =>
+    tester.widget<PageView>(find.byType(PageView)).controller!.page!;
+
 void main() {
   testWidgets('a pull that drifts sideways never turns the page', (
     tester,
@@ -85,7 +91,11 @@ void main() {
     final center = tester.getCenter(find.byType(ImageViewerScreen));
 
     // Engage the pull vertically first (8px of downward travel is enough),
-    // then drift far enough sideways that the pager would have flipped.
+    // then drift far enough sideways that the pager would have flipped. The
+    // vertical travel is deliberately small: 20px up front plus 8 × 5px = 60px
+    // of pull, under the 93.6px dismissal threshold at this surface height
+    // (600 × 0.156), so the viewer survives to be inspected — the subject here
+    // is the axis lock, not the threshold.
     final gesture = await tester.startGesture(center);
     await gesture.moveBy(const Offset(0, 20));
     await tester.pump();
@@ -123,6 +133,58 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('2 / 3'), findsOneWidget);
+    // One gesture, exactly one image: the release snap must land ON page 1 and
+    // must not skip past it — the safety property the switching cooldown
+    // exists for, whatever its duration.
+    expect(find.text('3 / 3'), findsNothing, reason: 'a swipe must not skip');
+    expect(
+      settledPage(tester),
+      closeTo(1, 0.01),
+      reason: 'the pager settles on a real page, not mid-slide',
+    );
+  });
+
+  testWidgets('one switch press advances exactly one image', (tester) async {
+    await _openViewer(tester);
+    expect(find.text('1 / 3'), findsOneWidget);
+
+    // Arrow buttons and ←/→ share the same `_goTo` path; a key press is that
+    // path without the desktop hover chrome in the way. One press must never
+    // double-fire into two pages.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pumpAndSettle();
+
+    expect(find.text('2 / 3'), findsOneWidget);
+    expect(find.text('3 / 3'), findsNothing, reason: 'one press, one image');
+    expect(settledPage(tester), closeTo(1, 0.01));
+  });
+
+  testWidgets('a second switch inside the OLD cooldown is no longer swallowed', (
+    tester,
+  ) async {
+    await _openViewer(tester);
+    expect(find.text('1 / 3'), findsOneWidget);
+
+    // Two deliberate "next image" switches 220ms apart: inside the old 300ms
+    // cooldown, where the second press was dropped and this test failed, and
+    // outside the new 200ms one. This is the case the user asked for — pressing
+    // next again as soon as the slide is done instead of waiting the lock out.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 220));
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('3 / 3'),
+      findsOneWidget,
+      reason: 'both switches must land: the second press was not swallowed',
+    );
+    expect(
+      settledPage(tester),
+      closeTo(2, 0.01),
+      reason: 'two presses move exactly two pages — no skip, no double-fire',
+    );
   });
 
   testWidgets('a diagonal drag that leads sideways never pulls', (tester) async {
@@ -164,8 +226,9 @@ void main() {
     final center = tester.getCenter(find.byType(ImageViewerScreen));
 
     // 40px across, 64px down: the pull dominates, so the axis lock must hand
-    // it the gesture. 64px stays under the 72px dismissal threshold at this
-    // surface height, so the viewer is still there to be inspected.
+    // it the gesture. 64px stays under the 93.6px dismissal threshold at this
+    // surface height (600 × 0.156), so the viewer is still there to be
+    // inspected.
     final gesture = await tester.startGesture(center);
     for (var i = 0; i < 8; i++) {
       await gesture.moveBy(const Offset(5, 8));
@@ -220,10 +283,16 @@ void main() {
     expect(find.text('2 / 3'), findsOneWidget);
   });
 
-  testWidgets('a pull past the threshold closes the viewer', (tester) async {
+  testWidgets('a pull well past the threshold closes the viewer', (
+    tester,
+  ) async {
     await _openViewer(tester);
     final center = tester.getCenter(find.byType(ImageViewerScreen));
 
+    // 12 × 20px = 240px of downward travel: well past the dismissal threshold
+    // at this surface height, both the 93.6px it is now (600 × 0.156) and the
+    // 72px it was before. The intent this test has always had is unchanged —
+    // past the threshold, letting go closes the viewer.
     final gesture = await tester.startGesture(center);
     for (var i = 0; i < 12; i++) {
       await gesture.moveBy(const Offset(0, 20));
@@ -233,6 +302,89 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byType(ImageViewerScreen), findsNothing);
+  });
+
+  testWidgets('a pull past the OLD threshold no longer dismisses', (
+    tester,
+  ) async {
+    await _openViewer(tester);
+    final center = tester.getCenter(find.byType(ImageViewerScreen));
+
+    // 4 × 20px = 80px of downward travel. Under the old threshold (72px at
+    // this surface height) this dismissed — the red case this change exists
+    // for — while the raised threshold (93.6px) is not reached, so the viewer
+    // must spring back. Velocity is 0 here (the harness's events carry no
+    // timestamps), so the flick path cannot close it either: the distance
+    // threshold is the only thing this test can be measuring.
+    final gesture = await tester.startGesture(center);
+    for (var i = 0; i < 4; i++) {
+      await gesture.moveBy(const Offset(0, 20));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byType(ImageViewerScreen),
+      findsOneWidget,
+      reason: '80px is short of the raised threshold, so the viewer stays',
+    );
+    expect(find.text('1 / 3'), findsOneWidget);
+  });
+
+  testWidgets('a deliberate pull still dismisses', (tester) async {
+    await _openViewer(tester);
+    final center = tester.getCenter(find.byType(ImageViewerScreen));
+
+    // 6 × 20px = 120px: a real, unhurried pull, ~28% past the raised threshold
+    // (93.6px). This is the guard against the other failure mode — a threshold
+    // made so heavy that dismissing on purpose stops working.
+    final gesture = await tester.startGesture(center);
+    for (var i = 0; i < 6; i++) {
+      await gesture.moveBy(const Offset(0, 20));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byType(ImageViewerScreen),
+      findsNothing,
+      reason: 'a deliberate 120px pull must still close the viewer',
+    );
+  });
+
+  testWidgets('a small pull still springs back instead of dismissing', (
+    tester,
+  ) async {
+    await _openViewer(tester);
+    final center = tester.getCenter(find.byType(ImageViewerScreen));
+    expect(paintedDy(tester), 0, reason: 'the photo starts at rest');
+
+    // Six 5px steps: the finger travels 30px, of which the axis lock spends
+    // the first 5px deciding, so the pull itself measures 25px — about a
+    // quarter of the 93.6px threshold, and under the 72px one it replaced. A
+    // nudge at the top edge must snap back whatever the threshold is.
+    final gesture = await tester.startGesture(center);
+    for (var i = 0; i < 6; i++) {
+      await gesture.moveBy(const Offset(0, 5));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(
+      paintedDy(tester),
+      greaterThan(0),
+      reason: 'the small pull must really have moved the photo',
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byType(ImageViewerScreen),
+      findsOneWidget,
+      reason: 'a small pull must snap back, never dismiss',
+    );
+    expect(paintedDy(tester), 0, reason: 'and it must have sprung back');
+    expect(find.text('1 / 3'), findsOneWidget);
   });
 
   testWidgets('a zoomed photo cannot be pulled away', (tester) async {

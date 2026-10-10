@@ -189,9 +189,22 @@ void main() {
       expect(dismissProgress(threshold * 3, 800), 1);
     });
 
+    test('the threshold is 30% longer than it used to be', () {
+      // The record of the pull-weighting change: 0.12 → 0.156 of the viewport,
+      // ceiling 132 → 172, floor 72 → 94. This is what the finger feels.
+      expect(dismissThreshold(800), closeTo(124.8, 0.01));
+      expect(dismissThreshold(2400), 172);
+      expect(dismissThreshold(400), 94);
+    });
+
     test('a tall screen does not demand a marathon drag', () {
-      expect(dismissThreshold(2400), lessThanOrEqualTo(132));
-      expect(dismissThreshold(400), greaterThanOrEqualTo(72));
+      // Same two bounds as before the change, both moved up 30%: the ceiling
+      // still caps a tall screen, the floor still keeps a short one from
+      // becoming hair-trigger. The roles are unchanged, only the values moved.
+      expect(dismissThreshold(2400), lessThanOrEqualTo(172));
+      expect(dismissThreshold(400), greaterThanOrEqualTo(94));
+      // A short screen's minimum is still a deliberate drag, not a nudge.
+      expect(dismissThreshold(400), greaterThan(0.1 * 400));
     });
 
     test('distance alone closes it', () {
