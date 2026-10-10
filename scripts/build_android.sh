@@ -48,6 +48,33 @@ cargo ndk \
     build -p rcrm-flutter-bridge --features mobile-decode $CARGO_FLAG
 
 find "$JNI_LIBS" -name "*.so" -exec echo "  -> {}" \;
+
+# The freshly rebuilt bridge has different contents from the last build, while
+# Gradle keeps state snapshots for the jniLibs merges. Two things can then go
+# wrong, and this reset prevents both:
+#
+#   * mergeReleaseJniLibFolders fails to hash its stale output --
+#     "Cannot access output property 'outputDir' ... Failed to create MD5 hash
+#     for file '...merged_jni_libs/release/.../librcrm_flutter_bridge.so' as it
+#     does not exist" -- and takes the whole APK build down with it;
+#   * worse, silently: mergeReleaseNativeLibs and packageRelease stay UP-TO-DATE
+#     against a stale merge, the build reports SUCCESS, and the APK ships WITHOUT
+#     libapp.so and librcrm_flutter_bridge.so (a 25MB APK instead of 42MB), so the
+#     app cannot load the bridge at all.
+#
+# Dropping both merge outputs makes them re-run from a clean slate; Gradle's
+# incremental tracking stays intact everywhere else. (doNotTrackState is NOT the
+# fix: the packaging task then fails with "Changes are not tracked, unable
+# determine incremental changes".)
+for stale_merge in \
+    "$GUI/build/app/intermediates/merged_jni_libs" \
+    "$GUI/build/app/intermediates/merged_native_libs"; do
+  if [[ -d "$stale_merge" ]]; then
+    rm -rf "$stale_merge"
+    echo "  -> Reset Gradle state: $stale_merge"
+  fi
+done
+
 echo ""
 
 # ── Step 2: Pre-download media_kit Android JARs ────────────────
