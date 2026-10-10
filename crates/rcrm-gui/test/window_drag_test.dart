@@ -32,10 +32,10 @@ void main() {
   void mockPlugin({required bool fullscreen}) {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(plugin, (call) async {
-      pluginCalls.add(call.method);
-      if (call.method == 'isFullScreen') return fullscreen;
-      return null;
-    });
+          pluginCalls.add(call.method);
+          if (call.method == 'isFullScreen') return fullscreen;
+          return null;
+        });
   }
 
   setUp(() {
@@ -77,25 +77,28 @@ void main() {
     expect(pluginCalls, ['isFullScreen']);
   });
 
-  test('a runner without the channel falls back, and keeps falling back', () async {
-    mockRunner((call) async {
-      runnerCalls.add(call.method);
-      throw MissingPluginException('no runner handler');
-    });
-    mockPlugin(fullscreen: false);
+  test(
+    'a runner without the channel falls back, and keeps falling back',
+    () async {
+      mockRunner((call) async {
+        runnerCalls.add(call.method);
+        throw MissingPluginException('no runner handler');
+      });
+      mockPlugin(fullscreen: false);
 
-    // First drag: the channel refuses, so window_manager starts the move.
-    await startWindowDrag();
-    expect(pluginCalls, contains('startDragging'));
+      // First drag: the channel refuses, so window_manager starts the move.
+      await startWindowDrag();
+      expect(pluginCalls, contains('startDragging'));
 
-    // Second drag: this is the regression. The old code returned here without
-    // reaching the fallback, so the title bar worked once and then went dead.
-    pluginCalls.clear();
-    await startWindowDrag();
-    expect(
-      pluginCalls,
-      contains('startDragging'),
-      reason: 'a channel that failed once must not disable dragging entirely',
-    );
-  });
+      // Second drag: this is the regression. The old code returned here without
+      // reaching the fallback, so the title bar worked once and then went dead.
+      pluginCalls.clear();
+      await startWindowDrag();
+      expect(
+        pluginCalls,
+        contains('startDragging'),
+        reason: 'a channel that failed once must not disable dragging entirely',
+      );
+    },
+  );
 }

@@ -71,7 +71,11 @@ void main() {
       for (var w = 2000.0; w >= 40; w -= 1) {
         final p = plan(w);
         if (!sawFullscreen) {
-          expect(p.showFullscreen, isFalse, reason: 'fullscreen returned at ${w}dp');
+          expect(
+            p.showFullscreen,
+            isFalse,
+            reason: 'fullscreen returned at ${w}dp',
+          );
         }
         if (!sawMute) {
           expect(p.showMute, isFalse, reason: 'mute returned at ${w}dp');
@@ -99,7 +103,11 @@ void main() {
       final p = plan(360, window: const Size(360, 800));
       expect(p.showVolumeSlider, isFalse);
       expect(p.showPosition, isTrue);
-      expect(p.showNext, isTrue, reason: 'skipping an episode must stay one tap');
+      expect(
+        p.showNext,
+        isTrue,
+        reason: 'skipping an episode must stay one tap',
+      );
       expect(p.contentWidth, lessThanOrEqualTo(360));
     });
 
@@ -140,9 +148,7 @@ void main() {
 
     test('very narrow: optional controls yield, essentials never do', () {
       final p = plan(250, window: const Size(250, 500));
-      final m = PlayerChromeMetrics.of(
-        const Size(250, 500),
-      ).cappedTo(250);
+      final m = PlayerChromeMetrics.of(const Size(250, 500)).cappedTo(250);
       expect(p.showVolumeSlider, isFalse);
       expect(p.showSpeed, isFalse);
       expect(p.showNext, isFalse);
@@ -185,10 +191,7 @@ void main() {
       final inWideWindow = plan(470, window: const Size(1600, 900));
       final inNarrowWindow = plan(470, window: const Size(470, 900));
       expect(inWideWindow.contentWidth, inNarrowWindow.contentWidth);
-      expect(
-        inWideWindow.volumeSliderWidth,
-        inNarrowWindow.volumeSliderWidth,
-      );
+      expect(inWideWindow.volumeSliderWidth, inNarrowWindow.volumeSliderWidth);
     });
   });
 
@@ -222,7 +225,8 @@ void main() {
         PlayerChromeMetrics.compact,
       );
       // The tier the plan then uses really does fit its essentials.
-      final floor = 3 * PlayerChromeMetrics.tiny.tap +
+      final floor =
+          3 * PlayerChromeMetrics.tiny.tap +
           2 * PlayerChromeMetrics.tiny.gap +
           2 * PlayerChromeMetrics.tiny.pad;
       expect(floor, lessThanOrEqualTo(140));

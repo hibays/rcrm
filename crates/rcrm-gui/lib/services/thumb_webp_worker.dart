@@ -146,6 +146,7 @@ class ThumbWebpWorker {
       (isolate) => !_orphans.any((entry) => entry.$1 == isolate),
     );
   }
+
   Completer<SendPort?>? _handshake;
   bool _dead = false;
   int _generation = 0;
@@ -324,7 +325,10 @@ class ThumbWebpWorker {
   /// Sends one request. [owned] stays the MAIN isolate's responsibility (see the
   /// file comment): it is freed when the reply proves the worker returned from
   /// the native call, or when that worker's exit event proves it is gone.
-  Future<_EncodeReply?> _request(NativeBytes owned, List<Object> payload) async {
+  Future<_EncodeReply?> _request(
+    NativeBytes owned,
+    List<Object> payload,
+  ) async {
     final gen = _generation;
     final token = ++_nextToken;
     // The isolate this buffer is really going to, captured before any await: a
@@ -480,7 +484,8 @@ class ThumbWebpWorker {
     final bridge = _loadedBridge();
     if (bridge == null) return null;
     final owned =
-        reuse ?? NativeBytes(calloc<Uint8>(rgba.length), rgba.length, rgba.length);
+        reuse ??
+        NativeBytes(calloc<Uint8>(rgba.length), rgba.length, rgba.length);
     if (reuse == null) owned.view.setAll(0, rgba);
     final ptr = bridge.encodeThumbWebp(owned.ptr, rgba.length, w, h, quality);
     if (reuse == null) owned.free();
@@ -540,9 +545,11 @@ void thumbWebpWorkerMain(SendPort mainPort) {
         out = result;
         if (result != nullptr) outLen = result.cast<_WebpBuf>().ref.dataLen;
       } else {
-        final generate = Pointer<NativeFunction<RcrmGenerateThumbWebpFromImageC>>
-            .fromAddress(RustBridge.generateThumbWebpFromImageAddr)
-            .asFunction<RcrmGenerateThumbWebpFromImageDart>();
+        final generate =
+            Pointer<
+                  NativeFunction<RcrmGenerateThumbWebpFromImageC>
+                >.fromAddress(RustBridge.generateThumbWebpFromImageAddr)
+                .asFunction<RcrmGenerateThumbWebpFromImageDart>();
         final result = generate(
           input,
           req[3] as int,

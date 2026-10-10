@@ -36,7 +36,8 @@ class PooledImage extends StatefulWidget {
   /// PooledImage that has decoded it, which in practice means the grid cell
   /// that was just tapped. Lets the viewer lay out its zoom geometry on the
   /// first frame instead of waiting for its own decode.
-  static double? knownAspectRatio(String url) => _PooledImageState.ratioFor(url);
+  static double? knownAspectRatio(String url) =>
+      _PooledImageState.ratioFor(url);
 
   @override
   State<PooledImage> createState() => _PooledImageState();

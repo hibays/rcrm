@@ -152,8 +152,7 @@ class PlayerChromeMetrics {
   PlayerChromeMetrics cappedTo(double maxWidth) {
     if (maxWidth < 140) return tiny;
     if (maxWidth < 340) return compact;
-    if (maxWidth < 520 &&
-        (this == expanded || this == expandedFullscreen)) {
+    if (maxWidth < 520 && (this == expanded || this == expandedFullscreen)) {
       return regular;
     }
     return this;
@@ -161,7 +160,8 @@ class PlayerChromeMetrics {
 
   TextStyle get timeStyle => TextStyle(color: Colors.white54, fontSize: font);
 
-  TextStyle get durationStyle => TextStyle(color: Colors.white30, fontSize: font);
+  TextStyle get durationStyle =>
+      TextStyle(color: Colors.white30, fontSize: font);
 
   /// The speed chip's label — painted AND measured with this exact style: a
   /// budget that measures a different weight than it paints is how a bar that
@@ -299,7 +299,8 @@ PlayerControlPlan planPlayerControlBar({
   }
 
   admit(
-    () => total(
+    () =>
+        total(
           position: true,
           duration: false,
           prev: false,
@@ -311,7 +312,8 @@ PlayerControlPlan planPlayerControlBar({
     () => showPosition = true,
   );
   admit(
-    () => total(
+    () =>
+        total(
           position: showPosition,
           duration: true,
           prev: false,
@@ -323,7 +325,8 @@ PlayerControlPlan planPlayerControlBar({
     () => showDuration = true,
   );
   admit(
-    () => total(
+    () =>
+        total(
           position: showPosition,
           duration: showDuration,
           prev: false,
@@ -335,7 +338,8 @@ PlayerControlPlan planPlayerControlBar({
     () => showNext = true,
   );
   admit(
-    () => total(
+    () =>
+        total(
           position: showPosition,
           duration: showDuration,
           prev: true,
@@ -347,7 +351,8 @@ PlayerControlPlan planPlayerControlBar({
     () => showPrev = true,
   );
   admit(
-    () => total(
+    () =>
+        total(
           position: showPosition,
           duration: showDuration,
           prev: showPrev,
@@ -359,7 +364,8 @@ PlayerControlPlan planPlayerControlBar({
     () => showSpeed = true,
   );
   admit(
-    () => total(
+    () =>
+        total(
           position: showPosition,
           duration: showDuration,
           prev: showPrev,
@@ -689,10 +695,7 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                       tooltip: 'Next',
                     ),
                   ],
-                  if (plan.showSpeed) ...[
-                    _gap(m),
-                    _speedChip(m),
-                  ],
+                  if (plan.showSpeed) ...[_gap(m), _speedChip(m)],
                   if (plan.showEpisodes) ...[
                     _gap(m),
                     _iconButton(

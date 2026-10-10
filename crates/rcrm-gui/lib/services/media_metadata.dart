@@ -438,8 +438,7 @@ class MediaMetadataService {
 
   // ── FFI: async parse on a Rust thread ─────────────────────────────
 
-  static NativeCallable<Void Function(Pointer<Utf8>, Pointer<Void>)>?
-  _callback;
+  static NativeCallable<Void Function(Pointer<Utf8>, Pointer<Void>)>? _callback;
   static final Map<int, Completer<MediaMetadata>> _pending = {};
   static int _nextId = 0;
 

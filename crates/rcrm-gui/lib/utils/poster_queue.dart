@@ -131,8 +131,6 @@ PosterKickPlan planPosterKick({
     return PosterKickPlan(start: 0, running: running);
   }
   final free = max - running;
-  final start = free <= 0
-      ? 0
-      : (free < queue.length ? free : queue.length);
+  final start = free <= 0 ? 0 : (free < queue.length ? free : queue.length);
   return PosterKickPlan(start: start, running: running + start);
 }

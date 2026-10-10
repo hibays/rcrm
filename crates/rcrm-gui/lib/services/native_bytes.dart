@@ -118,7 +118,10 @@ final class NativeTransfer {
   final NativeBytes _bytes;
 
   NativeTransfer._(this._bytes)
-    : assert(_bytes.len == _bytes.cap, 'a partial buffer cannot be transferred');
+    : assert(
+        _bytes.len == _bytes.cap,
+        'a partial buffer cannot be transferred',
+      );
 
   /// Address of the allocation — exactly [len] bytes of it.
   Pointer<Uint8> get ptr => _bytes.ptr;

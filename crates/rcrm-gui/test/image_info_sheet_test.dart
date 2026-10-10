@@ -110,10 +110,7 @@ void main() {
           total: 2,
         ),
       );
-      expect(
-        find.text('1920x1080 • 637.0 KB • JPG'),
-        findsOneWidget,
-      );
+      expect(find.text('1920x1080 • 637.0 KB • JPG'), findsOneWidget);
     });
 
     testWidgets('claims nothing while the parse is still in flight', (
@@ -246,10 +243,7 @@ void main() {
       expect(find.text('Animated'), findsOneWidget);
       expect(find.text('Plays on long-press'), findsOneWidget);
 
-      await _pump(
-        tester,
-        ImageInfoSheet(item: _item(), index: 1, total: 2),
-      );
+      await _pump(tester, ImageInfoSheet(item: _item(), index: 1, total: 2));
       expect(find.text('Animated'), findsNothing);
     });
 
@@ -416,14 +410,18 @@ void main() {
           item: _item(),
           index: 1,
           total: 2,
-          metadata: Future.value(MediaMetadata.fromJsonString('{"kind":"image"')),
+          metadata: Future.value(
+            MediaMetadata.fromJsonString('{"kind":"image"'),
+          ),
         ),
       );
       expect(find.text('No camera information'), findsNothing);
       expect(find.text('No location information'), findsNothing);
     });
 
-    testWidgets('dimensions alone are not "camera information"', (tester) async {
+    testWidgets('dimensions alone are not "camera information"', (
+      tester,
+    ) async {
       // A camera block with nothing to render must say so instead of leaving a
       // silent gap where the design promises a statement.
       await _pump(
@@ -495,7 +493,10 @@ void main() {
       // headline must render the same instant a local DateTime would, not the
       // UTC wall clock — off by the offset on every machine east or west of it.
       final utc = DateTime.utc(2026, 9, 30, 2, 24);
-      await _pump(tester, ImageInfoSheet(item: _item(modified: utc), index: 1, total: 2));
+      await _pump(
+        tester,
+        ImageInfoSheet(item: _item(modified: utc), index: 1, total: 2),
+      );
       final fromUtc = _headline(tester);
 
       await _pump(

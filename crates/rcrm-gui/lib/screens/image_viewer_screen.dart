@@ -52,6 +52,17 @@ class _CloseIntent extends Intent {
 /// In-process sound toggle — defaults to enabled, resets on app restart.
 bool _soundEnabled = true;
 
+/// Test seam for the mobile-only status-bar behaviour below.
+///
+/// The tests run the desktop VM, where `isMobile` is false — so the Android
+/// branch is unreachable without this, and the platform-channel contract the
+/// user report is about could not be asserted at all. Only
+/// `test/viewer_gesture_test.dart` writes it, and only for the group that
+/// checks the status bar: every other test in that file leaves it false and
+/// sends no platform call. Untouched, it is exactly the shared `isMobile`.
+@visibleForTesting
+bool debugViewerMobile = isMobile;
+
 class ImageViewerScreen extends StatefulWidget {
   final List<MediaItem> items;
   final int initialIndex;
@@ -66,7 +77,8 @@ class ImageViewerScreen extends StatefulWidget {
   State<ImageViewerScreen> createState() => _ImageViewerScreenState();
 }
 
-class _ImageViewerScreenState extends State<ImageViewerScreen> {
+class _ImageViewerScreenState extends State<ImageViewerScreen>
+    with WidgetsBindingObserver {
   late PageController _pageController;
   late int _currentIndex;
   final ValueNotifier<bool> _showUI = ValueNotifier(true);
@@ -99,10 +111,86 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
     _currentIndex = widget.initialIndex;
     _pageController = PageController(initialPage: _currentIndex);
     // zoom state tracked per-page in _ViewerPageState
+    //
+    // The status bar follows the chrome, so every change of `_showUI` — the
+    // single tap toggle, the double-tap zoom's hide, and the pull's `onHideUi`
+    // — reaches the OS from one place instead of each caller remembering to.
+    _showUI.addListener(_onShowUiChanged);
+    // Android drops the request when the window loses and regains focus (and
+    // while the IME is closing), and nothing else in this screen re-sends it —
+    // see [_reassertSystemUi]. Resumed is the point where the request has to
+    // be made again.
+    WidgetsBinding.instance.addObserver(this);
+    // The chrome starts visible, so the status bar starts visible with it: no
+    // flash-hide on entry (and no dependence on what the route underneath the
+    // viewer happened to leave behind).
+    _applySystemUi(_showUI.value);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _reassertSystemUi();
+  }
+
+  void _onShowUiChanged() => _applySystemUi(_showUI.value);
+
+  /// Mobile only: chrome hidden ⇒ the system bars go with it; chrome shown ⇒
+  /// the app's normal mode comes back.
+  ///
+  /// This is local rather than shared with the video player on purpose. That
+  /// screen's immersive handling is inseparable from its `fullscreen` state
+  /// (orientation lock on entry, the `_navigating` guard that keeps a
+  /// replacement player from being knocked out of fullscreen, `_setFullscreen`
+  /// driving both at once) — and it must not change here. The only common part
+  /// is the pair of mode constants, which is cheaper to read twice than to
+  /// couple a viewer with no orientation or fullscreen notion to a player that
+  /// has both. Nothing else in `lib` sets a system UI mode, so `edgeToEdge`
+  /// (the framework default this app runs in, and what the player restores to)
+  /// is the mode to put back, not an invention.
+  void _applySystemUi(bool chromeVisible) {
+    if (!debugViewerMobile) return;
+    SystemChrome.setEnabledSystemUIMode(
+      chromeVisible ? SystemUiMode.edgeToEdge : SystemUiMode.immersiveSticky,
+    );
+  }
+
+  /// Puts the window back into the mode the current chrome state asks for.
+  ///
+  /// Android re-shows the system bars by itself when the window loses and
+  /// regains focus (and while the IME closes), and the request that hid them is
+  /// a one-shot: the engine sends every non-edge-to-edge mode through the
+  /// deprecated `View.setSystemUiVisibility`, which returns early when the
+  /// value is unchanged, and the platform turns those flags into a hide only
+  /// when they *change*. So re-sending `immersiveSticky` while the flags are
+  /// already immersive is dropped before it reaches the window — the engine's
+  /// own re-apply on `onPostResume` goes through the same path and is a no-op
+  /// for the same reason. The app's normal mode is applied first and immersive
+  /// one frame later: the same pair of states the app's own show→hide flow
+  /// produces, i.e. a real transition, which is the only thing the platform
+  /// acts on.
+  void _reassertSystemUi() {
+    if (!debugViewerMobile) return;
+    if (_showUI.value) {
+      _applySystemUi(true);
+      return;
+    }
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _applySystemUi(_showUI.value);
+    });
   }
 
   @override
   void dispose() {
+    // Leaving the viewer must never leave the app immersive: this runs for the
+    // back gesture, the `PopScope` path, the pull-to-dismiss pop and any other
+    // teardown, and it runs once, before the state is gone. (Dropping the
+    // listener first is what keeps the restore from being followed by one last
+    // chrome-driven mode change during teardown.) Deliberately here and not in
+    // the dismiss animation: the pull's frames must not toggle the bar.
+    _showUI.removeListener(_onShowUiChanged);
+    WidgetsBinding.instance.removeObserver(this);
+    _applySystemUi(true);
     _pageController.dispose();
     for (final c in _controllers.values) {
       c.dispose();
@@ -159,9 +247,8 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
 
   /// Zoom the current page; the page owns the geometry (viewport + image size)
   /// so the transform can never push the picture off screen.
-  void _zoom(double factor) => _viewportFor(_currentIndex).currentState?.zoomBy(
-    factor,
-  );
+  void _zoom(double factor) =>
+      _viewportFor(_currentIndex).currentState?.zoomBy(factor);
 
   /// How long an arrow/keyboard page change takes to slide.
   ///
@@ -686,18 +773,15 @@ class _ViewerPageState extends State<_ViewerPage>
       widget.item.url,
     ).resolve(ImageConfiguration.empty);
     _sizeStream = stream;
-    _sizeListener = ImageStreamListener(
-      (info, _) {
-        final size = Size(
-          info.image.width.toDouble(),
-          info.image.height.toDouble(),
-        );
-        if (!mounted || size == _imageSize) return;
-        setState(() => _imageSize = size);
-        widget.onImageSize(size);
-      },
-      onError: (_, _) {},
-    );
+    _sizeListener = ImageStreamListener((info, _) {
+      final size = Size(
+        info.image.width.toDouble(),
+        info.image.height.toDouble(),
+      );
+      if (!mounted || size == _imageSize) return;
+      setState(() => _imageSize = size);
+      widget.onImageSize(size);
+    }, onError: (_, _) {});
     stream.addListener(_sizeListener!);
   }
 
@@ -1037,12 +1121,16 @@ class _ViewerPageState extends State<_ViewerPage>
       ..addPosition(e.timeStamp, e.position);
   }
 
-  /// A pull may only begin at rest — fit size, 1×. A zoomed picture owns the
-  /// drag: it pans, and the way out of a zoom is zooming out (pinch or
-  /// double-tap), never yanking the photo off the screen. The edge check that
-  /// used to live here allowed exactly that at the top edge, which is the drag
-  /// people make when they mean "pan to the top of the picture".
-  bool _pullAllowed() => !_isZoomed;
+  /// A pull may only begin at rest — fit size, 1× — and never while a live
+  /// photo is playing. A zoomed picture owns the drag (it pans, and the way out
+  /// of a zoom is zooming out — pinch or double-tap — never yanking the photo
+  /// off the screen); a playing live photo owns it for the same reason a
+  /// sideways page drag does, and is the same exclusivity rule the page drag is
+  /// blocked by (see [pullAllowed]). Both are checked at the one gate that
+  /// decides whether the pull may engage at all, so a blocked pull contributes
+  /// no offset, no scale/fade, and no dismissal on release.
+  bool _pullAllowed() =>
+      pullAllowed(zoomed: _isZoomed, livePlaying: _mode == _ViewerMode.live);
 
   /// Travel before the direction lock commits to an axis. Small enough that a
   /// real swipe decides almost immediately, large enough to ignore the first
@@ -1121,7 +1209,9 @@ class _ViewerPageState extends State<_ViewerPage>
       viewportHeight: _viewportHeight,
     )) {
       final from = _dismissOffset;
-      final dir = from.distance == 0 ? const Offset(0, 1) : from / from.distance;
+      final dir = from.distance == 0
+          ? const Offset(0, 1)
+          : from / from.distance;
       final target = dir * _viewportHeight * 1.1;
       // Commit at the speed the finger was already moving.
       _dismissCtrl.duration = Duration(
@@ -1135,7 +1225,8 @@ class _ViewerPageState extends State<_ViewerPage>
       final from = _dismissOffset;
       _dismissCtrl.duration = const Duration(milliseconds: 200);
       _animateDismiss(
-        (t) => Offset.lerp(from, Offset.zero, Curves.easeOutCubic.transform(t))!,
+        (t) =>
+            Offset.lerp(from, Offset.zero, Curves.easeOutCubic.transform(t))!,
       );
     }
   }
@@ -1179,6 +1270,29 @@ class _ViewerPageState extends State<_ViewerPage>
       if (mounted) widget.onDismiss();
     }
   }
+
+  /// Where a page badge sits while the chrome is up — clear of the bottom
+  /// strip. It is the only position a badge has: when the chrome goes, the
+  /// badge goes with it instead of dropping to the screen edge.
+  static const double _chipBottom = 92;
+
+  /// Chrome treatment for a page badge: the same fade-and-stop-taking-pointers
+  /// the screen's `_chrome` gives the top bar and the strip, so a badge is
+  /// visible exactly when the controls are. The badge stays in the page (it
+  /// renders this page's own live/animation/sound state) but never inside the
+  /// pull's transform, which is what used to drag it down with the finger.
+  Widget _chromeChip(Widget chip) => ValueListenableBuilder<bool>(
+    valueListenable: widget.showUINotifier,
+    builder: (_, showUI, child) => IgnorePointer(
+      ignoring: !showUI,
+      child: AnimatedOpacity(
+        opacity: showUI ? 1 : 0,
+        duration: const Duration(milliseconds: 100),
+        child: child,
+      ),
+    ),
+    child: chip,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -1239,139 +1353,126 @@ class _ViewerPageState extends State<_ViewerPage>
         onPointerDown: _onPtrDown,
         onPointerMove: _onPtrMove,
         onPointerUp: _onPtrUp,
-        child: Transform.translate(
-          offset: _dismissOffset,
-          child: Transform.scale(
-            scale: scale,
-            child: Stack(
-              children: [
-                imageContent,
-                if (showBadge)
-                  ValueListenableBuilder<bool>(
-                    valueListenable: widget.showUINotifier,
-                    builder: (_, showUI, child) => AnimatedPositioned(
-                      duration: const Duration(milliseconds: 100),
-                      curve: Curves.easeInOut,
-                      right: 12,
-                      bottom: showUI ? 92 : 12,
-                      child: child!,
-                    ),
-                    child: GestureDetector(
-                      onTap: isMobile
-                          ? null
-                          : () => setState(
-                              () => _mode = _mode == _ViewerMode.animation
-                                  ? _ViewerMode.still
-                                  : _ViewerMode.animation,
-                            ),
-                      child: Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: const BoxDecoration(
-                          color: Colors.black54,
-                          shape: BoxShape.circle,
-                        ),
-                        child: Icon(
-                          _mode == _ViewerMode.animation
-                              ? Icons.stop
-                              : Icons.motion_photos_on,
-                          size: 20,
-                          color: Colors.white70,
-                        ),
-                      ),
-                    ),
-                  ),
-                if (_couldBeLive)
-                  ValueListenableBuilder<bool>(
-                    valueListenable: widget.showUINotifier,
-                    builder: (_, showUI, child) => AnimatedPositioned(
-                      duration: const Duration(milliseconds: 100),
-                      curve: Curves.easeInOut,
-                      left: 44,
-                      bottom: showUI ? 92 : 12,
-                      child: child!,
-                    ),
-                    child: FutureBuilder<bool>(
-                      future: isLivePhotoUrl(
-                        widget.item.url,
-                        headers: sharedAuthHeader,
-                      ),
-                      builder: (_, snap) {
-                        if (snap.data != true) return const SizedBox.shrink();
-                        return GestureDetector(
-                          onTap: _toggleSound,
-                          child: Container(
-                            padding: const EdgeInsets.all(6),
-                            decoration: const BoxDecoration(
-                              color: Colors.black54,
-                              shape: BoxShape.circle,
-                            ),
-                            child: Icon(
-                              _soundEnabled
-                                  ? Icons.volume_up
-                                  : Icons.volume_off,
-                              size: 20,
-                              color: _soundEnabled
-                                  ? Colors.white
-                                  : Colors.white54,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                if (_couldBeLive)
-                  ValueListenableBuilder<bool>(
-                    valueListenable: widget.showUINotifier,
-                    builder: (_, showUI, child) => AnimatedPositioned(
-                      duration: const Duration(milliseconds: 100),
-                      curve: Curves.easeInOut,
-                      left: 12,
-                      bottom: showUI ? 92 : 12,
-                      child: child!,
-                    ),
-                    child: FutureBuilder<bool>(
-                      future: isLivePhotoUrl(
-                        widget.item.url,
-                        headers: sharedAuthHeader,
-                      ),
-                      builder: (_, snap) {
-                        if (snap.data != true) return const SizedBox.shrink();
-                        return GestureDetector(
-                          onTap: () async {
-                            if (_mode == _ViewerMode.live) {
-                              _stopLive();
-                              return;
-                            }
-                            final isLive = await isLivePhotoUrl(
-                              widget.item.url,
-                              headers: sharedAuthHeader,
-                            );
-                            if (!mounted || !isLive) return;
-                            _playLive();
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.all(6),
-                            decoration: const BoxDecoration(
-                              color: Colors.black54,
-                              shape: BoxShape.circle,
-                            ),
-                            child: Icon(
-                              _mode == _ViewerMode.live
-                                  ? Icons.motion_photos_on
-                                  : Icons.motion_photos_off,
-                              size: 20,
-                              color: _mode == _ViewerMode.live
-                                  ? Colors.white
-                                  : Colors.white54,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-              ],
+        child: Stack(
+          children: [
+            // Only the picture lives inside the pull's transform: anything in
+            // here travels with the finger (and scales with it).
+            Transform.translate(
+              offset: _dismissOffset,
+              child: Transform.scale(scale: scale, child: imageContent),
             ),
-          ),
+            // Chrome layer: a badge follows `_showUI` exactly like the top bar
+            // and the strip do, so hiding the controls hides it.
+            if (showBadge)
+              Positioned(
+                right: 12,
+                bottom: _chipBottom,
+                child: _chromeChip(
+                  GestureDetector(
+                    onTap: isMobile
+                        ? null
+                        : () => setState(
+                            () => _mode = _mode == _ViewerMode.animation
+                                ? _ViewerMode.still
+                                : _ViewerMode.animation,
+                          ),
+                    child: Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: const BoxDecoration(
+                        color: Colors.black54,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        _mode == _ViewerMode.animation
+                            ? Icons.stop
+                            : Icons.motion_photos_on,
+                        size: 20,
+                        color: Colors.white70,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            if (_couldBeLive)
+              Positioned(
+                left: 44,
+                bottom: _chipBottom,
+                child: _chromeChip(
+                  FutureBuilder<bool>(
+                    future: isLivePhotoUrl(
+                      widget.item.url,
+                      headers: sharedAuthHeader,
+                    ),
+                    builder: (_, snap) {
+                      if (snap.data != true) return const SizedBox.shrink();
+                      return GestureDetector(
+                        onTap: _toggleSound,
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: const BoxDecoration(
+                            color: Colors.black54,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            _soundEnabled ? Icons.volume_up : Icons.volume_off,
+                            size: 20,
+                            color: _soundEnabled
+                                ? Colors.white
+                                : Colors.white54,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            if (_couldBeLive)
+              Positioned(
+                left: 12,
+                bottom: _chipBottom,
+                child: _chromeChip(
+                  FutureBuilder<bool>(
+                    future: isLivePhotoUrl(
+                      widget.item.url,
+                      headers: sharedAuthHeader,
+                    ),
+                    builder: (_, snap) {
+                      if (snap.data != true) return const SizedBox.shrink();
+                      return GestureDetector(
+                        onTap: () async {
+                          if (_mode == _ViewerMode.live) {
+                            _stopLive();
+                            return;
+                          }
+                          final isLive = await isLivePhotoUrl(
+                            widget.item.url,
+                            headers: sharedAuthHeader,
+                          );
+                          if (!mounted || !isLive) return;
+                          _playLive();
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: const BoxDecoration(
+                            color: Colors.black54,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            _mode == _ViewerMode.live
+                                ? Icons.motion_photos_on
+                                : Icons.motion_photos_off,
+                            size: 20,
+                            color: _mode == _ViewerMode.live
+                                ? Colors.white
+                                : Colors.white54,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );

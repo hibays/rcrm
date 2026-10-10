@@ -13,6 +13,7 @@ import '../services/thumb_cache.dart';
 import '../services/preview_player.dart';
 import 'library_provider.dart';
 import 'server_provider.dart'; // for settingsServiceProvider
+
 // ── State ────────────────────────────────────────────────────
 
 class SettingsState {

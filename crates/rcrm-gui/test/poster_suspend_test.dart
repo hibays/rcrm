@@ -203,34 +203,37 @@ void main() {
   });
 
   group('parking contract', () {
-    test('a parked job keeps its caller pending — never a null answer', () async {
-      final pool = _Pool();
-      final running = _RunningJob('a.mkv', 0);
-      pool.running = 1; // it took the only slot
+    test(
+      'a parked job keeps its caller pending — never a null answer',
+      () async {
+        final pool = _Pool();
+        final running = _RunningJob('a.mkv', 0);
+        pool.running = 1; // it took the only slot
 
-      pool.suspend();
-      var answered = false;
-      final answer = pool.parkUntilResumed(running)
-        ..then((_) => answered = true);
+        pool.suspend();
+        var answered = false;
+        final answer = pool.parkUntilResumed(running)
+          ..then((_) => answered = true);
 
-      // Let it reach the yield point.
-      await Future<void>.delayed(Duration.zero);
-      expect(running.parked, isTrue);
-      expect(pool.parked, 1, reason: 'the parked job holds the parked count');
-      expect(answered, isFalse, reason: 'a parked job is not answered early');
-      // Null here is what makes `VideoCard` paint its gray placeholder, and
-      // nothing retries it — the card asked once per mount, the poster cache
-      // stores successes only. So the future must still be open.
-      expect(running.completer.isCompleted, isFalse);
-      expect(pool.running, 1, reason: 'it keeps its slot while parked');
+        // Let it reach the yield point.
+        await Future<void>.delayed(Duration.zero);
+        expect(running.parked, isTrue);
+        expect(pool.parked, 1, reason: 'the parked job holds the parked count');
+        expect(answered, isFalse, reason: 'a parked job is not answered early');
+        // Null here is what makes `VideoCard` paint its gray placeholder, and
+        // nothing retries it — the card asked once per mount, the poster cache
+        // stores successes only. So the future must still be open.
+        expect(running.completer.isCompleted, isFalse);
+        expect(pool.running, 1, reason: 'it keeps its slot while parked');
 
-      // ...and the answer it finally gives is the real one.
-      running.result = Uint8List.fromList(List.filled(4096, 7));
-      pool.resume([]);
-      final bytes = await answer;
-      expect(bytes, isNotNull);
-      expect(bytes!.length, 4096);
-    });
+        // ...and the answer it finally gives is the real one.
+        running.result = Uint8List.fromList(List.filled(4096, 7));
+        pool.resume([]);
+        final bytes = await answer;
+        expect(bytes, isNotNull);
+        expect(bytes!.length, 4096);
+      },
+    );
 
     test('a parked job is never evicted and never re-enters the cap', () async {
       final pool = _Pool(max: 1);
@@ -250,7 +253,11 @@ void main() {
       }
       expect(pool.queue.length, lessThanOrEqualTo(4));
       expect(ready, isEmpty, reason: 'suspended: not one of them starts');
-      expect(pool.running, 1, reason: 'the parked job still holds the only slot');
+      expect(
+        pool.running,
+        1,
+        reason: 'the parked job still holds the only slot',
+      );
 
       // None of that eviction reached the parked job: it is not in the queue,
       // and a running job is never evictable — dropping it would free no
@@ -278,7 +285,11 @@ void main() {
       // the queue it was holding up — oldest waiting first.
       final queuedBefore = pool.queue.map((j) => j.url).toList();
       running.release(ready, pool);
-      expect(pool.running, 1, reason: 'the slot passes to the next waiting job');
+      expect(
+        pool.running,
+        1,
+        reason: 'the slot passes to the next waiting job',
+      );
       expect(ready.map((j) => j.url).toList(), [queuedBefore.first]);
     });
   });

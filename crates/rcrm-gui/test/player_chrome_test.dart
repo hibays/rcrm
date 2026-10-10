@@ -14,9 +14,7 @@ Widget _host(Widget child) => MaterialApp(
   home: Scaffold(
     backgroundColor: Colors.black,
     body: Stack(
-      children: [
-        Positioned(left: 0, right: 0, bottom: 0, child: child),
-      ],
+      children: [Positioned(left: 0, right: 0, bottom: 0, child: child)],
     ),
   ),
 );
@@ -133,7 +131,16 @@ void main() {
         );
       }
       // The tier boundaries themselves.
-      for (final width in [139.0, 140.0, 141.0, 339.0, 340.0, 341.0, 519.0, 520.0]) {
+      for (final width in [
+        139.0,
+        140.0,
+        141.0,
+        339.0,
+        340.0,
+        341.0,
+        519.0,
+        520.0,
+      ]) {
         await _pumpBar(tester, size: Size(width, 500), hasPrev: true);
         await tester.pump(const Duration(milliseconds: 16));
         expect(
@@ -308,11 +315,7 @@ void main() {
       tester,
     ) async {
       final seeks = <Duration>[];
-      await _pumpBar(
-        tester,
-        size: const Size(1280, 720),
-        onSeek: seeks.add,
-      );
+      await _pumpBar(tester, size: const Size(1280, 720), onSeek: seeks.add);
       final slider = find.byType(Slider).first;
       final box = tester.getRect(slider);
       await tester.dragFrom(
@@ -421,7 +424,9 @@ void main() {
       tester,
     ) async {
       await tester.pumpWidget(
-        const MaterialApp(home: Scaffold(body: PlayerSpeedBadge(visible: true))),
+        const MaterialApp(
+          home: Scaffold(body: PlayerSpeedBadge(visible: true)),
+        ),
       );
       final t0 = chevronAlphas(tester);
       expect(t0, hasLength(3));
@@ -469,9 +474,7 @@ void main() {
     testWidgets('keeps its last value while fading out', (tester) async {
       await tester.pumpWidget(
         const MaterialApp(
-          home: Scaffold(
-            body: PlayerGestureChip(brightness: false, value: 42),
-          ),
+          home: Scaffold(body: PlayerGestureChip(brightness: false, value: 42)),
         ),
       );
       expect(find.text('42%'), findsOneWidget);

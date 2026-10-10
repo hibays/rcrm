@@ -892,7 +892,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                           child: AnimatedOpacity(
                             opacity: _showControls ? 1.0 : 0.0,
                             duration: _fadeMs,
-                            child: _bar(safe: EdgeInsets.only(bottom: view.bottom)),
+                            child: _bar(
+                              safe: EdgeInsets.only(bottom: view.bottom),
+                            ),
                           ),
                         ),
                       ),
@@ -913,9 +915,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                             _poke();
                           },
                         ),
-                      ],
-                    ),
+                    ],
                   ),
+                ),
               ),
             ),
           ),

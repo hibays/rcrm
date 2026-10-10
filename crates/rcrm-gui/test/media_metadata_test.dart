@@ -280,24 +280,27 @@ void main() {
       head.free();
     });
 
-    test('the head stops at the cap instead of buffering the whole file', () async {
-      // The ask is 4 MiB; the file is bigger, so the Range request is what
-      // bounds the transfer — and the allocation is exactly the ask, which is
-      // the shape the FFI hand-off requires.
-      final body = List<int>.generate(
-        MediaMetadataService.maxFetchBytes + 5000,
-        (i) => i % 253,
-      );
-      serve(body, chunks: 8);
+    test(
+      'the head stops at the cap instead of buffering the whole file',
+      () async {
+        // The ask is 4 MiB; the file is bigger, so the Range request is what
+        // bounds the transfer — and the allocation is exactly the ask, which is
+        // the shape the FFI hand-off requires.
+        final body = List<int>.generate(
+          MediaMetadataService.maxFetchBytes + 5000,
+          (i) => i % 253,
+        );
+        serve(body, chunks: 8);
 
-      final head = await MediaMetadataService.fetchHead(url('huge.tif'));
-      expect(head, isNotNull);
-      expect(head!.len, MediaMetadataService.maxFetchBytes);
-      expect(head.transferIfWhole(), isNotNull);
-      final landed = head.ptr.asTypedList(head.len);
-      expect(firstMismatch(landed, body.sublist(0, head.len)), -1);
-      head.free();
-    });
+        final head = await MediaMetadataService.fetchHead(url('huge.tif'));
+        expect(head, isNotNull);
+        expect(head!.len, MediaMetadataService.maxFetchBytes);
+        expect(head.transferIfWhole(), isNotNull);
+        final landed = head.ptr.asTypedList(head.len);
+        expect(firstMismatch(landed, body.sublist(0, head.len)), -1);
+        head.free();
+      },
+    );
 
     test('a refused request is a retryable non-answer', () async {
       serve(const [1, 2, 3], status: 404);

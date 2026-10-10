@@ -13,12 +13,7 @@ void main() {
   group('advanceScrubPreview', () {
     test('a full-width drag moves by the whole duration', () {
       expect(
-        advanceScrubPreview(
-          current: 0,
-          delta: 400,
-          width: 400,
-          duration: _dur,
-        ),
+        advanceScrubPreview(current: 0, delta: 400, width: 400, duration: _dur),
         600_000,
       );
     });
@@ -116,22 +111,28 @@ void main() {
     test('clamps against the duration as it is now', () {
       // The finger is still down when the stream re-reports a shorter duration.
       expect(
-        scrubSeekTarget(previewMs: 590_000, duration: const Duration(minutes: 2)),
+        scrubSeekTarget(
+          previewMs: 590_000,
+          duration: const Duration(minutes: 2),
+        ),
         const Duration(minutes: 2),
       );
-      expect(
-        scrubSeekTarget(previewMs: -5_000, duration: _dur),
-        Duration.zero,
-      );
+      expect(scrubSeekTarget(previewMs: -5_000, duration: _dur), Duration.zero);
     });
 
-    test('nothing is sought without a duration or with a non-finite preview', () {
-      expect(scrubSeekTarget(previewMs: 1_000, duration: Duration.zero), isNull);
-      expect(scrubSeekTarget(previewMs: double.nan, duration: _dur), isNull);
-      expect(
-        scrubSeekTarget(previewMs: double.infinity, duration: _dur),
-        isNull,
-      );
-    });
+    test(
+      'nothing is sought without a duration or with a non-finite preview',
+      () {
+        expect(
+          scrubSeekTarget(previewMs: 1_000, duration: Duration.zero),
+          isNull,
+        );
+        expect(scrubSeekTarget(previewMs: double.nan, duration: _dur), isNull);
+        expect(
+          scrubSeekTarget(previewMs: double.infinity, duration: _dur),
+          isNull,
+        );
+      },
+    );
   });
 }

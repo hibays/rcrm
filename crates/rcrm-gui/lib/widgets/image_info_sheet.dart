@@ -300,7 +300,9 @@ class ImageInfoSheet extends StatelessWidget {
       final mp = (px.width * px.height) / 1000000;
       // Below a tenth of a megapixel "0.0 MP" would be a claim, not a size.
       if (mp >= 0.1) {
-        parts.add(mp >= 10 ? '${mp.round()} MP' : '${mp.toStringAsFixed(1)} MP');
+        parts.add(
+          mp >= 10 ? '${mp.round()} MP' : '${mp.toStringAsFixed(1)} MP',
+        );
       }
     } else if (item.resolution != null) {
       parts.add(item.resolution!);
@@ -337,14 +339,14 @@ class ImageInfoSheet extends StatelessWidget {
     final focal = exif.focalLength;
     if (focal != null && focal > 0) {
       parts.add(
-        focal >= 10
-            ? '${focal.round()} mm'
-            : '${focal.toStringAsFixed(1)} mm',
+        focal >= 10 ? '${focal.round()} mm' : '${focal.toStringAsFixed(1)} mm',
       );
     }
     final f = exif.fNumber;
     if (f != null && f > 0) {
-      parts.add('f/${f == f.roundToDouble() ? f.round() : f.toStringAsFixed(1)}');
+      parts.add(
+        'f/${f == f.roundToDouble() ? f.round() : f.toStringAsFixed(1)}',
+      );
     }
     final t = exif.exposureTime;
     if (t != null && t > 0) {
@@ -432,10 +434,7 @@ class _LocationLine extends StatelessWidget {
             child: Text(
               '${lat.abs().toStringAsFixed(4)}° ${lat >= 0 ? 'N' : 'S'}, '
               '${lon.abs().toStringAsFixed(4)}° ${lon >= 0 ? 'E' : 'W'}',
-              style: const TextStyle(
-                color: RCrmColors.white,
-                fontSize: 13,
-              ),
+              style: const TextStyle(color: RCrmColors.white, fontSize: 13),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -486,11 +485,7 @@ class _MetaSkeleton extends StatelessWidget {
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        bar(0.62, 15),
-        const SizedBox(height: 8),
-        bar(0.38, 15),
-      ],
+      children: [bar(0.62, 15), const SizedBox(height: 8), bar(0.38, 15)],
     );
   }
 }

@@ -453,7 +453,10 @@ class ThumbnailService {
             // the remaining positions would seek a player with nothing loaded.
             // The single `continue` re-checks the gate at the top.
             await player
-                .open(Media(videoUrl, httpHeaders: sharedAuthHeader), play: true)
+                .open(
+                  Media(videoUrl, httpHeaders: sharedAuthHeader),
+                  play: true,
+                )
                 .timeout(const Duration(seconds: 15));
             parked = false;
           }

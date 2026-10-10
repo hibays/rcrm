@@ -13,7 +13,8 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show consolidateHttpClientResponseBytes;
+import 'package:flutter/foundation.dart'
+    show consolidateHttpClientResponseBytes;
 import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/services/bounded_fetch.dart';
@@ -178,40 +179,45 @@ void main() {
     // the fix — `getUrl` → `close` → `consolidateHttpClientResponseBytes`, with
     // no deadline on any of the three — so this also documents what the pre-fix
     // failure looked like: it never errors and never completes.
-    test('the unbounded shape is still pending after the bound fetch gave up',
-        () async {
-      serveAndStall(const [1, 2, 3, 4], 1 << 20);
+    test(
+      'the unbounded shape is still pending after the bound fetch gave up',
+      () async {
+        serveAndStall(const [1, 2, 3, 4], 1 << 20);
 
-      var oldShapeSettled = false;
-      unawaited(
-        () async {
-          final req = await sharedHttpClient.getUrl(Uri.parse(url('old.jpg')));
-          final resp = await req.close();
-          if (resp.statusCode != 200) {
-            throw HttpException('HTTP ${resp.statusCode}');
-          }
-          await consolidateHttpClientResponseBytes(resp);
-        }().then(
-          (_) => oldShapeSettled = true,
-          onError: (Object _) => oldShapeSettled = true,
-        ),
-      );
+        var oldShapeSettled = false;
+        unawaited(
+          () async {
+            final req = await sharedHttpClient.getUrl(
+              Uri.parse(url('old.jpg')),
+            );
+            final resp = await req.close();
+            if (resp.statusCode != 200) {
+              throw HttpException('HTTP ${resp.statusCode}');
+            }
+            await consolidateHttpClientResponseBytes(resp);
+          }().then(
+            (_) => oldShapeSettled = true,
+            onError: (Object _) => oldShapeSettled = true,
+          ),
+        );
 
-      await expectLater(
-        fetchBoundedBytes(
-          url('old.jpg'),
-          stallTimeout: const Duration(milliseconds: 150),
-          totalTimeout: const Duration(seconds: 5),
-        ),
-        throwsA(isA<TimeoutException>()),
-      );
-      expect(
-        oldShapeSettled,
-        isFalse,
-        reason: 'the unbounded fetch is still pending: a stalled body has no '
-            'deadline of its own',
-      );
-    });
+        await expectLater(
+          fetchBoundedBytes(
+            url('old.jpg'),
+            stallTimeout: const Duration(milliseconds: 150),
+            totalTimeout: const Duration(seconds: 5),
+          ),
+          throwsA(isA<TimeoutException>()),
+        );
+        expect(
+          oldShapeSettled,
+          isFalse,
+          reason:
+              'the unbounded fetch is still pending: a stalled body has no '
+              'deadline of its own',
+        );
+      },
+    );
   });
 
   group('the production call site', () {

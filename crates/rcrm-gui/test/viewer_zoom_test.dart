@@ -14,7 +14,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/widgets/viewer_zoom.dart';
 
 const _viewport = Size(400, 600);
-const _landscape = Size(1440, 1000); // wider than the viewport → bars top/bottom
+const _landscape = Size(
+  1440,
+  1000,
+); // wider than the viewport → bars top/bottom
 const _portrait = Size(1000, 2000); // taller → bars left/right
 
 /// The photo's on-screen rect for [m].
@@ -22,12 +25,7 @@ Rect _shown(Matrix4 m, Size content, Size viewport) {
   final fitted = ViewerZoom.fitContain(viewport, content);
   final scale = ViewerZoom.scaleOf(m);
   final t = ViewerZoom.translationOf(m);
-  return Rect.fromLTWH(
-    t.dx,
-    t.dy,
-    fitted.width * scale,
-    fitted.height * scale,
-  );
+  return Rect.fromLTWH(t.dx, t.dy, fitted.width * scale, fitted.height * scale);
 }
 
 /// Asserts the invariant: every axis is either covered edge-to-edge or
@@ -70,7 +68,11 @@ void main() {
       for (final content in [_landscape, _portrait, const Size(400, 600)]) {
         for (var s = 1.0; s <= ViewerZoom.maxScale; s += 0.25) {
           for (var t = -3000.0; t <= 3000.0; t += 137) {
-            for (final translation in [Offset(t, t), Offset(-t, t), Offset(t, -t)]) {
+            for (final translation in [
+              Offset(t, t),
+              Offset(-t, t),
+              Offset(t, -t),
+            ]) {
               final m = ViewerZoom.matrixFor(
                 viewport: _viewport,
                 content: content,
@@ -270,9 +272,7 @@ void main() {
         ),
       );
       await tester.pump();
-      return tester.state<ZoomableViewportState>(
-        find.byType(ZoomableViewport),
-      );
+      return tester.state<ZoomableViewportState>(find.byType(ZoomableViewport));
     }
 
     /// The photo's rect relative to the viewport's own top-left (the test
@@ -360,7 +360,8 @@ void main() {
       addTearDown(c.dispose);
       final state = await pump(tester, controller: c);
       final pointer = TestPointer(1, PointerDeviceKind.mouse);
-      final at = tester.getTopLeft(find.byType(ZoomableViewport)) +
+      final at =
+          tester.getTopLeft(find.byType(ZoomableViewport)) +
           const Offset(80, 60);
       pointer.hover(at);
       await tester.sendEventToBinding(pointer.scroll(const Offset(0, -120)));

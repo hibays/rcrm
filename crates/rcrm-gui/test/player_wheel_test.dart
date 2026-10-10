@@ -191,7 +191,8 @@ void main() {
     expect(
       volume,
       100,
-      reason: 'a panel owns the screen: the wheel changes nothing in the player',
+      reason:
+          'a panel owns the screen: the wheel changes nothing in the player',
     );
   });
 

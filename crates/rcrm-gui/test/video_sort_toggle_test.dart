@@ -61,7 +61,9 @@ ProviderContainer _container() {
     overrides: [uiSettingsProvider.overrideWith(_ListLayoutSettings.new)],
   );
   addTearDown(container.dispose);
-  container.read(videosMapProvider.notifier).addAll(_ascending.map(_video).toList());
+  container
+      .read(videosMapProvider.notifier)
+      .addAll(_ascending.map(_video).toList());
   return container;
 }
 
@@ -172,9 +174,9 @@ void main() {
     // Relaunch: a fresh container plus the startup call app.dart makes.
     final relaunched = ProviderContainer();
     addTearDown(relaunched.dispose);
-    relaunched.read(videosMapProvider.notifier).addAll(
-      _ascending.map(_video).toList(),
-    );
+    relaunched
+        .read(videosMapProvider.notifier)
+        .addAll(_ascending.map(_video).toList());
     await relaunched.read(uiSettingsProvider.notifier).load();
 
     expect(relaunched.read(videoSortAscProvider), isFalse);
@@ -210,7 +212,8 @@ void main() {
       expect(
         await SettingsService().getVideoSort(),
         'name',
-        reason: 're-picking the active field is a direction flip, not a no-op '
+        reason:
+            're-picking the active field is a direction flip, not a no-op '
             'and not a field change',
       );
       expect(
@@ -232,9 +235,9 @@ void main() {
       // Relaunch: both halves came back from persistence, not the session.
       final relaunched = ProviderContainer();
       addTearDown(relaunched.dispose);
-      relaunched.read(videosMapProvider.notifier).addAll(
-        _ascending.map(_video).toList(),
-      );
+      relaunched
+          .read(videosMapProvider.notifier)
+          .addAll(_ascending.map(_video).toList());
       await relaunched.read(uiSettingsProvider.notifier).load();
 
       expect(relaunched.read(videoSortProvider), 'size');

@@ -77,10 +77,7 @@ Future<Uint8List> fetchBoundedBytes(
     // the caller is waiting for this error, not for a body it will discard.
     final drainBudget = remaining() < stallTimeout ? remaining() : stallTimeout;
     await response.drain<void>().timeout(drainBudget).catchError((_) {});
-    throw HttpException(
-      'HTTP ${response.statusCode} fetching $url',
-      uri: uri,
-    );
+    throw HttpException('HTTP ${response.statusCode} fetching $url', uri: uri);
   }
   final builder = BytesBuilder(copy: false);
   await for (final chunk in response.timeout(

@@ -45,8 +45,14 @@ void main() {
     test('the copy-free fetch is skipped when nothing can decode it', () async {
       // No decoder → no native buffer is even allocated, and the caller falls
       // back to the engine path without a request being made.
-      expect(await MobileImageDecoder.fetchForDecode('http://h/a.heic'), isNull);
-      expect(await MobileImageDecoder.fetchForDecode('http://h/a.avif'), isNull);
+      expect(
+        await MobileImageDecoder.fetchForDecode('http://h/a.heic'),
+        isNull,
+      );
+      expect(
+        await MobileImageDecoder.fetchForDecode('http://h/a.avif'),
+        isNull,
+      );
     });
 
     test('kind hints depend on the extension alone', () {

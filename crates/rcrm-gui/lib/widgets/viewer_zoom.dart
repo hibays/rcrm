@@ -120,7 +120,10 @@ abstract final class ViewerZoom {
 
   /// Scale that renders one image pixel per logical pixel (the "1:1" chip).
   /// 1.0 when the picture is already at or below screen resolution.
-  static double actualSizeScale({required Size viewport, required Size content}) {
+  static double actualSizeScale({
+    required Size viewport,
+    required Size content,
+  }) {
     final fitted = fitContain(viewport, content);
     if (fitted.width <= 0) return 1;
     return (content.width / fitted.width).clamp(1.0, maxScale);
@@ -163,6 +166,25 @@ bool shouldDismissPull({
   if (distance >= dismissThreshold(viewportHeight)) return true;
   return velocity > 700;
 }
+
+/// Whether a downward pull-to-dismiss may engage at all.
+///
+/// Two states own the drag instead, for the same reason a sideways page drag
+/// does — one gesture, one owner:
+///
+/// * a zoomed picture pans; the way out of a zoom is zooming out, never
+///   yanking the photo off the screen (the edge check this replaced allowed
+///   exactly that at the top edge, which is the drag people make when they
+///   mean "pan to the top of the picture");
+/// * a live photo that is playing owns the screen until it ends, because the
+///   long-press that started it is still holding the finger down. Letting the
+///   pull run under it would move (and on release dismiss) the viewer out from
+///   under a playing clip.
+///
+/// Losing the pull never takes the pager with it: the caller's axis lock still
+/// hands a sideways gesture to the pager, exactly as before.
+bool pullAllowed({required bool zoomed, required bool livePlaying}) =>
+    !zoomed && !livePlaying;
 
 // ── The viewport widget ─────────────────────────────────────────────
 
@@ -384,7 +406,10 @@ class ZoomableViewportState extends State<ZoomableViewport> {
     if (event is! PointerScrollEvent) return;
     if (event.scrollDelta.dy == 0) return;
     final factor = event.scrollDelta.dy < 0 ? 1.15 : 1 / 1.15;
-    zoomAt(event.localPosition, (_scale * factor).clamp(1.0, ViewerZoom.maxScale));
+    zoomAt(
+      event.localPosition,
+      (_scale * factor).clamp(1.0, ViewerZoom.maxScale),
+    );
   }
 
   @override

@@ -19,9 +19,7 @@ Widget _host(Widget child) => MaterialApp(
   home: Scaffold(
     backgroundColor: Colors.black,
     body: Stack(
-      children: [
-        Positioned(left: 0, right: 0, bottom: 0, child: child),
-      ],
+      children: [Positioned(left: 0, right: 0, bottom: 0, child: child)],
     ),
   ),
 );
@@ -70,9 +68,10 @@ Slider _sliderAt(WidgetTester tester, double value) => tester
     .widgetList<Slider>(find.byType(Slider))
     .firstWhere(
       (s) => (s.value - value).abs() < 0.05,
-      orElse: () =>
-          throw StateError('no slider near $value among '
-              '${tester.widgetList<Slider>(find.byType(Slider)).length}'),
+      orElse: () => throw StateError(
+        'no slider near $value among '
+        '${tester.widgetList<Slider>(find.byType(Slider)).length}',
+      ),
     );
 
 /// The seek slider in its resting state: `position / duration`.
@@ -97,7 +96,11 @@ void main() {
     // 2_525_000 / 2 = 1_262_500 ms = 21:02.5 → rounds to 21:03. The old code
     // printed this value MULTIPLIED by the duration again (7.9e12 ms).
     expect(find.text('21:03'), findsOneWidget);
-    expect(find.textContaining('42:05'), findsWidgets, reason: 'duration label');
+    expect(
+      find.textContaining('42:05'),
+      findsWidgets,
+      reason: 'duration label',
+    );
   });
 
   testWidgets('dragging to either end shows the ends, never an out-of-range '
@@ -127,7 +130,11 @@ void main() {
     // The stream re-reports a much shorter duration while the finger is still
     // down: the stale scrub value must clamp to the new end, not print a value
     // past it.
-    await _pumpBar(tester, duration: const Duration(minutes: 10), onSeek: (_) {});
+    await _pumpBar(
+      tester,
+      duration: const Duration(minutes: 10),
+      onSeek: (_) {},
+    );
     await tester.pump();
     expect(find.text('10:00'), findsOneWidget);
   });
@@ -287,7 +294,9 @@ void main() {
     expect(volume, [40]);
   });
 
-  testWidgets('an inert volume slider announces no interaction', (tester) async {
+  testWidgets('an inert volume slider announces no interaction', (
+    tester,
+  ) async {
     // No `onVolumeChanged` means no way to change the volume: the slider is
     // disabled, so it must not claim the user is interacting with it.
     final events = <bool>[];

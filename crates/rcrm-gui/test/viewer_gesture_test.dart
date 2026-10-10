@@ -15,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/config/theme.dart';
 import 'package:rcrm_gui/models/media_item.dart';
 import 'package:rcrm_gui/screens/image_viewer_screen.dart';
+import 'package:rcrm_gui/services/item_cache_limit.dart';
 import 'package:rcrm_gui/widgets/viewer_zoom.dart';
 
 MediaItem _image(String name) => MediaItem(
@@ -29,7 +30,8 @@ MediaItem _image(String name) => MediaItem(
 
 final _items = [_image('a.jpg'), _image('b.jpg'), _image('c.jpg')];
 
-Future<void> _openViewer(WidgetTester tester) async {
+Future<void> _openViewer(WidgetTester tester, {List<MediaItem>? items}) async {
+  final list = items ?? _items;
   await tester.binding.setSurfaceSize(const Size(800, 600));
   addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.pumpWidget(
@@ -41,7 +43,7 @@ Future<void> _openViewer(WidgetTester tester) async {
             child: ElevatedButton(
               onPressed: () => Navigator.of(context).push(
                 MaterialPageRoute<void>(
-                  builder: (_) => ImageViewerScreen(items: _items),
+                  builder: (_) => ImageViewerScreen(items: list),
                 ),
               ),
               child: const Text('open'),
@@ -53,7 +55,7 @@ Future<void> _openViewer(WidgetTester tester) async {
   );
   await tester.tap(find.text('open'));
   await tester.pumpAndSettle();
-  expect(find.text('1 / 3'), findsOneWidget);
+  expect(find.text('1 / ${list.length}'), findsOneWidget);
 }
 
 /// Vertical travel the page really paints, read off the live `Transform`s: the
@@ -82,6 +84,49 @@ double paintedDy(WidgetTester tester) {
 /// A switch has to land ON a page (not mid-slide) and move exactly one page.
 double settledPage(WidgetTester tester) =>
     tester.widget<PageView>(find.byType(PageView)).controller!.page!;
+
+/// Records every `SystemChrome.setEnabledSystemUIMode` the app really sends,
+/// in order, as the engine's own mode strings (the channel payload is the
+/// enum's `toString()`, e.g. `SystemUiMode.immersiveSticky`), so the test can
+/// assert what the OS was actually told to do — not what a helper was asked.
+List<String> recordSystemUiModes(WidgetTester tester) {
+  final calls = <String>[];
+  tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+    SystemChannels.platform,
+    (call) async {
+      if (call.method == 'SystemChrome.setEnabledSystemUIMode') {
+        calls.add(call.arguments as String);
+      }
+      return null;
+    },
+  );
+  addTearDown(
+    () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      null,
+    ),
+  );
+  return calls;
+}
+
+/// The chrome fade a page badge is wrapped in (`_chromeChip`). A badge has
+/// exactly one `AnimatedOpacity` ancestor — the chip wrapper — because the
+/// screen's own `_chrome` only wraps the top bar, the strip and the arrows.
+double chipOpacity(WidgetTester tester, Finder chip) => tester
+    .widget<AnimatedOpacity>(
+      find.ancestor(of: chip, matching: find.byType(AnimatedOpacity)),
+    )
+    .opacity;
+
+/// Drives one lifecycle transition through the real `flutter/lifecycle`
+/// channel, which is what the engine sends on resume.
+Future<void> setLifecycle(WidgetTester tester, AppLifecycleState state) async {
+  await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+    'flutter/lifecycle',
+    const StringCodec().encodeMessage(state.toString()),
+    (_) {},
+  );
+}
 
 void main() {
   testWidgets('a pull that drifts sideways never turns the page', (
@@ -187,7 +232,9 @@ void main() {
     );
   });
 
-  testWidgets('a diagonal drag that leads sideways never pulls', (tester) async {
+  testWidgets('a diagonal drag that leads sideways never pulls', (
+    tester,
+  ) async {
     await _openViewer(tester);
     final center = tester.getCenter(find.byType(ImageViewerScreen));
     expect(paintedDy(tester), 0, reason: 'the photo starts at rest');
@@ -215,7 +262,8 @@ void main() {
     expect(
       find.byType(ImageViewerScreen),
       findsOneWidget,
-      reason: 'the page switch owns the gesture, so letting go must not dismiss',
+      reason:
+          'the page switch owns the gesture, so letting go must not dismiss',
     );
   });
 
@@ -455,15 +503,238 @@ void main() {
     expect(
       find.byType(ImageViewerScreen),
       findsOneWidget,
-      reason: 'a zoomed picture must survive a downward drag anywhere, '
+      reason:
+          'a zoomed picture must survive a downward drag anywhere, '
           'not only at its top edge',
     );
     expect(
       paintedDy(tester),
       greaterThan(before + 5),
-      reason: 'the drag must PAN the picture; being ignored is the old '
+      reason:
+          'the drag must PAN the picture; being ignored is the old '
           'behaviour this test exists to rule out',
     );
     expect(find.text('1 / 3'), findsOneWidget);
+  });
+
+  // ── The pull while a live photo plays ───────────────────────────
+  //
+  // Live playback cannot be started in this harness: `_playLive` needs a
+  // live-photo URL (HTTP range requests) and a real media_kit `Player` (native
+  // libmpv), and neither exists under `flutter test`. What is pinned instead is
+  // the rule the page's one pull gate consults — the same gate that stops the
+  // pull when a sideways page drag owns the gesture, which is the exclusivity
+  // the report asks for. That gate returns before `_dragEngaged` is set, so a
+  // blocked pull contributes no offset, no scale/fade, and no dismissal on
+  // release (the behaviour the pull tests above pin for the pager's case).
+  test('a playing live photo blocks the pull, exactly like a zoom does', () {
+    expect(pullAllowed(zoomed: false, livePlaying: true), isFalse);
+    expect(pullAllowed(zoomed: true, livePlaying: false), isFalse);
+    expect(pullAllowed(zoomed: false, livePlaying: false), isTrue);
+  });
+
+  // ── Page badges belong to the chrome ────────────────────────────
+  testWidgets('a page badge hides with the chrome and never travels with the '
+      'pull', (tester) async {
+    // A .gif is always animated, so its badge — the bottom-right chip — exists
+    // with no decode and no network round trip, in the same chrome layer the
+    // live photo's bottom-left badge sits in.
+    await _openViewer(tester, items: [_image('a.gif')]);
+    final badge = find.byIcon(Icons.motion_photos_on);
+    expect(badge, findsOneWidget);
+    expect(chipOpacity(tester, badge), 1);
+
+    final atRest = tester.getTopLeft(badge);
+    final center = tester.getCenter(find.byType(ImageViewerScreen));
+
+    // 80px of pull: enough to move the photo, under the 93.6px dismissal
+    // threshold at this surface height, so the viewer survives to be read.
+    final gesture = await tester.startGesture(center);
+    await gesture.moveBy(const Offset(0, 20));
+    await tester.pump();
+    for (var i = 0; i < 12; i++) {
+      await gesture.moveBy(const Offset(0, 5));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+
+    expect(
+      paintedDy(tester),
+      greaterThan(0),
+      reason: 'the pull really did move the photo',
+    );
+    expect(
+      tester.getTopLeft(badge),
+      atRest,
+      reason:
+          'a badge inside the pulled/scaled layer comes down with the '
+          'finger',
+    );
+    expect(
+      chipOpacity(tester, badge),
+      0,
+      reason: 'the pull hid the chrome, so the badge goes with it',
+    );
+
+    await gesture.up();
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('the badge is gone while the chrome is hidden and back when it '
+      'is shown', (tester) async {
+    await _openViewer(tester, items: [_image('a.gif')]);
+    final badge = find.byIcon(Icons.motion_photos_on);
+    expect(chipOpacity(tester, badge), 1);
+
+    final center = tester.getCenter(find.byType(ImageViewerScreen));
+    await tester.tapAt(center);
+    await tester.pump(const Duration(milliseconds: 320));
+    expect(
+      chipOpacity(tester, badge),
+      0,
+      reason: 'hiding the controls has to take the badge with them',
+    );
+
+    await tester.tapAt(center);
+    await tester.pump(const Duration(milliseconds: 320));
+    expect(chipOpacity(tester, badge), 1);
+  });
+
+  // ── Status bar follows the chrome (mobile) ──────────────────────
+  //
+  // Android keeps showing the status bar over a full-screen photo unless the
+  // viewer tells the OS to go immersive, so the mode the app sends has to
+  // follow the one chrome flag (`_ImageViewerScreenState._showUI`). These
+  // tests read the real platform channel, which is the only place that fact
+  // is observable. The tests run on the desktop VM, where the branch is
+  // unreachable, so `debugViewerMobile` is turned on for this group only —
+  // every other test in this file keeps the real `isMobile` and sends no
+  // platform call at all (which is also why they would fail if the viewer
+  // went immersive unconditionally).
+  group('status bar follows the chrome (mobile)', () {
+    setUp(() => debugViewerMobile = true);
+    tearDown(() => debugViewerMobile = isMobile);
+
+    testWidgets('hiding the chrome goes immersive, showing it restores '
+        'edge-to-edge', (tester) async {
+      final modes = recordSystemUiModes(tester);
+      await _openViewer(tester);
+      final center = tester.getCenter(find.byType(ImageViewerScreen));
+
+      await tester.tapAt(center);
+      await tester.pump(const Duration(milliseconds: 320));
+      expect(
+        modes.last,
+        SystemUiMode.immersiveSticky.toString(),
+        reason: 'the chrome is hidden, so the status bar must go with it',
+      );
+
+      await tester.tapAt(const Offset(60, 300));
+      await tester.pump(const Duration(milliseconds: 320));
+      expect(
+        modes.last,
+        SystemUiMode.edgeToEdge.toString(),
+        reason: 'the chrome is back, so the status bar must be back too',
+      );
+    });
+
+    testWidgets('leaving the viewer after a pull-to-dismiss restores the '
+        'normal mode (no immersion leak)', (tester) async {
+      final modes = recordSystemUiModes(tester);
+      await _openViewer(tester);
+      final center = tester.getCenter(find.byType(ImageViewerScreen));
+
+      // 6 × 20px = 120px: the deliberate pull that dismisses (see the tests
+      // above). Engaging the pull is what hides the chrome, so this is also
+      // the path that goes immersive on the way out.
+      final gesture = await tester.startGesture(center);
+      for (var i = 0; i < 6; i++) {
+        await gesture.moveBy(const Offset(0, 20));
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      await gesture.up();
+      await tester.pumpAndSettle();
+      expect(find.byType(ImageViewerScreen), findsNothing);
+
+      expect(
+        modes.last,
+        SystemUiMode.edgeToEdge.toString(),
+        reason: 'the route is gone, so the app must be back in its normal mode',
+      );
+      // The hide happened before the restore — otherwise this test would pass
+      // on a viewer that never went immersive at all.
+      expect(modes, contains(SystemUiMode.immersiveSticky.toString()));
+    });
+
+    testWidgets('the bar state on the first frame matches the chrome (shown), '
+        'so entering does not flash-hide it', (tester) async {
+      final modes = recordSystemUiModes(tester);
+      await _openViewer(tester);
+
+      // The chrome starts visible, so the mode the viewer sends on entry is
+      // the app's normal one — not immersive, and not nothing.
+      expect(modes, [
+        SystemUiMode.edgeToEdge.toString(),
+      ], reason: 'entering the viewer must not hide the status bar');
+    });
+
+    testWidgets('leaving by the back button/gesture (the PopScope path) also '
+        'restores the normal mode', (tester) async {
+      final modes = recordSystemUiModes(tester);
+      await _openViewer(tester);
+      final center = tester.getCenter(find.byType(ImageViewerScreen));
+
+      // Hide the chrome first, so this exit really has an immersion to undo.
+      await tester.tapAt(center);
+      await tester.pump(const Duration(milliseconds: 320));
+      expect(modes.last, SystemUiMode.immersiveSticky.toString());
+
+      // The system back button/gesture pops the route directly, without going
+      // through the viewer's own `_close()`.
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.byType(ImageViewerScreen), findsNothing);
+
+      expect(
+        modes.last,
+        SystemUiMode.edgeToEdge.toString(),
+        reason: 'a back exit must not leave the app immersive either',
+      );
+    });
+
+    testWidgets('regaining focus re-asserts the hidden chrome — as a real '
+        'transition, because a repeated mode is swallowed', (tester) async {
+      final modes = recordSystemUiModes(tester);
+      await _openViewer(tester);
+      final center = tester.getCenter(find.byType(ImageViewerScreen));
+
+      await tester.tapAt(center);
+      await tester.pump(const Duration(milliseconds: 320));
+      expect(modes.last, SystemUiMode.immersiveSticky.toString());
+      final beforeResume = modes.length;
+
+      // Android shows the bars again by itself when the window loses and
+      // regains focus, and the request that hid them is one-shot: the engine
+      // routes every non-edge-to-edge mode through the deprecated
+      // `View.setSystemUiVisibility`, which ignores an unchanged value — which
+      // is also why the engine's own re-apply on `onPostResume` cannot put the
+      // bars back down. So the resume has to re-establish the state, and as a
+      // flag *change*.
+      await setLifecycle(tester, AppLifecycleState.inactive);
+      await tester.pump();
+      await setLifecycle(tester, AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+
+      expect(
+        modes.sublist(beforeResume),
+        [
+          SystemUiMode.edgeToEdge.toString(),
+          SystemUiMode.immersiveSticky.toString(),
+        ],
+        reason:
+            'the hidden chrome must be re-established on resume, and as a '
+            'flag change: a repeat of the same mode never reaches the window',
+      );
+      expect(find.byType(ImageViewerScreen), findsOneWidget);
+    });
   });
 }
