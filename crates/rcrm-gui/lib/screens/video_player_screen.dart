@@ -8,7 +8,6 @@ import 'dart:async';
 import 'dart:io' show Platform;
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:flutter/gestures.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -29,14 +28,29 @@ import '../widgets/finger_preview_listener.dart';
 import '../widgets/player_settings_panel.dart';
 import '../widgets/episode_picker_panel.dart';
 import '../utils/format.dart';
+import '../utils/pan_lock.dart';
+import '../utils/player_panels.dart';
+import '../utils/poster_quiet_route.dart';
+import '../utils/seek_preview.dart';
+import '../utils/wheel_guard.dart';
 
 class VideoPlayerScreen extends ConsumerStatefulWidget {
   final MediaItem item;
   final bool startFullscreen;
+
+  /// A playback `Player` created for this screen before it mounted, by the
+  /// route that pushed it (`PosterQuietRoute`), so `mpv_create`/`mpv_initialize`
+  /// and the configuration writes do not run on the UI isolate during the route
+  /// transition. This screen adopts it in `initState` and owns it from then on;
+  /// null (no warm player, or creating one failed) means the screen creates its
+  /// own exactly as it always did.
+  final Player? warmPlayer;
+
   const VideoPlayerScreen({
     super.key,
     required this.item,
     this.startFullscreen = false,
+    this.warmPlayer,
   });
   @override
   ConsumerState<VideoPlayerScreen> createState() => _State();
@@ -217,7 +231,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       // sets _navigating): don't spawn a stray Player on the widget
       // being replaced.
       if (!mounted || _disposed || _navigating) return;
-      p = PlayerFactory.playback();
+      // The route already created one (see `PosterQuietRoute`), so the
+      // expensive native init is behind us; otherwise create it here as
+      // before. Either way exactly one player, owned by this screen.
+      p = widget.warmPlayer ?? PlayerFactory.playback();
       vc = VideoController(p!);
       p!.open(Media(widget.item.url, httpHeaders: sharedAuthHeader));
       p!.play();
@@ -398,16 +415,38 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _resetIdle();
   }
 
+  /// The panels this screen can have open, in the shape the shared rule in
+  /// `utils/player_panels.dart` wants.
+  PlayerPanels get _panels => PlayerPanels(
+    settings: _showSettings,
+    episodes: _showEpisodes,
+    speedMenu: _speedMenuOpen,
+  );
+
   void _resetIdle() {
     _hideTimer?.cancel();
     // An open sheet — or the speed menu, which is a panel too — owns the
     // screen: fading the bar (and the gear that closes the panel) out from
-    // under the user is never what they asked for.
-    if (_showSettings || _showEpisodes || _speedMenuOpen) return;
+    // under the user is never what they asked for. Same rule as the wheel's.
+    if (_panels.anyOpen) return;
     _fadeMs = const Duration(milliseconds: 200);
     _hideTimer = Timer(const Duration(seconds: _idleSecs), () {
       if (mounted) setState(() => _showControls = false);
     });
+  }
+
+  /// A drag on the bar's seek or volume slider is an interaction in progress,
+  /// exactly like an open panel: while it lasts the bar must not fade out (the
+  /// slider would leave with it), and when it ends the ordinary idle countdown
+  /// resumes.
+  void _onScrubActive(bool active) {
+    if (active) {
+      _hideTimer?.cancel();
+      return;
+    }
+    // The drag can also end while a panel owns the screen: `_resetIdle` is the
+    // one place that decides whether the countdown may be re-armed.
+    _resetIdle();
   }
 
   void _onVideoExit(_) {
@@ -455,10 +494,15 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     if (!_isMobile || p == null) return;
     final dx = d.localPosition.dx - _gStart.dx;
     final dy = d.localPosition.dy - _gStart.dy;
-    // Lock direction once movement is significant.
+    // Lock direction once movement is significant. The rule lives in
+    // `utils/pan_lock.dart`, where it is unit-tested: a 12px slop on
+    // `max(|dx|, |dy|)` alone committed a 30px/29px diagonal to a seek, which
+    // hides the whole control bar (deliberate for a real scrub, wrong for a
+    // diagonal) — the dominance ratio is what the near-diagonal band needed.
     if (_gMode == 0) {
-      if (dx.abs() < 12 && dy.abs() < 12) return;
-      if (dx.abs() > dy.abs()) {
+      final mode = decidePanMode(Offset(dx, dy));
+      if (mode == 0) return;
+      if (mode == 1) {
         _gMode = 1; // seek
         _seekPreviewMs = p!.state.position.inMilliseconds.toDouble();
         _hideTimer?.cancel();
@@ -468,17 +512,26 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           _showControls = false;
         });
       } else {
+        // Brightness or volume — the one part of the decision the function
+        // cannot make, because it does not know where the drag started.
         _gMode = (_gStart.dx < size.width / 2)
             ? 2
             : 3; // left=brightness, right=volume
       }
     }
     if (_gMode == 1) {
-      final dur = p!.state.duration.inMilliseconds.toDouble();
-      if (dur > 0) {
-        // full-width drag ≈ whole duration
-        _seekPreviewMs = (_seekPreviewMs + (d.delta.dx / size.width) * dur)
-            .clamp(0, dur);
+      // The arithmetic lives in `utils/seek_preview.dart`, where it is unit-tested:
+      // a zero-width gesture area (before the first layout) used to make the drag
+      // factor NaN, which `clamp` cannot catch and which threw in `Duration.round()`
+      // when the finger lifted.
+      final next = advanceScrubPreview(
+        current: _seekPreviewMs,
+        delta: d.delta.dx,
+        width: size.width,
+        duration: p!.state.duration,
+      );
+      if (next != _seekPreviewMs) {
+        _seekPreviewMs = next;
         setState(() {});
       }
     } else if (_gMode == 2) {
@@ -508,10 +561,44 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     if (!_isMobile) return;
     final mode = _gMode;
     if (mode == 1 && p != null) {
-      p!.seek(Duration(milliseconds: _seekPreviewMs.round()));
+      // Clamped against the duration as it is NOW and refused when the preview
+      // stopped being a number — see `utils/seek_preview.dart` and its tests.
+      final target = scrubSeekTarget(
+        previewMs: _seekPreviewMs,
+        duration: p!.state.duration,
+      );
+      if (target != null) p!.seek(target);
     }
     _gMode = 0;
     if (mode == 3) _queueVolSave();
+    setState(() {
+      _seeking = false;
+      _gOverlayType = null;
+    });
+    _resetIdle();
+  }
+
+  /// A cancelled drag never reaches [_onPanEnd], and without this the UI stayed in
+  /// the gesture's state: `_seeking` true means the full controls stay hidden and
+  /// the minimal seek bar stays on screen, forever, because nothing else resets it.
+  /// A system gesture or losing the arena is enough to cancel a drag, so this is
+  /// reachable in normal use.
+  ///
+  /// A second finger is NOT one of them: `MultitouchDragStrategy.latestPointer`
+  /// hands the drag over to the newcomer rather than cancelling it, so this
+  /// callback never runs for it — and because `_gStart` still holds the FIRST
+  /// finger's origin, the mode gets picked from dx/dy that mix the two pointers'
+  /// positions. That is left as it is on purpose: a second finger can then choose
+  /// a different mode, but it cannot leave the UI stuck (this callback and
+  /// [_onPanEnd] both clear the state), and re-anchoring the drag mid-gesture
+  /// would let a gesture switch modes under the user.
+  ///
+  /// Nothing is committed here — the user did not finish the gesture — but the
+  /// bookkeeping is the same as the end of a drag, minus the seek and the deferred
+  /// volume write.
+  void _onPanCancel() {
+    if (!_isMobile) return;
+    _gMode = 0;
     setState(() {
       _seeking = false;
       _gOverlayType = null;
@@ -619,9 +706,17 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     if (mounted) setState(() {});
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(
-        builder: (_) =>
-            VideoPlayerScreen(item: item, startFullscreen: fullscreen),
+      // Same route class as the other three push sites: it suspends the poster
+      // pool synchronously at push time and creates the incoming screen's
+      // playback player there, instead of in that screen's own post-frame
+      // callback. Its install/dispose depth is what keeps this replacement from
+      // lifting the suspension between the two screens.
+      PosterQuietRoute(
+        build: (warm) => VideoPlayerScreen(
+          item: item,
+          startFullscreen: fullscreen,
+          warmPlayer: warm,
+        ),
       ),
     );
   }
@@ -654,7 +749,17 @@ class _State extends ConsumerState<VideoPlayerScreen> {
             _setVolume(_volume.value + delta * 100);
           },
           onEscape: () {
-            // Overlays close first; only a bare ESC exits fullscreen.
+            // The speed menu owns ESC while it is open: it is a popup ROUTE, so
+            // the same key press reaches its `DismissIntent` through the focus
+            // tree and the menu dismisses itself. Without this early return one
+            // press did both things at once — close the menu AND (fullscreen)
+            // leave fullscreen — because this global handler
+            // (`widgets/media_player_keys.dart`) sees every press regardless.
+            if (_speedMenuOpen) return;
+            // The episode sheet and the settings panel are plain widgets in this
+            // screen's tree, so neither has an ESC handler of its own: this chain
+            // closes the first one that is open, and only a press that closes
+            // nothing at all — a bare ESC — reaches fullscreen.
             if (_showEpisodes) {
               _toggleEpisodes();
             } else if (_showSettings) {
@@ -717,96 +822,100 @@ class _State extends ConsumerState<VideoPlayerScreen> {
               onEnter: (_) => _show(),
               child: Listener(
                 onPointerDown: (_) => _shortcutFocus.requestFocus(),
-                onPointerSignal: (event) {
-                  if (event is PointerScrollEvent) {
-                    final dy = event.scrollDelta.dy;
-                    if (dy.abs() > 0) {
-                      final step = dy > 0 ? -5.0 : 5.0;
-                      final nv = (_volume.value + step).clamp(0.0, 100.0);
-                      if (nv != _volume.value) {
-                        _setVolume(nv);
-                        _resetIdle();
-                      }
-                      _gOverlayTimer?.cancel();
-                      if (mounted) {
-                        setState(() {
-                          _gOverlayType = _OverlayType.volume;
-                          _gOverlayValue = _volume.value.round();
-                        });
-                      }
-                      _gOverlayTimer = Timer(const Duration(seconds: 1), () {
-                        if (mounted) setState(() => _gOverlayType = null);
+                child: PlayerWheelLayer(
+                  // Wheel over the video: desktop's fastest volume path. It
+                  // goes through `WheelGuard` (see `utils/wheel_guard.dart`)
+                  // instead of acting here, so Flutter's `PointerSignalResolver`
+                  // decides the one handler for a notch — whoever is hit first
+                  // wins. Acting directly made this listen THROUGH the playlist:
+                  // a wheel over the open episode sheet scrolled the list AND
+                  // stepped the volume in the same notch.
+                  volume: () => _volume.value,
+                  nextVolume: (current, delta) =>
+                      (current + (delta > 0 ? -5.0 : 5.0)).clamp(0.0, 100.0),
+                  setVolume: (v) {
+                    _setVolume(v);
+                    _resetIdle();
+                    _gOverlayTimer?.cancel();
+                    if (mounted) {
+                      setState(() {
+                        _gOverlayType = _OverlayType.volume;
+                        _gOverlayValue = _volume.value.round();
                       });
                     }
-                  }
-                },
-                child: Stack(
-                  children: [
-                    _wrapPointer(
-                      Center(
-                        child: vc != null
-                            ? Video(
-                                key: ValueKey('video_fs_$fullscreen'),
-                                controller: vc!,
-                                fit: BoxFit.contain,
-                                controls: NoVideoControls,
-                              )
-                            : const SizedBox(),
+                    _gOverlayTimer = Timer(const Duration(seconds: 1), () {
+                      if (mounted) setState(() => _gOverlayType = null);
+                    });
+                  },
+                  gate: () => _panels.anyOpen,
+                  child: Stack(
+                    children: [
+                      _wrapPointer(
+                        Center(
+                          child: vc != null
+                              ? Video(
+                                  key: ValueKey('video_fs_$fullscreen'),
+                                  controller: vc!,
+                                  fit: BoxFit.contain,
+                                  controls: NoVideoControls,
+                                )
+                              : const SizedBox(),
+                        ),
                       ),
-                    ),
-                    // Top chrome on every platform: back on the left, title,
-                    // settings on the right. It used to exist on mobile only —
-                    // which is why desktop fullscreen had no way back.
-                    Positioned(
-                      top: 0,
-                      left: 0,
-                      right: 0,
-                      child: IgnorePointer(
-                        ignoring: !_showControls,
-                        child: AnimatedOpacity(
-                          opacity: _showControls ? 1.0 : 0.0,
-                          duration: _fadeMs,
-                          child: PlayerTopBar(
-                            title: widget.item.name,
-                            onBack: _handleBack,
-                            onSettings: _toggleSettings,
-                            safe: safe,
+                      // Top chrome on every platform: back on the left, title,
+                      // settings on the right. It used to exist on mobile only —
+                      // which is why desktop fullscreen had no way back.
+                      Positioned(
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        child: IgnorePointer(
+                          ignoring: !_showControls,
+                          child: AnimatedOpacity(
+                            opacity: _showControls ? 1.0 : 0.0,
+                            duration: _fadeMs,
+                            child: PlayerTopBar(
+                              title: widget.item.name,
+                              onBack: _handleBack,
+                              onSettings: _toggleSettings,
+                              safe: safe,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    Positioned(
-                      bottom: 0,
-                      left: 0,
-                      right: 0,
-                      child: IgnorePointer(
-                        ignoring: !_showControls,
-                        child: AnimatedOpacity(
-                          opacity: _showControls ? 1.0 : 0.0,
-                          duration: _fadeMs,
-                          child: _bar(safe: EdgeInsets.only(bottom: view.bottom)),
+                      Positioned(
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        child: IgnorePointer(
+                          ignoring: !_showControls,
+                          child: AnimatedOpacity(
+                            opacity: _showControls ? 1.0 : 0.0,
+                            duration: _fadeMs,
+                            child: _bar(safe: EdgeInsets.only(bottom: view.bottom)),
+                          ),
                         ),
                       ),
+                      if (_seeking) _seekBar(),
+                      _speedBadge(top: safe.top + 52),
+                      _gestureChip(),
+                      if (_showSettings) _settingsOverlay(),
+                      if (_showEpisodes)
+                        EpisodePickerPanel(
+                          items: related,
+                          fingerPreview: _fp,
+                          onPick: (item) {
+                            setState(() => _showEpisodes = false);
+                            _go(item);
+                          },
+                          onDismiss: () {
+                            setState(() => _showEpisodes = false);
+                            _poke();
+                          },
+                        ),
+                      ],
                     ),
-                    if (_seeking) _seekBar(),
-                    _speedBadge(top: safe.top + 52),
-                    _gestureChip(),
-                    if (_showSettings) _settingsOverlay(),
-                    if (_showEpisodes)
-                      EpisodePickerPanel(
-                        items: related,
-                        fingerPreview: _fp,
-                        onPick: (item) {
-                          setState(() => _showEpisodes = false);
-                          _go(item);
-                        },
-                        onDismiss: () {
-                          setState(() => _showEpisodes = false);
-                          _poke();
-                        },
-                      ),
-                  ],
-                ),
+                  ),
               ),
             ),
           ),
@@ -911,6 +1020,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
             onPanStart: _onPanStart,
             onPanUpdate: (d) => _onPanUpdate(d, sz),
             onPanEnd: _onPanEnd,
+            onPanCancel: _onPanCancel,
             onLongPressStart: (_) {
               _savedRate = p?.state.rate ?? 1.0;
               p?.setRate(2.0);
@@ -1061,6 +1171,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
               safe: safe,
               onPlayPause: _togglePlayPause,
               onSeek: (d) => p?.seek(d),
+              onScrubActive: _onScrubActive,
               onVolumeChanged: (v) => _setVolume(v, persist: false),
               onVolumeChangeEnd: _queueVolSave,
               onToggleMute: _toggleMute,
@@ -1213,17 +1324,32 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   }
 
   void _onPipSeekUpdate(DragUpdateDetails d) {
-    final dur = (p?.state.duration.inMilliseconds ?? 0).toDouble();
-    if (dur > 0) {
-      _pipSeekMs = (_pipSeekMs + (d.delta.dx / _pipW) * dur).clamp(0, dur);
-      setState(() {});
-    }
+    // Same tested arithmetic as the full-screen gesture: a PiP width of zero (or a
+    // duration that is not known yet) must not turn the preview into a NaN, which
+    // `Duration.round()` would throw on when the finger lifts.
+    final next = advanceScrubPreview(
+      current: _pipSeekMs,
+      delta: d.delta.dx,
+      width: _pipW,
+      duration: p?.state.duration ?? Duration.zero,
+    );
+    if (next != _pipSeekMs) setState(() => _pipSeekMs = next);
   }
 
   void _onPipSeekEnd(DragEndDetails d) {
-    if (p != null) {
-      p!.seek(Duration(milliseconds: _pipSeekMs.round()));
-    }
+    final target = scrubSeekTarget(
+      previewMs: _pipSeekMs,
+      duration: p?.state.duration ?? Duration.zero,
+    );
+    if (target != null) p?.seek(target);
+    setState(() => _pipSeeking = false);
+  }
+
+  /// A cancelled drag never reaches [_onPipSeekEnd], so the seek overlay would stay
+  /// on the PiP forever (a second finger or a system gesture is enough). Abort
+  /// without seeking, exactly like the full-screen gesture's [_onPanCancel].
+  void _onPipSeekCancel() {
+    if (!_pipSeeking) return;
     setState(() => _pipSeeking = false);
   }
 
@@ -1256,6 +1382,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         onHorizontalDragStart: isSmall ? null : _onPipSeekStart,
         onHorizontalDragUpdate: isSmall ? null : _onPipSeekUpdate,
         onHorizontalDragEnd: isSmall ? null : _onPipSeekEnd,
+        onHorizontalDragCancel: isSmall ? null : _onPipSeekCancel,
+        // The pan drag only ever moves the overlay (clamped per frame in
+        // `_onPipPanUpdate`) and its end handler is a documented no-op, so a
+        // cancelled pan has nothing to unwind.
         onPanStart: _onPipDragStart,
         onPanUpdate: _onPipPanUpdate,
         onPanEnd: _onPipDragEnd,

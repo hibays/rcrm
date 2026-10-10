@@ -1,8 +1,8 @@
 // widgets/media_toolbar.dart
 // RCrm GUI — sort / filter / display options toolbar
 //
-// Shared toolbar for video and image screens. Provides sort
-// dropdown, extension filter, grid column slider, and layout
+// Currently the video screen's toolbar: sort field dropdown, sort direction
+// toggle, extension filter, column-count cycle button, and grid/list layout
 // toggle.
 
 import 'package:flutter/material.dart';
@@ -13,6 +13,15 @@ class MediaToolbar extends StatelessWidget {
   final String currentSort;
   final bool isAscending;
   final ValueChanged<String> onSortChanged;
+
+  /// Flips the direction between ascending and descending.
+  ///
+  /// Separate from [onSortChanged], which commits a sort *field*: re-picking
+  /// the field already active flips too (that rule lives in the provider — see
+  /// `_SortNotifier.set`), but there the flip is the rule's outcome, not a
+  /// direction contract. The arrow states the direction it wants, and being
+  /// required keeps a caller from wiring an arrow that does nothing.
+  final VoidCallback onSortDirectionChanged;
 
   final List<String>? extensions;
   final String? currentFilter;
@@ -33,6 +42,7 @@ class MediaToolbar extends StatelessWidget {
     required this.currentSort,
     required this.isAscending,
     required this.onSortChanged,
+    required this.onSortDirectionChanged,
     this.extensions,
     this.currentFilter,
     this.onFilterChanged,
@@ -78,14 +88,16 @@ class MediaToolbar extends StatelessWidget {
               onChanged: onColumnsChanged!,
             ),
 
-          // Sort direction
+          // Sort direction. The icon reports the direction in effect, so it
+          // agrees with the chip's arrow; the tooltip names what the tap does
+          // (like the layout toggle below) and doubles as the semantics text.
           IconButton(
             icon: Icon(
               isAscending ? Icons.arrow_upward : Icons.arrow_downward,
               size: 18,
             ),
-            onPressed: () => onSortChanged(currentSort),
-            tooltip: isAscending ? 'Ascending' : 'Descending',
+            onPressed: onSortDirectionChanged,
+            tooltip: isAscending ? 'Sort descending' : 'Sort ascending',
             visualDensity: VisualDensity.compact,
           ),
 
@@ -104,6 +116,14 @@ class MediaToolbar extends StatelessWidget {
 
   Widget _sortChip(BuildContext context) {
     return PopupMenuButton<String>(
+      // The chip's own chrome shows the field and the direction in effect, and
+      // the menu's check marks the field that is active — neither says what
+      // re-picking that field does. The tooltip is where the rule is stated;
+      // PopupMenuButton feeds the same string to the control's semantics, so
+      // it is announced and not merely hovered.
+      tooltip:
+          'Sort: ${_capitalize(currentSort)} ${isAscending ? '↑' : '↓'} — '
+          'pick ${_capitalize(currentSort)} again to reverse',
       onSelected: onSortChanged,
       itemBuilder: (context) => sortOptions.map((opt) {
         return PopupMenuItem(

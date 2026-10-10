@@ -206,8 +206,31 @@ class _SortNotifier extends Notifier<String> {
   @override
   String build() => 'name';
 
+  /// Restores the persisted field at startup ([SettingsNotifier.load]).
+  ///
+  /// Deliberately bypasses [set]: a fresh launch usually restores the field
+  /// that is already the default, and [set] reads "the same field again" as a
+  /// re-pick — the restore would flip, and persist, a direction the user never
+  /// asked to change.
+  void restore(String value) => state = value;
+
+  /// The sort menu committed [value] — the one entry point both the video
+  /// screen's toolbar (`screens/video_screen.dart`) and any future caller use.
+  ///
+  /// Re-picking the field already in effect reverses the direction instead of
+  /// doing nothing; picking a different field starts that field ascending. The
+  /// image page's album sort (`SettingsNotifier.setImageSort`) carries this
+  /// same rule, so the video and image screens answer a re-pick identically —
+  /// keep the two in step.
   void set(String value) {
+    if (value == state) {
+      // The direction notifier persists (and `sortedVideosProvider` watches)
+      // the value, so the flip reaches the list and the chip by itself.
+      ref.read(videoSortAscProvider.notifier).toggle();
+      return;
+    }
     state = value;
+    ref.read(videoSortAscProvider.notifier).set(true);
     unawaited(ref.read(settingsServiceProvider).setVideoSort(value));
   }
 }
@@ -224,6 +247,12 @@ class _SortAscNotifier extends Notifier<bool> {
     state = value;
     unawaited(ref.read(settingsServiceProvider).setVideoSortAsc(value));
   }
+
+  /// Flip the direction from the toolbar's arrow button. Reads `state` rather
+  /// than a value captured at build time, so two taps inside one frame still
+  /// land on opposite directions. Goes through [set] so the new direction is
+  /// persisted exactly like a restored one.
+  void toggle() => set(!state);
 }
 
 final videoSortAscProvider = NotifierProvider<_SortAscNotifier, bool>(

@@ -7,7 +7,7 @@
 //   doesn't necessarily make it easier to follow what's going on
 #![allow(clippy::too_many_arguments)]
 
-use crate::decode::DecodeBuf;
+use crate::decode::{DecodeBuf, Limit};
 use std::alloc::{Layout, alloc, dealloc};
 use std::ptr::NonNull;
 
@@ -40,6 +40,8 @@ fn make_buf(data: *mut u8, len: usize, w: u32, h: u32) -> Box<DecodeBuf> {
 		height: h,
 		channels: 4,
 		data_len: len,
+		// Allocated exactly by `alloc_buf`, so capacity == length.
+		cap: len,
 		data,
 	})
 }
@@ -54,25 +56,41 @@ fn free_buf(data: *mut u8, len: usize) {
 
 // ── public entry ──────────────────────────────────────────────────
 
-pub fn decode_frame(obu: &[u8], target_width: u32) -> Option<Box<DecodeBuf>> {
-	let ctx = open()?;
-	send(&ctx, obu)?;
-	let pic = recv(&ctx)?;
-	let rgba = planes_to_rgba(&pic, target_width);
-	unref(pic);
+pub fn decode_frame(obu: &[u8], target_width: u32, limit: Limit) -> Option<Box<DecodeBuf>> {
+	let ctx = open(limit)?;
+	// The handle is a rav1d `RawArc` -- `Copy`, with no `Drop` -- so *dropping it
+	// frees nothing*: the decoder context (its thread pool and frame buffers)
+	// only goes away through `close`. Malformed or truncated bytes, and any
+	// non-AVIF ISOBMFF file that still carries mdat+ispe, return early here, so
+	// the close has to happen on every path rather than only on success.
+	let result = match send(&ctx, obu) {
+		Some(()) => match recv(&ctx) {
+			Some(pic) => {
+				let rgba = planes_to_rgba(&pic, target_width);
+				unref(pic);
+				rgba
+			}
+			None => None,
+		},
+		None => None,
+	};
 	close(ctx);
-	rgba
+	result
 }
 
 // ── decoder lifecycle ─────────────────────────────────────────────
 
-fn open() -> Option<Dav1dContext> {
+fn open(limit: Limit) -> Option<Dav1dContext> {
 	unsafe {
 		let mut settings: Dav1dSettings = std::mem::zeroed();
 		dav1d_default_settings(NonNull::new(&mut settings)?);
 		settings.n_threads = 1;
 		settings.max_frame_delay = 1;
-		settings.frame_size_limit = 0;
+		// Fed to rav1d in PIXELS (the same thing the `heic` crate does), so a file
+		// whose container `ispe` lies about its size is still rejected while its
+		// OBUs are parsed instead of being decoded into a multi-GB allocation.
+		// `frame_size_limit` is a u32, hence the saturating conversion.
+		settings.frame_size_limit = limit.as_u32_saturating();
 
 		let mut ctx: Option<Dav1dContext> = None;
 		let ret = dav1d_open(NonNull::new(&mut ctx), NonNull::new(&mut settings));
@@ -154,6 +172,12 @@ fn planes_to_rgba(pic: &Dav1dPicture, target_width: u32) -> Option<Box<DecodeBuf
 	};
 	let n = (dw * dh) as usize * 4;
 	let data = alloc_buf(n);
+	if data.is_null() {
+		// `alloc` returns null instead of aborting; without this the pixel loops
+		// below would write dw*dh*4 bytes through a null pointer, and the size is
+		// attacker-influenced whenever the declared dimensions lie.
+		return None;
+	}
 
 	let (is_gbrp, limited) = color_meta(pic);
 	let ok = unsafe {

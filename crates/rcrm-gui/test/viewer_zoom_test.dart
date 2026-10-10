@@ -237,7 +237,6 @@ void main() {
       Size contentSize = _landscape,
       Size viewport = _viewport,
       ValueChanged<Offset>? onTapAt,
-      ValueNotifier<bool>? atTopEdge,
     }) async {
       await tester.pumpWidget(
         MaterialApp(
@@ -249,7 +248,6 @@ void main() {
                 child: ZoomableViewport(
                   controller: controller,
                   contentSize: contentSize,
-                  atTopEdge: atTopEdge,
                   onTapAt: onTapAt,
                   child: Container(key: childKey, color: Colors.red),
                 ),
@@ -370,23 +368,6 @@ void main() {
       expect(taps, hasLength(1));
       expect(taps.single.dx, closeTo(30, 0.5));
       expect(taps.single.dy, closeTo(40, 0.5));
-    });
-
-    testWidgets('the top-edge flag follows the pan', (tester) async {
-      final c = TransformationController();
-      addTearDown(c.dispose);
-      final edge = ValueNotifier<bool>(true);
-      addTearDown(edge.dispose);
-      final state = await pump(tester, controller: c, atTopEdge: edge);
-      expect(edge.value, isTrue, reason: 'at rest the whole photo is visible');
-
-      state.zoomBy(3);
-      await tester.pump();
-      expect(edge.value, isFalse, reason: 'zoomed in, the photo is pannable');
-
-      await tester.drag(find.byType(ZoomableViewport), const Offset(0, 400));
-      await tester.pump();
-      expect(edge.value, isTrue, reason: 'panned down to the top edge');
     });
 
     testWidgets('1:1 is offered only when there are pixels to spend', (

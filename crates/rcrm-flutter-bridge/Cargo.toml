@@ -8,7 +8,12 @@ description = "C-ABI FFI bridge exposing rcrm-core + rcrm-server to Flutter via 
 crate-type = ["cdylib", "staticlib"]
 
 [features]
-mobile-decode = ["dep:rav1d", "dep:jxl-oxide", "dep:jxl-render"]
+# The Rust software-decode path: AVIF (rav1d), JXL (jxl-oxide) and HEIC/HEIF
+# (heic) stills. NOT default: Android/iOS builds enable it explicitly
+# (`cargo ndk ... build -p rcrm-flutter-bridge --features mobile-decode`), and
+# desktop builds must omit it (AGENTS.md) — they decode with Flutter's engine.
+# Host tests:   cargo test -p rcrm-flutter-bridge --features mobile-decode
+mobile-decode = ["dep:rav1d", "dep:jxl-oxide", "dep:jxl-render", "dep:heic"]
 
 [dependencies]
 rcrm-core = { path = "../rcrm-core" }
@@ -34,6 +39,17 @@ rcgen = { version = "0.14", default-features = false, features = [
 rav1d = { git = "https://github.com/memorysafety/rav1d", rev = "9f00b03bc58d94f14e157b0d365a26cf8d3b1b77", optional = true }
 jxl-oxide = { version = "0.12", optional = true }
 jxl-render = { version = "0.12", optional = true }
+# HEIC/HEIF stills (AGPL-3.0-only OR Imazen commercial — rcrm is open-source,
+# same family as zenwebp above; HEVC/HEIF is patent-encumbered, see the crate's
+# patent notice). `backend-rust` is the pure-Rust HEVC decoder — no platform
+# SDK, so it cross-compiles for Android/iOS; `parallel` decodes HEIF grid tiles
+# on rayon; `std` is what `parallel` needs. Pinned to a rev like rav1d: bump
+# deliberately. Part of the `mobile-decode` feature.
+heic = { git = "https://github.com/imazen/heic", rev = "db52055b4d5e74dff848060b6f4006b1982802ef", default-features = false, features = [
+	"backend-rust",
+	"std",
+	"parallel",
+], optional = true }
 rxing = { version = "0.9.2", default-features = false, features = ["decoders", "full_barcode_format_support", "multi_barcode_readers", "encoding_rs", "encoders"] }
 
 [target.'cfg(windows)'.dependencies]

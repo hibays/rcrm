@@ -780,26 +780,94 @@ class _CastImageState extends State<_CastImage> {
 
   Future<void> _load() async {
     final gen = _gen;
-    // The proxy URL is plain http://127.0.0.1:<port> — a bare HttpClient is
-    // fine (no TLS, no certificate decision to make).
-    final client = HttpClient();
+
+    // Format BEFORE the fetch: the receiver's proxy URL is `/cast/stream` with
+    // the real path in its query string, so extension detection on `widget.url`
+    // finds nothing. Without this override the copy-free Rust path below is
+    // never even attempted and every AVIF/JXL/HEIC payload pays the copying
+    // route.
+    final format = _extOf(widget.filePath);
+
+    // The codec this load creates, disposed in the finally once its frame has
+    // been taken (Flutter's canonical pattern: the frame's `ui.Image` is not
+    // owned by the codec, so `frame.image` survives the dispose).
+    ui.Codec? owned;
+    // The fallback's own client — null while the copy-free path is running.
+    HttpClient? client;
     try {
-      final req = await client.getUrl(Uri.parse(widget.url));
+      // Copy-free first, as everywhere else an original is shown: fetch the
+      // encoded file straight into native memory and let Rust decode it, so the
+      // payload never becomes a Dart list (`tryDecode` would copy that list a
+      // second time, into exactly the allocation Rust reads).
+      //
+      // On a desktop bridge without the feature every decoder address is 0, so
+      // this returns null before any request is made and the engine fallback
+      // runs exactly as it did before.
+      final soft = await MobileImageDecoder.fetchForDecode(
+        widget.url,
+        format: format,
+      );
+      if (!mounted || gen != _gen) {
+        // Stale load: the buffer was never handed to Rust, so this side still
+        // owns it (tryDecodeNative is what takes ownership, and it frees the
+        // buffer itself when it refuses).
+        soft?.free();
+        return;
+      }
+
+      // Physical-pixel decode cap: on a 4K TV this is 3840, so large photos
+      // stay sharp; on a phone-as-receiver it is the screen's own pixels.
+      // (Read after the await above on purpose: `initState` starts this load,
+      // and MediaQuery must not be depended on before initState completes.)
+      final dpr = MediaQuery.devicePixelRatioOf(context);
+      final physicalWidth = (MediaQuery.sizeOf(context).width * dpr).round();
+      final physicalHeight = (MediaQuery.sizeOf(context).height * dpr).round();
+
+      if (soft != null) {
+        ui.Codec? native;
+        try {
+          native = await MobileImageDecoder.tryDecodeNative(
+            soft,
+            widget.url,
+            targetWidth: physicalWidth,
+            format: format,
+          );
+        } finally {
+          // `tryDecodeNative` takes ownership of the buffer on every one of its
+          // paths (Rust frees what it accepted, the call frees what it refused,
+          // and a disowned buffer makes this a no-op) — so this only covers the
+          // case where it never got that far.
+          soft.free();
+        }
+        if (native != null) {
+          owned = native;
+          final frame = await native.getNextFrame();
+          if (!mounted || gen != _gen) return;
+          setState(() {
+            _image?.dispose();
+            _image = frame.image;
+          });
+          return;
+        }
+      }
+
+      // Fallback, unchanged: the receiver's own bare HttpClient plus the engine
+      // decoder. The proxy URL is plain http://127.0.0.1:<port> — a bare
+      // HttpClient is fine (no TLS, no certificate decision to make).
+      //
+      // Reached when there is no Rust decoder for this format, when the
+      // copy-free fetch could not size the buffer, and when Rust refused bytes
+      // it did receive — in that last case the engine is a *different* decoder
+      // that may well read them (an AV1-HEIF, a container that is really
+      // JPEG/PNG), so the second download is deliberate rather than wasteful.
+      final bare = HttpClient();
+      client = bare;
+      final req = await bare.getUrl(Uri.parse(widget.url));
       final res = await req.close();
       if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
       final bytes = await consolidateHttpClientResponseBytes(res);
       if (!mounted || gen != _gen) return;
 
-      // Physical-pixel decode cap: on a 4K TV this is 3840, so large photos
-      // stay sharp; on a phone-as-receiver it is the screen's own pixels.
-      final dpr = MediaQuery.devicePixelRatioOf(context);
-      final physicalWidth = (MediaQuery.sizeOf(context).width * dpr).round();
-      final physicalHeight = (MediaQuery.sizeOf(context).height * dpr).round();
-
-      // AVIF/JXL → Rust software decoder (available on the Android TV build
-      // via the mobile-decode feature; no-op elsewhere). format is derived
-      // from the REAL path — the proxy URL's query param holds it.
-      final format = _extOf(widget.filePath);
       var codec = await MobileImageDecoder.tryDecode(
         bytes,
         widget.url,
@@ -828,6 +896,7 @@ class _CastImageState extends State<_CastImage> {
           },
         );
       }
+      owned = codec;
       final frame = await codec.getNextFrame();
       if (!mounted || gen != _gen) return;
       setState(() {
@@ -837,7 +906,11 @@ class _CastImageState extends State<_CastImage> {
     } catch (_) {
       if (mounted && gen == _gen) setState(() => _failed = true);
     } finally {
-      client.close(force: true);
+      // After the frame has been taken, and on the early returns and the catch
+      // path too: a codec holds native resources of its own, and nothing here
+      // caches it for a later frame.
+      owned?.dispose();
+      client?.close(force: true);
     }
   }
 

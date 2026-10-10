@@ -120,7 +120,7 @@ typedef RcrmDecodeQrLumaDart =
 /// main isolate's event loop automatically.
 typedef RcrmDecodeResultC = Void Function(Pointer<Void> buf, Pointer<Void> ctx);
 
-/// Async decode: copies data synchronously, spawns thread, returns
+/// Async decode: TAKES OWNERSHIP of `data` synchronously (no copy), spawns a
 /// immediately. Result delivered via `callback`.
 typedef RcrmDecodeAsyncC =
     Void Function(
@@ -142,7 +142,7 @@ typedef RcrmDecodeAsyncDart =
 typedef RcrmFreeDecodeBufC = Void Function(Pointer<Void> ptr);
 typedef RcrmFreeDecodeBufDart = void Function(Pointer<Void> ptr);
 
-/// Thumbnail generator from an **encoded image** (mobile): AVIF/JXL bytes →
+/// Thumbnail generator from an **encoded image** (mobile): AVIF/JXL/HEIC bytes →
 /// downscaled WebP, decoding in Rust so no pixels enter Dart.
 ///
 /// The pixel counterpart is [RcrmWebpBufC]/`encodeThumbWebp`
@@ -178,14 +178,18 @@ typedef RcrmMetadataResultC =
 
 /// Async metadata parse. Rust takes ownership of the buffer, so Dart must not
 /// free it (or touch it) after the call — the bytes are handed over in place,
-/// with no copy. `cap` is the size the buffer was really allocated with: the
-/// caller fetches a fixed-size head and usually fills only part of it, and Rust
-/// needs the real capacity to rebuild (and free) the allocation exactly.
+/// with no copy.
+///
+/// There is no capacity argument, and that is the point: the export rebuilds
+/// its `Vec` from `len` alone, so the allocation must be exactly `len` bytes.
+/// A caller-supplied capacity could not be checked on the Rust side, and a
+/// wrong one would free a wrong layout. Dart supplies the guarantee by type:
+/// `NativeTransfer` (`services/native_bytes.dart`) can only be built from a
+/// whole-file `NativeBytes`, whose allocation and payload are the same size.
 typedef RcrmMetadataAsyncC =
     Void Function(
       Pointer<Uint8> data,
       IntPtr len,
-      IntPtr cap,
       Uint8 kindHint,
       Pointer<NativeFunction<RcrmMetadataResultC>> callback,
       Pointer<Void> ctx,
@@ -194,7 +198,6 @@ typedef RcrmMetadataAsyncDart =
     void Function(
       Pointer<Uint8> data,
       int len,
-      int cap,
       int kindHint,
       Pointer<NativeFunction<RcrmMetadataResultC>> callback,
       Pointer<Void> ctx,
@@ -258,10 +261,16 @@ class RustBridge {
   /// dlsym).
   static int decodeAvifAsyncAddr = 0;
   static int decodeJxlAsyncAddr = 0;
+
+  /// Raw address of `rcrm_decode_heic_async` — HEIC/HEIF stills. Part of the
+  /// same `mobile-decode` feature as avif/jxl (the `heic` crate is one of its
+  /// dependencies), so it follows the same rule: present on mobile, absent on
+  /// desktop.
+  static int decodeHeicAsyncAddr = 0;
   static int freeDecodeBufAddr = 0;
 
   /// Raw address of `rcrm_generate_thumb_webp_from_image` — the mobile
-  /// thumbnail generator that takes an **encoded image** (AVIF/JXL bytes) and
+  /// thumbnail generator that takes an **encoded image** (AVIF/JXL/HEIC bytes) and
   /// decodes it in Rust, so no pixels pass through Dart. 0 on desktop, where
   /// the `mobile-decode` feature is omitted and the engine supplies pixels to
   /// `encodeThumbWebp` (the other half of the pair) instead.
@@ -382,10 +391,12 @@ class RustBridge {
         .lookup<NativeFunction<RcrmFreeWebpBufC>>('rcrm_free_webp_buf')
         .address;
     // Metadata parsing is not feature-gated. The hand-off takes the caller's
-    // native buffer without copying, which changed the arity, so the export is
-    // versioned: a .dll/.so built before that still has `..._v1` and simply
-    // lacks v2 — the app then degrades to "no metadata" instead of calling a
-    // shorter function with mismatched arguments.
+    // native buffer without copying, and the export no longer takes a capacity
+    // (it frees exactly what `len` describes) — an arity change under a stable
+    // name, so the .dll/.so and this Dart side must ship together: an older
+    // bridge would be called with mismatched arguments. A bridge without the
+    // symbol at all (much older) still degrades to "no metadata" via the
+    // address being 0, which the service already handles.
     try {
       mediaMetadataAsyncAddr = _lib!
           .lookup<NativeFunction<RcrmMetadataAsyncC>>(
@@ -395,15 +406,20 @@ class RustBridge {
     } catch (_) {
       mediaMetadataAsyncAddr = 0;
     }
-    // mobile-decode gated — present on mobile builds; absent on desktop.
-    // Decode symbols are #[cfg(mobile-decode)] gated — absent on desktop.
-    // On mobile a missing symbol is a build bug: let it throw (fail-fast).
+    // mobile-decode is a Cargo FEATURE, not a target: the branch below is a
+    // platform test, and Android/iOS builds are the ones that must carry these
+    // symbols — a missing one there is a build bug, so these lookups are left to
+    // throw (fail-fast). Everywhere else each symbol is probed instead, so a
+    // desktop bridge that WAS built with the feature also works.
     if (Platform.isAndroid || Platform.isIOS) {
       decodeAvifAsyncAddr = _lib!
           .lookup<NativeFunction<RcrmDecodeAsyncC>>('rcrm_decode_avif_async')
           .address;
       decodeJxlAsyncAddr = _lib!
           .lookup<NativeFunction<RcrmDecodeAsyncC>>('rcrm_decode_jxl_async')
+          .address;
+      decodeHeicAsyncAddr = _lib!
+          .lookup<NativeFunction<RcrmDecodeAsyncC>>('rcrm_decode_heic_async')
           .address;
       freeDecodeBufAddr = _lib!
           .lookup<NativeFunction<RcrmFreeDecodeBufC>>('rcrm_free_decode_buf')
@@ -422,6 +438,11 @@ class RustBridge {
       try {
         decodeJxlAsyncAddr = _lib!
             .lookup<NativeFunction<RcrmDecodeAsyncC>>('rcrm_decode_jxl_async')
+            .address;
+      } catch (_) {}
+      try {
+        decodeHeicAsyncAddr = _lib!
+            .lookup<NativeFunction<RcrmDecodeAsyncC>>('rcrm_decode_heic_async')
             .address;
       } catch (_) {}
       try {

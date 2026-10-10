@@ -2,6 +2,8 @@
 // The viewer's info sheet: the facts it must show, the ones it must not
 // invent, and the one action it offers.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/config/theme.dart';
@@ -112,6 +114,107 @@ void main() {
         find.text('1920x1080 • 637.0 KB • JPG'),
         findsOneWidget,
       );
+    });
+
+    testWidgets('claims nothing while the parse is still in flight', (
+      tester,
+    ) async {
+      // The answer is not in yet. Saying "No camera information" now would be a
+      // claim the app cannot support — and it used to flash and then vanish,
+      // shifting every row below it.
+      final pending = Completer<MediaMetadata>();
+      addTearDown(() {
+        if (!pending.isCompleted) pending.complete(MediaMetadata.none);
+      });
+      await _pump(
+        tester,
+        ImageInfoSheet(
+          item: _item(),
+          index: 1,
+          total: 4,
+          metadata: pending.future,
+        ),
+      );
+      expect(find.text('No camera information'), findsNothing);
+      expect(find.text('No location information'), findsNothing);
+      // Still a sheet, not a blank one: the facts that do not need the parse
+      // are already up.
+      expect(find.text('Camera_XHS_1790706.JPG'), findsOneWidget);
+      expect(find.textContaining('637.0 KB'), findsOneWidget);
+
+      // …and once the answer lands, the honest absence may be stated.
+      pending.complete(MediaMetadata.fromJsonString(_bareImageJson));
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('No camera information'), findsOneWidget);
+      expect(find.text('No location information'), findsOneWidget);
+    });
+
+    testWidgets('EXIF dimensions follow the orientation, not the sensor', (
+      tester,
+    ) async {
+      // A phone held upright stores a landscape sensor frame plus an
+      // orientation tag. The line must describe what is on screen (portrait),
+      // or it contradicts the photo directly above it.
+      const rotated =
+          '{"kind":"image","exif":{"make":"Apple","pixelWidth":4032,'
+          '"pixelHeight":3024,"orientation":6}}';
+      await _pump(
+        tester,
+        ImageInfoSheet(
+          item: _item(),
+          index: 1,
+          total: 2,
+          metadata: Future.value(MediaMetadata.fromJsonString(rotated)),
+        ),
+      );
+      expect(find.textContaining('3024 × 4032'), findsOneWidget);
+      expect(find.textContaining('4032 × 3024'), findsNothing);
+
+      // Orientation 1 (or absent) means the stored order is the on-screen one.
+      const upright =
+          '{"kind":"image","exif":{"make":"Apple","pixelWidth":4032,'
+          '"pixelHeight":3024,"orientation":1}}';
+      await _pump(
+        tester,
+        ImageInfoSheet(
+          item: _item(),
+          index: 1,
+          total: 2,
+          metadata: Future.value(MediaMetadata.fromJsonString(upright)),
+        ),
+      );
+      expect(find.textContaining('4032 × 3024'), findsOneWidget);
+    });
+
+    testWidgets('a shutter speed that is not a unit fraction stays decimal', (
+      tester,
+    ) async {
+      // 0.3 s is "0.3 s", not "1/3 s"; 1/250 s is a real fraction and stays one.
+      const slow = '{"kind":"image","exif":{"exposureTime":0.3}}';
+      await _pump(
+        tester,
+        ImageInfoSheet(
+          item: _item(),
+          index: 1,
+          total: 2,
+          metadata: Future.value(MediaMetadata.fromJsonString(slow)),
+        ),
+      );
+      expect(find.textContaining('0.3 s'), findsOneWidget);
+      expect(find.textContaining('1/3 s'), findsNothing);
+
+      const fast = '{"kind":"image","exif":{"exposureTime":0.004}}';
+      await _pump(
+        tester,
+        ImageInfoSheet(
+          item: _item(),
+          index: 1,
+          total: 2,
+          metadata: Future.value(MediaMetadata.fromJsonString(fast)),
+        ),
+      );
+      expect(find.textContaining('1/250 s'), findsOneWidget);
     });
 
     testWidgets('without a date the name becomes the headline', (tester) async {

@@ -153,7 +153,7 @@ class ExifInfo {
       focalLength: d('focalLength'),
       focalLength35mm: i('focalLength35mm'),
       exposureBias: d('exposureBias'),
-      flash: json['flash'] as bool?,
+      flash: json['flash'] is bool ? json['flash'] as bool : null,
       orientation: i('orientation'),
       pixelWidth: i('pixelWidth'),
       pixelHeight: i('pixelHeight'),
@@ -175,7 +175,8 @@ class ExifInfo {
   static double? _gps(Map<String, dynamic> json, String key) {
     final gps = json['gps'];
     if (gps is! Map) return null;
-    return (gps[key] as num?)?.toDouble();
+    final v = gps[key];
+    return v is num ? v.toDouble() : null;
   }
 }
 
@@ -273,17 +274,26 @@ class MediaMetadata {
   static MediaMetadata fromJsonString(String? json) {
     if (json == null || json.isEmpty) return none;
     try {
-      final map = jsonDecode(json) as Map<String, dynamic>;
+      final decoded = jsonDecode(json);
+      if (decoded is! Map<String, dynamic>) return none;
+      final exif = decoded['exif'];
+      final track = decoded['track'];
       return MediaMetadata(
-        kind: map['kind'] as String? ?? 'unknown',
-        exif: ExifInfo.fromJson(map['exif'] as Map<String, dynamic>?),
-        track: TrackInfo.fromJson(map['track'] as Map<String, dynamic>?),
-        error: map['error'] as String?,
+        kind: _string(decoded['kind']) ?? 'unknown',
+        exif: exif is Map<String, dynamic> ? ExifInfo.fromJson(exif) : null,
+        track: track is Map<String, dynamic> ? TrackInfo.fromJson(track) : null,
+        error: _string(decoded['error']),
       );
     } catch (_) {
       return none;
     }
   }
+
+  /// `is`-checked conversions: the parser is the one writing this JSON, but a
+  /// cast that throws would take the whole document down with it (the `catch`
+  /// above turns a good parse into "no metadata"), which is exactly what the
+  /// per-field checks in [ExifInfo.fromJson] exist to avoid.
+  static String? _string(Object? v) => v is String ? v : null;
 }
 
 /// Fetches and parses metadata, cached per (url, kind).
@@ -297,6 +307,31 @@ class MediaMetadataService {
   static const int _cacheCap = 64;
   static final Map<String, Future<MediaMetadata>> _cache = {};
 
+  /// Keys whose future has settled. Eviction only ever considers these: dropping
+  /// an entry that is still in flight would let the next `forUrl` for the same
+  /// URL start a second fetch and a second parse of the same file (the exact
+  /// duplicate work the cache exists to prevent), and the two answers could even
+  /// arrive out of order.
+  static final Set<String> _settled = {};
+
+  /// The library these answers belong to. A URL only means something inside one
+  /// library, so re-scanning, switching server or pointing at another directory
+  /// makes every cached answer irrelevant. Rather than relying on somebody
+  /// remembering to call [clearCache] — nobody did, which is why the doc used to
+  /// promise an invalidation that never happened — the identity is part of the key:
+  /// change it and every lookup misses by itself.
+  static String _libraryIdentity = '';
+
+  /// Declares which library [forUrl] is being asked about (server + the roots the
+  /// app is browsing). Call it when the app connects, re-scans or changes roots;
+  /// an unchanged identity is a no-op, a changed one drops the cache.
+  static void setLibraryIdentity(String identity) {
+    if (identity == _libraryIdentity) return;
+    _libraryIdentity = identity;
+    _cache.clear();
+    _settled.clear();
+  }
+
   /// How long the Rust parser may take before the request is treated as
   /// unanswered. Parsing a 4 MB head is milliseconds of work; this only exists
   /// so a lost callback cannot hang the sheet forever.
@@ -309,31 +344,59 @@ class MediaMetadataService {
     String url, {
     MetadataKind kind = MetadataKind.auto,
   }) {
-    final key = '${kind.code}|$url';
+    final key = '$_libraryIdentity|${kind.code}|$url';
     final cached = _cache[key];
     if (cached != null) return cached;
     late final Future<MediaMetadata> future;
     future = _load(url, kind).then(
       (meta) {
+        _settled.add(key);
         if (meta != null) return meta;
         // No answer to remember: drop the entry so the next open retries.
-        if (identical(_cache[key], future)) _cache.remove(key);
+        if (identical(_cache[key], future)) _forget(key);
         return MediaMetadata.none;
       },
       onError: (Object e, StackTrace _) {
         debugPrint('metadata: $url -> $e');
-        if (identical(_cache[key], future)) _cache.remove(key);
+        _settled.add(key);
+        if (identical(_cache[key], future)) _forget(key);
         return MediaMetadata.none;
       },
     );
     _cache[key] = future;
-    if (_cache.length > _cacheCap) _cache.remove(_cache.keys.first);
+    if (_cache.length > _cacheCap) _evictOne();
     return future;
   }
 
-  /// Drop cached results — used by tests and when the library is re-scanned.
+  /// Drops [key] from both maps.
+  static void _forget(String key) {
+    _cache.remove(key);
+    _settled.remove(key);
+  }
+
+  /// Makes room for one entry by dropping the oldest one that has **finished**.
+  /// If everything in the map is still in flight the cap is simply exceeded for
+  /// a moment: those entries are the ones that must not be duplicated, and the
+  /// map is bounded by the URLs actually on screen.
+  static void _evictOne() {
+    for (final key in _cache.keys) {
+      if (_settled.contains(key)) {
+        _forget(key);
+        return;
+      }
+    }
+  }
+
+  /// Drops every cached answer. Test-only today: the doc used to promise it runs
+  /// "when the library is re-scanned", but no production code path calls it, so
+  /// that invalidation does not exist. Wiring one (or invalidating from the
+  /// re-scan itself) is a product decision, not a bug fix — until then this
+  /// annotation and this comment say the same thing.
   @visibleForTesting
-  static void clearCache() => _cache.clear();
+  static void clearCache() {
+    _cache.clear();
+    _settled.clear();
+  }
 
   /// Null when no answer could be obtained (fetch failed, parser timed out).
   static Future<MediaMetadata?> _load(String url, MetadataKind kind) async {
@@ -400,6 +463,15 @@ class MediaMetadataService {
       head.free();
       return MediaMetadata.none;
     }
+    final transfer = head.transferIfWhole();
+    if (transfer == null) {
+      // A head that is not whole cannot be handed over at all: the ABI rebuilds
+      // its `Vec` from the length alone, so the allocation has to be exactly
+      // that. Same "not reusable, ask again later" answer the decode paths give
+      // — never a buffer whose real size might be larger than what is sent.
+      head.free();
+      return null;
+    }
     _ensureInit();
 
     final completer = Completer<MediaMetadata>();
@@ -414,23 +486,28 @@ class MediaMetadataService {
     // so nothing is copied here; after this returns Rust owns it and frees it
     // when the parse finishes — including after the timeout below, which is why
     // that path must not free anything either.
+    // Ownership moves BEFORE the call, not after it returns. Rust frees this
+    // buffer on every path (including the null/empty refusals inside the FFI), so
+    // leaving it marked as ours until the call returns would mean the `catch`
+    // below abandons an allocation that nobody frees. Disowned first, every path
+    // is Rust's — the one that throws included.
+    transfer.disown();
     try {
       parse(
-        head.ptr,
-        head.len,
-        head.cap,
+        transfer.ptr,
+        transfer.len,
         kind.code,
         _callback!.nativeFunction,
         Pointer<Void>.fromAddress(id),
       );
     } catch (_) {
       // Unreachable by construction: the pointer, the lengths and the callback
-      // are all non-null/valid by this point. Drop the request rather than free
-      // a buffer Rust may already own.
+      // are all non-null/valid by this point. Drop the request and rethrow — the
+      // buffer is Rust's already (or was before the transfer), so there is
+      // nothing to free here.
       _pending.remove(id);
       rethrow;
     }
-    head.disown();
 
     try {
       return await completer.future.timeout(_parseTimeout);

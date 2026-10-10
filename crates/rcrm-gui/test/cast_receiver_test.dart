@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/ffi/rust_bridge.dart';
 import 'package:rcrm_gui/services/cast_protocol.dart';
 import 'package:rcrm_gui/services/cast_receiver.dart';
+import 'package:rcrm_gui/services/native_bytes.dart';
 
 const _certDir = 'test/cert_pinning';
 
@@ -440,6 +441,60 @@ void main() {
       final response = await res.close();
       expect(response.statusCode, HttpStatus.conflict);
       await response.drain<void>();
+    });
+
+    // The rest of this group drives the proxy with `Uri.parse(...)` directly —
+    // i.e. it asserts the FALLBACK shape, not the URL the app actually fetches.
+    // That gap is why the double-encoding shipped: no test ever sent the
+    // encoded `?path=` the receiver's own `_handlePlay` builds.
+    test('a fetched proxied path is not double-encoded', () async {
+      final upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final served = <String>[];
+      upstream.listen((req) {
+        served.add('${req.method} ${req.uri.path}');
+        req.response.statusCode = HttpStatus.ok;
+        req.response.headers.set('content-length', '64');
+        req.response.write('x' * 64);
+        req.response.close();
+      });
+
+      final qr = receiver.currentQr()!;
+      final (pairCode, pairText) = await post(
+        CastApi.pathPair,
+        CastApi.pairBody(qr.token),
+      );
+      expect(pairCode, HttpStatus.ok);
+      final session =
+          (jsonDecode(pairText) as Map<String, dynamic>)['session'] as String;
+      final (claimCode, _) = await post(
+        CastApi.pathClaim,
+        CastApi.claimBody(
+          serverUrl: 'http://127.0.0.1:${upstream.port}/',
+          username: 'u',
+          password: 'p',
+          serverSha1: '',
+        ),
+        bearer: session,
+      );
+      expect(claimCode, HttpStatus.ok);
+
+      final fetched = await fetchNativeBytes(
+        'http://127.0.0.1:${receiver.proxyPort}/stream?path=%2Fv%2Fbig.mkv',
+      );
+
+      await upstream.close(force: true);
+      final bytes = fetched.bytes;
+      expect(
+        bytes,
+        isNotNull,
+        reason: 'the proxy answers 400 when the path arrives double-encoded',
+      );
+      bytes!.free();
+      expect(
+        served.where((s) => s == 'GET /v/big.mkv').length,
+        greaterThanOrEqualTo(1),
+        reason: 'the proxy must forward the path it received',
+      );
     });
 
     test('proxy rejects non-absolute path', () async {

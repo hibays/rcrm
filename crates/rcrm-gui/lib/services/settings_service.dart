@@ -20,6 +20,7 @@ class SettingsService {
   static const _keyImageLayout = 'image_layout'; // 'masonry' or 'uniform'
   static const _keyImageColumns = 'image_columns';
   static const _keyImageSort = 'image_sort'; // 'name', 'date', 'size'
+  static const _keyImageSortAsc = 'image_sort_asc';
   static const _keyImageClassification =
       'image_classification'; // 'folder' | 'format'
   static const _keyPreviewEnabled = 'preview_enabled';
@@ -147,6 +148,18 @@ class SettingsService {
   Future<void> setImageSort(String sort) async {
     final p = await prefs;
     await p.setString(_keyImageSort, sort);
+  }
+
+  /// Direction of [getImageSort], persisted exactly like the video one
+  /// (`getVideoSortAsc`) so a re-pick of the active field survives a relaunch.
+  Future<bool> getImageSortAsc() async {
+    final p = await prefs;
+    return p.getBool(_keyImageSortAsc) ?? true;
+  }
+
+  Future<void> setImageSortAsc(bool asc) async {
+    final p = await prefs;
+    await p.setBool(_keyImageSortAsc, asc);
   }
   // ── Image classification ─────────────────────────────────
 

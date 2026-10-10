@@ -70,13 +70,25 @@ class ImageInfoSheet extends StatelessWidget {
         top: false,
         child: FutureBuilder<MediaMetadata>(
           future: metadata,
-          builder: (_, snapshot) => _body(snapshot.data ?? MediaMetadata.none),
+          builder: (_, snapshot) {
+            // "Still being parsed" is not "there is nothing there". Passing a
+            // `none` here made the sheet open with "No camera information" and
+            // then swap it for the real camera block a moment later — a claim,
+            // a flash and a layout jump, all for a fact nobody had established
+            // yet. While the answer is in flight the sheet says so instead, in
+            // the same place. It does NOT promise a pixel-identical height: the
+            // skeleton is shorter than the location line + rule + camera block it
+            // stands in for, so those rows settle once the answer lands. A small
+            // shift is honest; the claim it replaces was not.
+            final pending = snapshot.connectionState == ConnectionState.waiting;
+            return _body(snapshot.data ?? MediaMetadata.none, pending: pending);
+          },
         ),
       ),
     );
   }
 
-  Widget _body(MediaMetadata meta) {
+  Widget _body(MediaMetadata meta, {required bool pending}) {
     final exif = meta.exif;
     // EXIF knows when the picture was taken; the WebDAV timestamp only knows
     // when the file was last written. An RFC 1123 header parses to UTC, so the
@@ -140,10 +152,18 @@ class ImageInfoSheet extends StatelessWidget {
           ],
 
           const SizedBox(height: 10),
-          _LocationLine(exif: exif, known: meta.parsed),
-
-          const _Rule(),
-          ..._cameraBlock(meta),
+          // While the parse is in flight: a skeleton instead of "No location
+          // information" / "No camera information". It occupies the same slot
+          // as the lines it is standing in for, so
+          // the answer lands without a jump and without ever having claimed an
+          // absence the app had not established.
+          if (pending)
+            const _MetaSkeleton()
+          else ...[
+            _LocationLine(exif: exif, known: meta.parsed),
+            const _Rule(),
+            ..._cameraBlock(meta),
+          ],
           Text(
             _technicalLine(exif),
             style: const TextStyle(
@@ -269,7 +289,10 @@ class ImageInfoSheet extends StatelessWidget {
     // Decoded size first (that is the picture you are looking at), EXIF
     // dimensions second, the scanner's guess last.
     final stored = exif != null && exif.hasPixelSize
-        ? Size(exif.pixelWidth!.toDouble(), exif.pixelHeight!.toDouble())
+        ? _upright(
+            Size(exif.pixelWidth!.toDouble(), exif.pixelHeight!.toDouble()),
+            exif.orientation,
+          )
         : null;
     final px = pixelSize ?? stored;
     if (px != null && px.width > 0 && px.height > 0) {
@@ -289,6 +312,16 @@ class ImageInfoSheet extends StatelessWidget {
     if (ext.isNotEmpty && ext.length <= 5) parts.add(ext);
     return parts.join(' • ');
   }
+
+  /// EXIF stores the sensor's dimensions, not the ones on screen: orientations
+  /// 5–8 rotate the picture a quarter turn, so a portrait phone shot reports
+  /// "4032 × 3024" while the viewer shows it upright. Swap those two axes, or
+  /// the line contradicts the photo right above it. (The decoded size, when the
+  /// viewer has it, is already upright and wins anyway.)
+  static Size _upright(Size size, int? orientation) =>
+      orientation != null && orientation >= 5 && orientation <= 8
+      ? Size(size.height, size.width)
+      : size;
 
   String _folderLabel() {
     final path = item.path;
@@ -315,7 +348,18 @@ class ImageInfoSheet extends StatelessWidget {
     }
     final t = exif.exposureTime;
     if (t != null && t > 0) {
-      parts.add(t >= 1 ? '${_trim(t)} s' : '1/${(1 / t).round()} s');
+      // Photographers read fast shutters as "1/250 s", but rounding *every*
+      // sub-second value to a unit fraction turns 0.7 s into "1/1 s" and 0.3 s
+      // into "1/3 s" — a number the camera never used. Fractions only when the
+      // shutter really is one.
+      final denom = (1 / t).round();
+      parts.add(
+        t >= 1
+            ? '${_trim(t)} s'
+            : (denom > 1 && (1 / denom - t).abs() < 0.005)
+            ? '1/$denom s'
+            : '${_trim(t)} s',
+      );
     }
     if (exif.iso != null && exif.iso! > 0) parts.add('ISO ${exif.iso}');
     final bias = exif.exposureBias;
@@ -415,6 +459,40 @@ class _Rule extends StatelessWidget {
     padding: EdgeInsets.symmetric(vertical: 14),
     child: Divider(height: 1, thickness: 1, color: ImageInfoSheet._hairline),
   );
+}
+
+/// Stand-in for the location line and the camera block while the parse is in
+/// flight. Two dimmed bars, sized like the text they replace (a 16px icon line
+/// and a two-line camera block), so the real answer drops in without ever
+/// asserting an absence first. These bars are deliberately shorter than the block
+/// they stand in for, so the rows underneath settle by a few tens of pixels when
+/// it arrives — a small shift, and the price of not claiming an absence.
+class _MetaSkeleton extends StatelessWidget {
+  const _MetaSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    Widget bar(double widthFactor, double height) => FractionallySizedBox(
+      alignment: Alignment.centerLeft,
+      widthFactor: widthFactor,
+      child: Container(
+        height: height,
+        decoration: BoxDecoration(
+          color: Colors.white10,
+          borderRadius: BorderRadius.circular(4),
+        ),
+      ),
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        bar(0.62, 15),
+        const SizedBox(height: 8),
+        bar(0.38, 15),
+      ],
+    );
+  }
 }
 
 class _Row extends StatelessWidget {

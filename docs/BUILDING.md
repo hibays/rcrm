@@ -6,17 +6,20 @@ Changing any version independently WILL break the build. All components are inte
 
 | Component | Version | Verified | File |
 |-----------|---------|----------|------|
-| Flutter SDK | **3.44.2** | ✅ | `flutter --version` |
+| Flutter SDK | **3.47.6** (3.44.2 is the last matrix-verified release) | ⚠️ | `flutter --version` |
+| Dart SDK | **3.13.5** (ships with the above) | ✅ | `dart --version` |
+| Rust | stable ≥ **1.89** | ✅ | `rustup show` — `heic` requires 1.89, edition 2024 everywhere |
 | Gradle | **9.1.0** | ✅ | `android/gradle/wrapper/gradle-wrapper.properties` |
 | AGP | **9.0.1** | ✅ | `android/settings.gradle.kts` |
 | Kotlin | **2.3.20** | ✅ | `android/settings.gradle.kts` |
 | NDK | **28.2.13676358** | ✅ | `$env:ANDROID_NDK_HOME` |
 | Compile SDK | **36** | ✅ | `android/app/build.gradle.kts` |
 | Min SDK | **24** | ✅ | `android/app/build.gradle.kts` |
-| Rust | stable (current) | ✅ | `rustup show` |
 | MSVC | VS 2022 Build Tools v18 | ✅ | Visual Studio Installer |
-| ffmpeg | MSYS2 ucrt64 (system PATH) | ✅ | `ffmpeg -version` |
+| ffmpeg | MSYS2 ucrt64 (system PATH), **9.x** | ⚠️ see Known issues | `ffmpeg -version` |
 | file_picker | 10.3.10 resolved (Android) | ✅ | `pubspec.lock` |
+| `rav1d` (git) | rev `9f00b03b…` | ✅ | `crates/rcrm-flutter-bridge/Cargo.toml` |
+| `heic` (git) | rev `db52055b…` | ✅ | `crates/rcrm-flutter-bridge/Cargo.toml` |
 
 **If Gradle/AGP/Kotlin must be upgraded:**
 
@@ -29,9 +32,13 @@ Changing any version independently WILL break the build. All components are inte
 
 ### All Platforms
 
-- Flutter 3.44.2 with desktop + Android support
-- Rust stable toolchain: `rustup toolchain install stable`
-- ffmpeg in PATH (thumbnails/previews)
+- Flutter 3.47.x with desktop + Android support
+- Rust stable ≥ 1.89: `rustup toolchain install stable`
+- ffmpeg in PATH (video posters/previews) — see Known issues for ffmpeg ≥ 9
+- Two **git** dependencies are fetched on first build: `rav1d` (AVIF) and `heic`
+  (HEIC/HEIF), both behind the `mobile-decode` feature. On a restricted network
+  add mirror entries to the local, gitignored `.cargo/config.toml` the way
+  `rav1d` is already redirected there.
 
 ### Windows
 
@@ -43,6 +50,11 @@ Changing any version independently WILL break the build. All components are inte
 - Android SDK with NDK 28.2.13676358 exactly: `sdkmanager "ndk;28.2.13676358"`
 - Rust Android targets: `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android`
 - `cargo-ndk`: `cargo install cargo-ndk`
+- The mobile bridge build enables `mobile-decode` (AVIF + JXL + HEIC software
+  decoding). `heic` is a pure-Rust HEVC decoder (`backend-rust`), chosen so no
+  platform SDK is involved and cross-compilation keeps working; it is
+  AGPL-3.0-only-or-commercial and HEVC/HEIF is patent-encumbered, so read its
+  notices before shipping a build.
 
 ### Linux
 
@@ -126,21 +138,86 @@ Pipeline: `cargo-ndk` for 3 ABIs (aarch64, armv7, x86_64) → download libmpv An
 # Output: build/ios/iphoneos/Runner.app
 ```
 
+## Known toolchain issues
+
+Two environment-level changes bite builds even though the source is unchanged.
+Neither is a code bug in this repo; both were reproduced and diagnosed locally.
+
+### ffmpeg ≥ 9 verifies TLS peers by default
+
+FFmpeg 9.0 flipped the `tls_verify` default from `0` to `1`, so any HTTPS
+request now validates the certificate. RCrm's HTTPS server uses a **self-signed**
+ephemeral certificate (pinned by the app, which ffmpeg has no way to know
+about), so video poster generation over HTTPS fails with:
+
+```
+[tls @ …] Peer certificate failed verification
+Error opening input: I/O error
+```
+
+Plain-HTTP (local mode) is unaffected. Options, in order of preference:
+
+1. Route ffmpeg to a loopback HTTP relay that performs the pinned HTTPS upstream.
+2. Pass `-ca_file <pem>` when the server's certificate is file-backed and its
+   hostname matches (the ephemeral certificate only covers `localhost`/`127.0.0.1`).
+3. Pass `-tls_verify 0` to keep the pre-9 behaviour (the subprocess then accepts
+   any certificate; the Dart side still pins).
+
+### Flutter 3.47 makes Impeller the default desktop renderer
+
+Impeller's image decoder (`ImageDecoderImpeller`) handles PNG/JPEG/WebP/GIF/BMP
+but has **no WIC fallback**, so on Windows AVIF/JXL/HEIC fail with
+`Could not decompress image`. Skia (`ImageDecoderSkia` → Windows WIC codecs, i.e.
+the Store's AV1 / JPEG XL / HEIF extensions) decodes them fine, which is why the
+regression appeared with the SDK upgrade (3.44.8 → 3.47.x).
+
+- Verify with: `flutter run -d windows --no-enable-impeller` (all formats decode)
+- Workarounds: ship the app with Impeller disabled
+  (`project.set_impeller_switch(flutter::ImpellerSwitch::Disabled)` in
+  `windows/runner/main.cpp`), or decode these formats through the Rust bridge —
+  which the **Android** build already does (`mobile-decode`).
+
 ## Test & Analyze
 
 ```bash
 # From crates/rcrm-gui/
-flutter analyze lib                          # ZERO warnings enforced
+flutter analyze lib test                     # ZERO warnings enforced
 
 # MUST use `flutter test` — plain `dart test` fails to load the suite
 # (the app imports Flutter packages, which import dart:ui, unavailable
 # on the bare Dart VM).
-flutter test test/rcrm_gui_test.dart         # unit tests (23)
-flutter test test/widget_test.dart           # widget smoke test
+flutter test                                 # the whole suite (~250 tests)
+flutter test test/rcrm_gui_test.dart         # just the core unit tests
+flutter test test/viewer_zoom_test.dart      # one file, while iterating
 
 # From repo root
 cargo test
 cargo clippy --all                           # ZERO warnings enforced
+
+# Bridge, including the mobile-only software decoders (AVIF/JXL/HEIC)
+cargo test -p rcrm-flutter-bridge --features mobile-decode --release
+cargo clippy -p rcrm-flutter-bridge --features mobile-decode --all-targets
+```
+
+### Bridge Build
+
+```bash
+# Desktop (no software decoders — Flutter's engine supplies pixels)
+cargo build --release -p rcrm-flutter-bridge
+# Output: target/release/rcrm_flutter_bridge.dll (.so/.dylib)
+
+# Android (via cargo-ndk, with the software decoders)
+cargo ndk --target aarch64-linux-android --target armv7-linux-androideabi \
+  --target x86_64-linux-android \
+  -o crates/rcrm-gui/android/app/src/main/jniLibs \
+  build -p rcrm-flutter-bridge --features mobile-decode --release
+```
+
+Cross-compile check without the NDK link step:
+
+```bash
+RUSTC_BOOTSTRAP=rav1d cargo ndk --target aarch64-linux-android check \
+  -p rcrm-flutter-bridge --features mobile-decode
 ```
 
 ## Troubleshooting
@@ -152,7 +229,10 @@ cargo clippy --all                           # ZERO warnings enforced
 | `rcrm_flutter_bridge.dll` locked | Process holds bridge | Kill all `rcrm_gui.exe` before rebuild |
 | Videos won't play | Missing mpv DLLs | Build script downloads them automatically |
 | No thumbnails/previews | ffmpeg not in PATH | `ffmpeg -version` to verify |
+| No video posters over **https://** | ffmpeg ≥ 9 verifies the self-signed peer | See Known toolchain issues above |
+| AVIF/JXL/HEIC broken in the **Windows** app | Impeller is the default desktop renderer | See Known toolchain issues above |
 | Missing DLLs at runtime | DLL copy step failed | Re-run build or manually copy DLLs to runner dir |
+| Cargo can't fetch `rav1d`/`heic` | Restricted network | Add mirror entries to the local `.cargo/config.toml` |
 
 ### Windows
 

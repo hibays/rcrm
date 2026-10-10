@@ -16,6 +16,7 @@ import '../widgets/image_wall_strip.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import '../services/item_cache_limit.dart';
+import '../services/bounded_fetch.dart';
 import '../services/net.dart';
 import '../services/mobile_image_decoder.dart';
 import '../services/animated_detector.dart';
@@ -28,6 +29,12 @@ import '../widgets/viewer_zoom.dart';
 import '../widgets/image_info_sheet.dart';
 
 enum _ViewerMode { still, animation, live }
+
+/// Which way a pointer gesture is committed to travel, decided once and never
+/// revisited (see [_ViewerPageState._decideGestureAxis]): a finger that curves
+/// mid-swipe keeps the axis it committed to, so the pull-to-dismiss and the
+/// pager can never both act on one gesture.
+enum _GestureAxis { undecided, page, pull }
 
 /// Keyboard shortcuts: ←/→ page between images, Esc closes the viewer.
 class _PrevIntent extends Intent {
@@ -339,6 +346,15 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
           skipTraversal: true,
           child: PopScope(
             canPop: true,
+            // The system back button pops this route without going through
+            // `_close()`, so `_popped` has to be set here too: while the exit
+            // transition runs the page is still mounted and its ticker still
+            // fires, and a dismissal that lands then would call `_close()` →
+            // `Navigator.pop()` — which pops the screen *underneath* the viewer,
+            // because a route that is already popping is not "present" any more.
+            onPopInvokedWithResult: (didPop, _) {
+              if (didPop) _popped = true;
+            },
             child: Scaffold(
               backgroundColor: Colors.transparent,
               body: Stack(
@@ -394,6 +410,7 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
                         },
                         onToggleUi: () => _showUI.value = !_showUI.value,
                         onHideUi: () => _showUI.value = false,
+                        onDismiss: _close,
                       ),
                     ),
                   ),
@@ -480,6 +497,13 @@ class _ViewerPage extends StatefulWidget {
   final GlobalKey<ZoomableViewportState> viewportKey;
 
   final bool isDesktop;
+
+  /// Closes the whole viewer. The page never pops the route itself: the screen
+  /// owns the once-only guard, so a dismiss that finishes while the back button
+  /// (or Esc, or a system back) is also closing the viewer cannot pop twice and
+  /// take the library screen down with it.
+  final VoidCallback onDismiss;
+
   const _ViewerPage({
     required this.item,
     required this.controller,
@@ -490,6 +514,7 @@ class _ViewerPage extends StatefulWidget {
     required this.onZoomChanged,
     required this.onImageSize,
     required this.onAnimated,
+    required this.onDismiss,
     required this.viewportKey,
     required this.isDesktop,
   });
@@ -505,7 +530,14 @@ class _ViewerPageState extends State<_ViewerPage>
   bool _confirmedAnimated = false;
   Timer? _tapTimer;
   Offset _dismissOffset = Offset.zero;
-  Offset _dragStart = Offset.zero;
+
+  /// Where the finger went down, in GLOBAL screen coordinates. The direction
+  /// lock measures its travel from here, and never through this page's own
+  /// transform: the pager slides the page sideways under the finger, so a
+  /// position read in the page's own space carries the page's movement as well
+  /// as the finger's — and the only thing this lock may be decided from is the
+  /// finger.
+  Offset _pointerStart = Offset.zero;
   late final AnimationController _dismissCtrl;
   VoidCallback? _dismissListener;
   Player? _livePlayer;
@@ -513,10 +545,6 @@ class _ViewerPageState extends State<_ViewerPage>
 
   /// Decoded pixel size of this photo, once the full-res decode lands.
   Size? _imageSize;
-
-  /// True while the picture is pinned to the top of the viewport, i.e. a
-  /// downward drag has nothing left to pan and may become a dismissal.
-  final ValueNotifier<bool> _atTopEdge = ValueNotifier(true);
 
   /// Velocity of the current pull, so a quick flick closes the viewer even
   /// when it travelled less than the distance threshold.
@@ -527,6 +555,11 @@ class _ViewerPageState extends State<_ViewerPage>
   /// Set while a pull-to-dismiss owns the gesture: the image must not pan at
   /// the same time, or the photo moves twice as fast as the finger.
   bool _pulling = false;
+
+  /// Which axis owns the current gesture. Reset on pointer down, then set the
+  /// first time the finger has travelled [_axisLockSlop] — and never changed
+  /// again for that gesture (see [_decideGestureAxis]).
+  _GestureAxis _axis = _GestureAxis.undecided;
 
   /// Full-res stream subscription, for the decoded size.
   ImageStream? _sizeStream;
@@ -824,7 +857,6 @@ class _ViewerPageState extends State<_ViewerPage>
       _sizeListener = null;
       _sizeStream = null;
     }
-    _atTopEdge.dispose();
     _liveDoneTimer?.cancel();
     _tapTimer?.cancel();
     _livePlayer?.dispose();
@@ -989,30 +1021,67 @@ class _ViewerPageState extends State<_ViewerPage>
     _dragEngaged = false;
     _pulling = false;
     _pullGesture = false;
-    _dragStart = e.localPosition;
+    _axis = _GestureAxis.undecided;
+    _pointerStart = e.position;
     _pullVelocity = VelocityTracker.withKind(e.kind)
       ..addPosition(e.timeStamp, e.position);
   }
 
-  /// A pull may begin when the picture has nothing left to pan: always at
-  /// rest, and while zoomed only when pinned to the top edge and heading
-  /// further down — otherwise the drag is a pan.
-  bool _pullAllowed(PointerMoveEvent e) {
-    if (!_isZoomed) return true;
-    if (!_atTopEdge.value) return false;
-    return e.localDelta.dy > 0 || _dismissOffset.dy > 0;
+  /// A pull may only begin at rest — fit size, 1×. A zoomed picture owns the
+  /// drag: it pans, and the way out of a zoom is zooming out (pinch or
+  /// double-tap), never yanking the photo off the screen. The edge check that
+  /// used to live here allowed exactly that at the top edge, which is the drag
+  /// people make when they mean "pan to the top of the picture".
+  bool _pullAllowed() => !_isZoomed;
+
+  /// Travel before the direction lock commits to an axis. Small enough that a
+  /// real swipe decides almost immediately, large enough to ignore the first
+  /// few pixels of finger tremor.
+  static const double _axisLockSlop = 8;
+
+  /// How far the leading axis must beat the other one to own the gesture.
+  static const double _axisDominance = 1.5;
+
+  /// The direction lock: which axis a finger's total [travel] since it went
+  /// down commits this gesture to. Decided once — a finger that curves later
+  /// keeps the axis it started on, because a gesture whose ownership can be
+  /// re-decided mid-flight is one where both gestures can fire.
+  ///
+  /// The case this exists for is a sideways page swipe whose finger sinks as it
+  /// goes: the pull used to be re-tested on every event against the finger's
+  /// total travel, so once the dip passed two thirds of the sideways travel it
+  /// took the gesture over mid-swipe — the photo slid down (and a long enough
+  /// dip dismissed the whole viewer) while the pager was switching pages. The
+  /// mirror case, a downward pull that drifts sideways, is why nothing here may
+  /// hand a vertical-leading gesture to the pager: it stays a pull, exactly as
+  /// it always was.
+  _GestureAxis _decideGestureAxis(Offset travel) {
+    final dx = travel.dx.abs();
+    // Sideways clearly dominates: the pager owns the gesture, so the pull must
+    // contribute nothing at all for the rest of it.
+    if (dx > _axisLockSlop && dx > travel.dy.abs() * _axisDominance) {
+      return _GestureAxis.page;
+    }
+    // Downward travel that dominates: the pull, on the rule it always used to
+    // engage (8px down, and not more than 1.5× sideways).
+    if (travel.dy >= _axisLockSlop && dx <= travel.dy * _axisDominance) {
+      return _GestureAxis.pull;
+    }
+    return _GestureAxis.undecided;
   }
 
   void _onPtrMove(PointerMoveEvent e) {
     _pullVelocity.addPosition(e.timeStamp, e.position);
     if (!_dragEngaged) {
-      if (!_pullAllowed(e)) return;
-      final dx = (e.localPosition.dx - _dragStart.dx).abs();
-      final dy = e.localPosition.dy - _dragStart.dy;
-      // Engage on vertical intent: a short downward travel that is clearly
-      // more vertical than horizontal. (Was 10px and 2:1 — both stricter than
-      // the gesture people actually make.)
-      if (dy < 8 || dx > dy * 1.5) return;
+      if (!_pullAllowed()) return;
+      if (_axis == _GestureAxis.undecided) {
+        _axis = _decideGestureAxis(e.position - _pointerStart);
+      }
+      // The pager owns this gesture: no offset, no scale/fade, and no dismissal
+      // on release — `_dragEngaged` stays false, so `_onPtrUp` bails out
+      // however far down the finger then travels.
+      if (_axis == _GestureAxis.page) return;
+      if (_axis != _GestureAxis.pull) return;
       _dragEngaged = true;
       _pulling = true;
       _pullGesture = true;
@@ -1084,18 +1153,20 @@ class _ViewerPageState extends State<_ViewerPage>
     _dismissCtrl.forward(from: 0);
   }
 
-  // Set once the dismiss animation has popped the route: guards against a
-  // second pop arriving from _close()/system back during the same moment
-  // (a double-pop would exit the screen below the viewer too).
-  bool _dismissed = false;
+  // Deliberately NOT a second guard: the close itself goes through
+  // `widget.onDismiss` → the screen's `_close()`, which owns the once-only flag.
+  // Keeping a page-local copy only reintroduced the race it was meant to stop.
 
   void _dismissStatusListener(AnimationStatus status) {
     if (status == AnimationStatus.completed) {
       _dismissCtrl.removeStatusListener(_dismissStatusListener);
-      if (!_dismissed && mounted) {
-        _dismissed = true;
-        Navigator.pop(context);
-      }
+      // Hand the close to the screen instead of popping here: it holds the
+      // one-shot guard, so this finish and a back/Esc press racing it during
+      // the route's exit animation collapse into a single pop. (The route stays
+      // mounted for ~300ms after the first pop, which is exactly the window a
+      // second, page-owned pop used to slip through — dismissing the library
+      // screen underneath as well.)
+      if (mounted) widget.onDismiss();
     }
   }
 
@@ -1117,7 +1188,6 @@ class _ViewerPageState extends State<_ViewerPage>
           : null,
       panEnabled: !_pulling,
       onZoomChanged: _onZoomChanged,
-      atTopEdge: _atTopEdge,
       onTapAt: _onTapAt,
       onScaleStart: _onInteractionStart,
       onScaleUpdate: _onInteractionUpdate,
@@ -1451,10 +1521,14 @@ class _FullResImageProvider extends ImageProvider<_FullResImageProvider> {
     _FullResImageProvider key,
     ImageDecoderCallback decode,
   ) {
-    final chunkEvents = StreamController<ImageChunkEvent>();
+    // No `chunkEvents`: this provider used to open a
+    // `StreamController<ImageChunkEvent>` per load that was never fed and never
+    // closed, and nothing subscribes to chunk events for it (the `Image` below
+    // uses frameBuilder/errorBuilder, not a chunk listener) — so the controller
+    // was a per-load allocation that outlived the entry in `_cache`. Download
+    // progress is not surfaced here; the thumbnail layer underneath is.
     return MultiFrameImageStreamCompleter(
       codec: _loadAsync(key.url, decode),
-      chunkEvents: chunkEvents.stream,
       scale: 1.0,
       debugLabel: key.url,
     );
@@ -1468,21 +1542,26 @@ class _FullResImageProvider extends ImageProvider<_FullResImageProvider> {
     // native memory and go straight to Rust. (The decoded RGBA still has to be
     // copied once into Dart — dart:ui can only build a ui.Image from a Dart
     // buffer — but the input no longer is.)
+    //
+    // A failed native decode falls through to the fetch below ON PURPOSE: the
+    // fallback is the ENGINE, a different decoder that can succeed where Rust
+    // refused (a HEIF the `heic` crate cannot read, a container that is really
+    // JPEG/PNG, or a file past Rust's shared 64 MP ceiling). The disk-thumbnail
+    // cache applies the same rule — its fallback is the engine too. The native
+    // attempt took ownership of its bytes, so they cannot be handed over; the cost
+    // is one extra download on this path only.
     final soft = await MobileImageDecoder.fetchForDecode(url);
     if (soft != null) {
       final swCodec = await MobileImageDecoder.tryDecodeNative(soft, url);
       if (swCodec != null) return swCodec;
     }
 
-    final uri = Uri.parse(Uri.encodeFull(url));
-    final req = await sharedHttpClient.getUrl(uri);
-    final auth = sharedAuthHeader;
-    if (auth != null) {
-      req.headers.set('Authorization', auth['Authorization']!);
-    }
-    final resp = await req.close();
-    if (resp.statusCode != 200) throw Exception('HTTP ${resp.statusCode}');
-    final bytes = await consolidateHttpClientResponseBytes(resp);
+    // Bounded end to end (see [fetchBoundedBytes]): a stall must surface as an
+    // error here, not as a pending future — the error is what `onErr` (in
+    // `resolveStreamForKey`) uses to evict this cache entry so the next resolve
+    // retries, and a pending one would leave the viewer on its placeholder with
+    // the decode slot still held.
+    final bytes = await fetchBoundedBytes(url);
 
     // On mobile, route AVIF/JXL through the Rust software decoder.
     final swCodec = await MobileImageDecoder.tryDecode(bytes, url);

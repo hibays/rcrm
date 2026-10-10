@@ -125,13 +125,6 @@ abstract final class ViewerZoom {
     if (fitted.width <= 0) return 1;
     return (content.width / fitted.width).clamp(1.0, maxScale);
   }
-
-  /// True while the picture is pinned to the top of the viewport — the point
-  /// at which dragging further down may hand the gesture to pull-to-dismiss.
-  static bool atTopEdge(Matrix4 m) {
-    if (!isZoomed(m)) return true;
-    return translationOf(m).dy >= -0.5;
-  }
 }
 
 /// Pull-to-dismiss threshold in logical pixels: a fixed ceiling with a
@@ -192,9 +185,6 @@ class ZoomableViewport extends StatefulWidget {
   /// Reported whenever the zoom state crosses [ViewerZoom.zoomedAt].
   final ValueChanged<bool>? onZoomChanged;
 
-  /// Mirrors [ViewerZoom.atTopEdge] for the pull-to-dismiss gesture.
-  final ValueNotifier<bool>? atTopEdge;
-
   /// Single tap in viewport coordinates (the caller applies its own
   /// single/double-tap timing).
   final ValueChanged<Offset>? onTapAt;
@@ -212,7 +202,6 @@ class ZoomableViewport extends StatefulWidget {
     this.fallbackAspect,
     this.panEnabled = true,
     this.onZoomChanged,
-    this.atTopEdge,
     this.onTapAt,
     this.onScaleStart,
     this.onScaleUpdate,
@@ -252,7 +241,6 @@ class ZoomableViewportState extends State<ZoomableViewport> {
     super.initState();
     widget.controller.addListener(_onControllerChanged);
     _wasZoomed = _isZoomed;
-    WidgetsBinding.instance.addPostFrameCallback((_) => _publishEdgeState());
   }
 
   @override
@@ -281,11 +269,10 @@ class ZoomableViewportState extends State<ZoomableViewport> {
   }
 
   /// The controller is the source of truth for the matrix, so every write —
-  /// gesture, chrome button, reset — has to repaint this viewport and refresh
-  /// the edge flag. (The child widget instance is unchanged, so the subtree
-  /// below the transform is not rebuilt.)
+  /// gesture, chrome button, reset — has to repaint this viewport. (The child
+  /// widget instance is unchanged, so the subtree below the transform is not
+  /// rebuilt.)
   void _onControllerChanged() {
-    _publishEdgeState();
     if (mounted) setState(() {});
   }
 
@@ -350,10 +337,6 @@ class ZoomableViewportState extends State<ZoomableViewport> {
       _wasZoomed = _isZoomed;
       widget.onZoomChanged?.call(_isZoomed);
     }
-  }
-
-  void _publishEdgeState() {
-    widget.atTopEdge?.value = ViewerZoom.atTopEdge(widget.controller.value);
   }
 
   // ── Gestures ──────────────────────────────────────────────────────

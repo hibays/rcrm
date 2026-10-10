@@ -10,6 +10,7 @@ import '../providers/settings_provider.dart';
 import '../widgets/media_toolbar.dart';
 import '../widgets/video_card.dart';
 import '../widgets/finger_preview_listener.dart';
+import '../utils/poster_quiet_route.dart';
 import 'video_player_screen.dart';
 
 class VideoScreen extends ConsumerWidget {
@@ -43,6 +44,12 @@ class VideoScreen extends ConsumerWidget {
           currentSort: sort,
           isAscending: asc,
           onSortChanged: (s) => ref.read(videoSortProvider.notifier).set(s),
+          // The arrow writes the direction provider — which
+          // `sortedVideosProvider` already watches — and names the direction it
+          // wants. It does not lean on the sort-field seam flipping when the
+          // active field is re-picked (that rule is `_SortNotifier.set`).
+          onSortDirectionChanged: () =>
+              ref.read(videoSortAscProvider.notifier).toggle(),
           extensions: extensions.toList(),
           currentFilter: filter,
           onFilterChanged: (f) => ref.read(videoFilterProvider.notifier).set(f),
@@ -67,8 +74,12 @@ class VideoScreen extends ConsumerWidget {
                 if (context.mounted) {
                   Navigator.push(
                     context,
-                    MaterialPageRoute(
-                      builder: (_) => VideoPlayerScreen(item: item),
+                    // Creates the screen's playback player inside the push and
+                    // keeps the poster pool suspended for as long as it is on
+                    // screen — see `utils/poster_quiet_route.dart`.
+                    PosterQuietRoute(
+                      build: (warm) =>
+                          VideoPlayerScreen(item: item, warmPlayer: warm),
                     ),
                   );
                 }

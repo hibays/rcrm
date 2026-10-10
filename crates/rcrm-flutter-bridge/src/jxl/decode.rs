@@ -4,7 +4,7 @@
 
 #![allow(clippy::too_many_arguments)]
 
-use crate::decode::DecodeBuf;
+use crate::decode::{DecodeBuf, Limit, bilinear_taps_at};
 use jxl_oxide::JxlImage;
 use jxl_oxide::image::BitDepth;
 use jxl_render::ImageBuffer;
@@ -13,6 +13,19 @@ pub fn decode_frame(data: &[u8], target_width: u32) -> Option<Box<DecodeBuf>> {
 	let reader = std::io::Cursor::new(data);
 	let image = JxlImage::builder().read(reader).ok()?;
 	let (full_w, full_h) = (image.width(), image.height());
+	// A header-declared canvas is attacker-controlled and the renderer allocates
+	// for it infallibly, so without this a crafted file ends in an OOM abort
+	// (the whole process) instead of "this file cannot be decoded".
+	//
+	// The bound is the pixel COUNT and nothing else: total pixels are what the
+	// allocation scales with, so an extreme aspect ratio (say 1 x 64M) is allowed
+	// through as long as the product stays inside the ceiling. JXL is deliberately
+	// uncapped in the *quality* sense — the AVIF/HEIC policy limit is not applied to
+	// real JXL images — so this is the shared memory ceiling, not a limit of its own.
+	const MAX_CANVAS_PIXELS: u64 = Limit::PRODUCTION.pixels();
+	if full_w == 0 || full_h == 0 || (full_w as u64) * (full_h as u64) > MAX_CANVAS_PIXELS {
+		return None;
+	}
 	let bit_depth = image.image_header().metadata.bit_depth;
 	let render = image.render_frame(0).ok()?;
 	let orientation = render.orientation();
@@ -49,12 +62,15 @@ pub fn decode_frame(data: &[u8], target_width: u32) -> Option<Box<DecodeBuf>> {
 	};
 
 	let n = rgba.len();
+	// `into_raw_parts` drops the capacity on the floor; these buffers are built
+	// with `with_capacity(n * 4)` and filled exactly, so length is the capacity.
 	let (p, _, _) = rgba.into_raw_parts();
 	Some(Box::new(DecodeBuf {
 		width: dw,
 		height: dh,
 		channels: 4,
 		data_len: n,
+		cap: n,
 		data: p,
 	}))
 }
@@ -97,12 +113,13 @@ fn sample_bilin(
 	gray: bool,
 	out: &mut Vec<u8>,
 ) {
-	let x0 = fx as usize;
-	let y0 = fy as usize;
-	let x1 = (x0 + 1).min(gw as usize - 1);
-	let y1 = (y0 + 1).min(gh as usize - 1);
-	let frac_x = (fx - fx.floor()) as f32;
-	let frac_y = (fy - fy.floor()) as f32;
+	// Shared tap maths with the HEIC path (see `decode::bilinear_taps_at`); the
+	// coordinate itself arrives already mapped through the container's
+	// orientation. The blend below stays in f32, as it always has.
+	let (x0, x1, wx) = bilinear_taps_at(fx, gw);
+	let (y0, y1, wy) = bilinear_taps_at(fy, gh);
+	let frac_x = wx as f32;
+	let frac_y = wy as f32;
 
 	if gray {
 		let s = |x, y| sample_planar(&channels[0], x, y, bd);
@@ -136,6 +153,10 @@ fn planar_sample(
 		_ => (gh, gw),
 	};
 	let n = (ow * oh) as usize;
+	// `with_capacity` aborts if the allocation fails, and `n` derives from the image
+	// geometry. The canvas ceiling in `decode_frame` is what keeps that request
+	// bounded (<= 64 MP, ~256 MB); making the failure graceful instead would need
+	// these two helpers to return a Result, which their callers do not expect.
 	let mut out = Vec::with_capacity(n * 4);
 	if gray {
 		for dy in 0..oh {
@@ -192,6 +213,10 @@ fn planar_sample_downscale(
 	dh: u32,
 ) -> Vec<u8> {
 	let n = (dw * dh) as usize;
+	// `with_capacity` aborts if the allocation fails, and `n` derives from the image
+	// geometry. The canvas ceiling in `decode_frame` is what keeps that request
+	// bounded (<= 64 MP, ~256 MB); making the failure graceful instead would need
+	// these two helpers to return a Result, which their callers do not expect.
 	let mut out = Vec::with_capacity(n * 4);
 	// Oriented full-res dimensions.
 	let fw = match orientation {

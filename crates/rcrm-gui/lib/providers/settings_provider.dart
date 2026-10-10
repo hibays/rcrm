@@ -90,6 +90,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
     final imageLayout = await _service.getImageLayout();
     final imageColumns = await _service.getImageColumns();
     final imageSort = await _service.getImageSort();
+    final imageSortAsc = await _service.getImageSortAsc();
     final previewEnabled = await _service.getPreviewEnabled();
     PreviewPlayer.enabled = previewEnabled;
     final thumbCacheEnabled = await _service.getThumbCacheEnabled();
@@ -102,8 +103,10 @@ class SettingsNotifier extends Notifier<SettingsState> {
     final autoRotate = await _service.getAutoRotate();
     final castAutoNext = await _service.getCastAutoNext();
 
-    // Restore video sort/grid columns from persistence.
-    ref.read(videoSortProvider.notifier).set(await _service.getVideoSort());
+    // Restore video sort/grid columns from persistence. The video sort field
+    // goes through `restore`, not `set`: `set` carries the re-pick rule below,
+    // and a restored field that matches the default would read as a re-pick.
+    ref.read(videoSortProvider.notifier).restore(await _service.getVideoSort());
     ref
         .read(videoSortAscProvider.notifier)
         .set(await _service.getVideoSortAsc());
@@ -115,6 +118,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
       imageLayout: imageLayout,
       imageColumns: imageColumns,
       imageSort: imageSort,
+      imageSortAsc: imageSortAsc,
       previewEnabled: previewEnabled,
       thumbCacheEnabled: thumbCacheEnabled,
       videoLayout: videoLayout,
@@ -138,13 +142,20 @@ class SettingsNotifier extends Notifier<SettingsState> {
     await _service.setImageColumns(c);
   }
 
+  /// The image page's album sort committed [sort] — the one entry point both
+  /// the image screen (`screens/image_screen.dart`) and any future caller use.
+  ///
+  /// Re-picking the field already in effect reverses the direction instead of
+  /// doing nothing; picking a different field starts that field ascending, and
+  /// either way the direction now in effect is persisted and restored by
+  /// [load]. The video page's `_SortNotifier.set` (library_provider.dart)
+  /// carries this same rule, so the video and image screens answer a re-pick
+  /// identically — keep the two in step.
   Future<void> setImageSort(String sort) async {
-    if (state.imageSort == sort) {
-      state = state.copyWith(imageSortAsc: !state.imageSortAsc);
-    } else {
-      state = state.copyWith(imageSort: sort, imageSortAsc: true);
-    }
+    final asc = state.imageSort == sort ? !state.imageSortAsc : true;
+    state = state.copyWith(imageSort: sort, imageSortAsc: asc);
     await _service.setImageSort(sort);
+    await _service.setImageSortAsc(asc);
   }
 
   Future<void> setVideoLayout(String layout) async {

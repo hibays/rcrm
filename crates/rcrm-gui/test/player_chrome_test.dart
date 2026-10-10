@@ -118,10 +118,12 @@ void main() {
     ) async {
       // The layout test pins the plan's arithmetic; this pins the pixels. A
       // plan that budgets differently from what it paints (or a tier that runs
-      // out of floor) shows up here as a RenderFlex overflow — verified by
-      // running the same loop at 60dp, where it reports "overflowed by 48
-      // pixels", i.e. exactly the tiny tier's 108dp floor minus the width.
-      for (var width = 120.0; width <= 900; width += 10) {
+      // out of floor) shows up here as a RenderFlex overflow.
+      //
+      // The sweep starts BELOW the tiny tier's three-button floor (108dp): that
+      // is where the plan has to start dropping controls, and starting at 120dp
+      // — as this loop used to — skipped the only band that could overflow.
+      for (var width = 40.0; width <= 900; width += 10) {
         await _pumpBar(tester, size: Size(width, 500), hasPrev: true);
         await tester.pump(const Duration(milliseconds: 16));
         expect(
@@ -149,6 +151,24 @@ void main() {
       expect(find.byIcon(Icons.play_arrow), findsOneWidget);
       expect(find.byIcon(Icons.volume_up), findsOneWidget);
       expect(find.byIcon(Icons.fullscreen), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('below the three-button floor it drops the replaceable ones', (
+      tester,
+    ) async {
+      // 3 x 32dp targets + gaps + padding = 108dp. Under that, something has to
+      // give: fullscreen first (F11 and the window chrome still do it), then
+      // mute (the volume gestures and keys still do). Play/pause stays — it has
+      // no alternative — and the row fits instead of painting an overflow.
+      await _pumpBar(tester, size: const Size(100, 500));
+      expect(find.byIcon(Icons.play_arrow), findsOneWidget);
+      expect(find.byIcon(Icons.fullscreen), findsNothing);
+      expect(tester.takeException(), isNull);
+
+      await _pumpBar(tester, size: const Size(70, 500));
+      expect(find.byIcon(Icons.play_arrow), findsOneWidget);
+      expect(find.byIcon(Icons.volume_up), findsNothing);
       expect(tester.takeException(), isNull);
     });
 

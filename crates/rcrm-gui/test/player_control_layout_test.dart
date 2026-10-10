@@ -43,8 +43,14 @@ PlayerControlPlan plan(
 
 void main() {
   group('planPlayerControlBar', () {
-    test('never exceeds the width it was given (120..2000dp)', () {
-      for (var w = 120.0; w <= 2000; w += 1) {
+    test('never exceeds the width it was given (40..2000dp)', () {
+      // Starts at 40dp: below ~108dp the ladder drops the fullscreen button and
+      // below ~74dp it drops mute, and those two branches used to be outside this
+      // invariant entirely. 40dp is the *measured* structural floor — widening
+      // this loop downward found that even with every optional control dropped
+      // the bar still needs 40dp (play/pause plus its own gaps and padding), so a
+      // narrower window is not a case the planner can serve at all.
+      for (var w = 40.0; w <= 2000; w += 1) {
         for (final fs in [false, true]) {
           final p = plan(w, fullscreen: fs);
           expect(
@@ -53,6 +59,25 @@ void main() {
             reason: 'overflow at ${w}dp (fullscreen: $fs): $p',
           );
         }
+      }
+    });
+
+    test('a dropped control never comes back as the bar gets narrower', () {
+      // Monotone ladder: once fullscreen (then mute) is gone at some width, no
+      // narrower width may show it again — otherwise the bar would flicker while
+      // a window is dragged, and the drop order would not be a ladder at all.
+      var sawFullscreen = true;
+      var sawMute = true;
+      for (var w = 2000.0; w >= 40; w -= 1) {
+        final p = plan(w);
+        if (!sawFullscreen) {
+          expect(p.showFullscreen, isFalse, reason: 'fullscreen returned at ${w}dp');
+        }
+        if (!sawMute) {
+          expect(p.showMute, isFalse, reason: 'mute returned at ${w}dp');
+        }
+        sawFullscreen = sawFullscreen && p.showFullscreen;
+        sawMute = sawMute && p.showMute;
       }
     });
 

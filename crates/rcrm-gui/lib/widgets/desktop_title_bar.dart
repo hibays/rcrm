@@ -2,6 +2,44 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:window_manager/window_manager.dart';
 import '../providers/window_chrome_provider.dart';
+import '../services/window_drag.dart';
+
+/// The draggable strip of the app's own title bar.
+///
+/// Both platforms get the same behaviour — drag to move, double-click to
+/// maximize/restore — but Windows has no caption to press, so the move is handed
+/// to the runner ([startWindowDrag]): `WM_SYSCOMMAND` + `SC_MOVE` (what
+/// [DragToMoveArea] sends) is treated as a keyboard move and never snaps on
+/// Windows 10. Elsewhere [DragToMoveArea] is the correct implementation: X11
+/// `_NET_WM_MOVERESIZE` and macOS `performWindowDragWithEvent:`.
+class _DragArea extends StatelessWidget {
+  final Widget child;
+
+  const _DragArea({required this.child});
+
+  Future<void> _toggleMaximize() async {
+    // In fullscreen there is nothing to maximize.
+    if (await windowManager.isFullScreen()) return;
+    if (await windowManager.isMaximized()) {
+      await windowManager.unmaximize();
+    } else {
+      await windowManager.maximize();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Same gesture shape as window_manager's DragToMoveArea (pan starts the
+    // move, double-tap toggles maximize) so the strip keeps the behaviour the
+    // title bar always had.
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onPanStart: (_) => startWindowDrag(),
+      onDoubleTap: _toggleMaximize,
+      child: child,
+    );
+  }
+}
 
 class TitleBarShell extends ConsumerStatefulWidget {
   final Widget child;
@@ -132,7 +170,7 @@ class _DesktopTitleBarState extends ConsumerState<_DesktopTitleBar>
         child: Row(
           children: [
             Expanded(
-              child: DragToMoveArea(
+              child: _DragArea(
                 child: SizedBox(
                   height: 36,
                   child: Padding(

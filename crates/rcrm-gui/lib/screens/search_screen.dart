@@ -12,6 +12,7 @@ import '../providers/library_provider.dart';
 import '../widgets/album_card.dart';
 import '../widgets/image_card.dart';
 import '../widgets/video_card.dart';
+import '../utils/poster_quiet_route.dart';
 import 'image_screen.dart'; // selectedAlbumProvider
 import 'image_viewer_screen.dart';
 import 'video_player_screen.dart';
@@ -64,7 +65,12 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     Future.microtask(() {
       if (mounted) {
         Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => VideoPlayerScreen(item: item)),
+          // Creates the screen's playback player inside the push and keeps the
+          // poster pool suspended for as long as it is on screen — see
+          // `utils/poster_quiet_route.dart`.
+          PosterQuietRoute(
+            build: (warm) => VideoPlayerScreen(item: item, warmPlayer: warm),
+          ),
         );
       }
     });

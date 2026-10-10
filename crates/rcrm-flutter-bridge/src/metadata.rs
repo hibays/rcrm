@@ -212,7 +212,10 @@ fn track_summary(track: &TrackInfo) -> Map<String, Value> {
 			.map(str::to_owned)
 	};
 	let integer = |tag: TrackInfoTag| -> Option<i64> {
-		track.get(tag).and_then(entry_number).map(|v| v.round() as i64)
+		track
+			.get(tag)
+			.and_then(entry_number)
+			.map(|v| v.round() as i64)
 	};
 
 	insert_str(&mut out, "make", text(TrackInfoTag::Make));
@@ -495,8 +498,7 @@ mod tests {
 			0x00, 0x01, 0x00, 0x00, // APP0
 			0xff, 0xd9, // EOI
 		];
-		let v: Value =
-			serde_json::from_str(&parse_json(jpeg, KindHint::Auto)).expect("json");
+		let v: Value = serde_json::from_str(&parse_json(jpeg, KindHint::Auto)).expect("json");
 		assert_eq!(v["kind"], "image");
 		assert!(v.get("exif").is_none(), "no EXIF means no exif object");
 	}
@@ -506,11 +508,8 @@ mod tests {
 		// The bytes are a JPEG, but the caller insists they are a track: the
 		// parse must go down the track path rather than silently succeeding
 		// as an image.
-		let v: Value = serde_json::from_str(&parse_json(
-			sample_jpeg(),
-			KindHint::Track,
-		))
-		.expect("json");
+		let v: Value =
+			serde_json::from_str(&parse_json(sample_jpeg(), KindHint::Track)).expect("json");
 		assert_eq!(v["kind"], "track");
 		assert!(v.get("exif").is_none());
 	}

@@ -213,6 +213,14 @@ Win32Window::MessageHandler(HWND hwnd,
       }
       return 0;
 
+    // No WM_NCCALCSIZE handling on purpose: while window_manager's
+    // TitleBarStyle.hidden is set (lib/main.dart), its plugin installs a
+    // top-level window-proc delegate that answers every WM_NCCALCSIZE with
+    // wParam == TRUE and adjusts the maximised client rect itself. Messages
+    // reach that delegate before this handler (FlutterWindow::MessageHandler
+    // hands them to the engine and plugins first), so a case here would be dead
+    // code -- and a second, divergent answer to the same question.
+
     case WM_DWMCOLORIZATIONCOLORCHANGED:
       UpdateTheme(hwnd);
       return 0;

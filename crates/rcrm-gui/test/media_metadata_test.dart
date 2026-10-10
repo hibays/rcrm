@@ -1,6 +1,6 @@
 // test/media_metadata_test.dart
 // The JSON contract between the Rust metadata parser (nom-exif) and the UI.
-// The sample below is the exact shape `rcrm_media_metadata_async_v2` returns.
+// The sample below is the exact shape `rcrm_media_metadata_async` returns.
 
 import 'dart:ffi';
 import 'dart:io';
@@ -175,6 +175,36 @@ void main() {
       expect(identical(failed, retry), isFalse);
       expect((await retry).kind, 'unknown');
     });
+
+    test('a new library cannot be served the previous answers', () async {
+      // The doc used to promise invalidation "when the library is re-scanned" while
+      // nothing ever called clearCache. The library identity is part of the cache key
+      // now, so switching libraries (or re-scanning) invalidates by itself — there is
+      // no hook left to forget.
+      MediaMetadataService.setLibraryIdentity('serverA|/media');
+      final a1 = MediaMetadataService.forUrl('http://127.0.0.1:1/z.jpg');
+      expect(
+        identical(a1, MediaMetadataService.forUrl('http://127.0.0.1:1/z.jpg')),
+        isTrue,
+        reason: 'same library, same file: one fetch',
+      );
+
+      // Re-declaring the same identity must not throw the cache away.
+      MediaMetadataService.setLibraryIdentity('serverA|/media');
+      expect(
+        identical(a1, MediaMetadataService.forUrl('http://127.0.0.1:1/z.jpg')),
+        isTrue,
+      );
+
+      // Another library: the URL means something else now, so the old answer must
+      // not be served — and the old future still resolves for whoever holds it.
+      MediaMetadataService.setLibraryIdentity('serverB|/media');
+      expect(
+        identical(a1, MediaMetadataService.forUrl('http://127.0.0.1:1/z.jpg')),
+        isFalse,
+      );
+      expect((await a1).kind, 'unknown');
+    });
   });
 
   group('MetadataKind', () {
@@ -245,13 +275,15 @@ void main() {
       final head = await MediaMetadataService.fetchHead(url('multi.jpg'));
       expect(head, isNotNull);
       expect(head!.len, body.length);
-      expect(head.cap, MediaMetadataService.maxFetchBytes);
       final landed = head.ptr.asTypedList(head.len);
       expect(firstMismatch(landed, body), -1, reason: 'payload was corrupted');
       head.free();
     });
 
     test('the head stops at the cap instead of buffering the whole file', () async {
+      // The ask is 4 MiB; the file is bigger, so the Range request is what
+      // bounds the transfer — and the allocation is exactly the ask, which is
+      // the shape the FFI hand-off requires.
       final body = List<int>.generate(
         MediaMetadataService.maxFetchBytes + 5000,
         (i) => i % 253,
@@ -261,6 +293,7 @@ void main() {
       final head = await MediaMetadataService.fetchHead(url('huge.tif'));
       expect(head, isNotNull);
       expect(head!.len, MediaMetadataService.maxFetchBytes);
+      expect(head.transferIfWhole(), isNotNull);
       final landed = head.ptr.asTypedList(head.len);
       expect(firstMismatch(landed, body.sublist(0, head.len)), -1);
       head.free();

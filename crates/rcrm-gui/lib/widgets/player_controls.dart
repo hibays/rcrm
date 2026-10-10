@@ -145,9 +145,10 @@ class PlayerChromeMetrics {
 
   /// Never spend more room than the bar actually got: a wide window can still
   /// hand the bar a narrow column, and the bar follows the column. Below the
-  /// compact tier's floor the targets shrink once more ([tiny]) instead of
-  /// overflowing — the essentials cannot be dropped, so this is the last
-  /// resort before a bar too narrow to be usable at all (~108dp).
+  /// compact tier's floor the targets shrink once more ([tiny]); below *that*
+  /// (a bar narrower than three 32dp targets + gaps + padding = 108dp) the plan
+  /// starts dropping the controls that have an alternative path, so no width can
+  /// overflow the row.
   PlayerChromeMetrics cappedTo(double maxWidth) {
     if (maxWidth < 140) return tiny;
     if (maxWidth < 340) return compact;
@@ -189,7 +190,17 @@ class PlayerControlPlan {
   final bool showSpeed;
   final bool showEpisodes;
 
-  /// 0 = hidden (the mute button stays).
+  /// The two essentials that can still be dropped when the bar is narrower than
+  /// even the smallest tier's three buttons (a desktop window can be dragged to
+  /// any width). Fullscreen goes first — the `F` shortcut and the title-bar
+  /// button still do it — then mute, which the volume gestures and keys still
+  /// do, and last the speed chip. Play/pause is the one that always stays, and
+  /// it fits at any width.
+  final bool showMute;
+  final bool showFullscreen;
+
+  /// 0 = no slider is budgeted (mute may itself have been dropped — see
+  /// [showMute]; this field says nothing about whether it survived).
   final double volumeSliderWidth;
 
   /// Total width the planned controls need, including gaps and bar padding.
@@ -204,6 +215,8 @@ class PlayerControlPlan {
     required this.showEpisodes,
     required this.volumeSliderWidth,
     required this.contentWidth,
+    this.showMute = true,
+    this.showFullscreen = true,
   });
 
   bool get showVolumeSlider => volumeSliderWidth > 0;
@@ -212,17 +225,22 @@ class PlayerControlPlan {
   String toString() =>
       'PlayerControlPlan(pos: $showPosition, dur: $showDuration, '
       'prev: $showPrev, next: $showNext, speed: $showSpeed, '
-      'eps: $showEpisodes, volume: $volumeSliderWidth, '
-      'width: ${contentWidth.toStringAsFixed(1)})';
+      'eps: $showEpisodes, mute: $showMute, fs: $showFullscreen, '
+      'volume: $volumeSliderWidth, width: ${contentWidth.toStringAsFixed(1)})';
 }
 
 /// Chooses which controls the bar renders so that it fits [maxWidth].
 ///
-/// Play/pause, mute and the fullscreen toggle are unconditional: they are the
-/// actions with no alternative path. Everything else is admitted in priority
-/// order while it still fits, and the volume slider — the only control whose
+/// Play/pause is unconditional — it is the action with no alternative path.
+/// Mute, the fullscreen toggle and everything else are admitted in priority
+/// order while they still fit, and the volume slider — the only control whose
 /// job can be done by a neighbour — takes what remains, hiding rather than
 /// shrinking into an unusable stub.
+///
+/// When even the three-button floor does not fit, the ladder keeps going:
+/// fullscreen and then mute are dropped rather than letting the row overflow.
+/// That case needs a window dragged below ~108dp, i.e. nobody's daily driver —
+/// but it is reachable, and an overflow stripe is not an acceptable answer to it.
 PlayerControlPlan planPlayerControlBar({
   required double maxWidth,
   required PlayerChromeMetrics m,
@@ -241,6 +259,8 @@ PlayerControlPlan planPlayerControlBar({
     required bool speed,
     required bool episodes,
     double volume = 0,
+    bool mute = true,
+    bool fullscreen = true,
   }) {
     // Only controls that will really be painted may be budgeted for: a
     // reserved-but-absent skip button silently steals the volume slider's
@@ -248,8 +268,11 @@ PlayerControlPlan planPlayerControlBar({
     final showPrev = prev && hasPrev;
     final showNext = next && hasNext;
     final showEpisodes = episodes && hasEpisodes;
-    // play/pause + mute + fullscreen are always present.
-    final widths = <double>[m.tap, m.tap, m.tap];
+    // play/pause is always present; mute and fullscreen unless the ladder below
+    // had to give them up.
+    final widths = <double>[m.tap];
+    if (mute) widths.add(m.tap);
+    if (fullscreen) widths.add(m.tap);
     if (position) widths.add(positionWidth);
     if (duration) widths.add(durationWidth);
     if (showNext) widths.add(m.tap);
@@ -362,6 +385,27 @@ PlayerControlPlan planPlayerControlBar({
       ? math.min(leftover, m.volumeSliderMax)
       : 0.0;
 
+  // Last resort, narrower than even the smallest tier's three buttons: give up
+  // the controls that have somewhere else to live, in the order that costs the
+  // user least, so the row fits instead of painting an overflow stripe.
+  var showMute = true;
+  var showFullscreen = true;
+  double widthWith(bool mute, bool fullscreen) => total(
+    position: showPosition,
+    duration: showDuration,
+    prev: showPrev && hasPrev,
+    next: showNext && hasNext,
+    speed: showSpeed,
+    episodes: showEpisodes && hasEpisodes,
+    volume: volume,
+    mute: mute,
+    fullscreen: fullscreen,
+  );
+  if (widthWith(true, true) > maxWidth) {
+    showFullscreen = false;
+    if (widthWith(true, false) > maxWidth) showMute = false;
+  }
+
   return PlayerControlPlan(
     showPosition: showPosition,
     showDuration: showDuration,
@@ -370,15 +414,9 @@ PlayerControlPlan planPlayerControlBar({
     showSpeed: showSpeed,
     showEpisodes: showEpisodes && hasEpisodes,
     volumeSliderWidth: volume,
-    contentWidth: total(
-      position: showPosition,
-      duration: showDuration,
-      prev: showPrev && hasPrev,
-      next: showNext && hasNext,
-      speed: showSpeed,
-      episodes: showEpisodes && hasEpisodes,
-      volume: volume,
-    ),
+    showMute: showMute,
+    showFullscreen: showFullscreen,
+    contentWidth: widthWith(showMute, showFullscreen),
   );
 }
 
@@ -409,6 +447,14 @@ class PlayerControlBar extends StatefulWidget {
   final VoidCallback? onPlayPause;
   final ValueChanged<Duration>? onSeek;
 
+  /// True when a drag on one of the bar's sliders (seek or volume) begins and
+  /// false when it ends, so the screen can hold its auto-hide off: fading out
+  /// the control bar — the slider under the finger included — is never what the
+  /// user asked for. `false` means "the interaction has settled, start the idle
+  /// countdown again", which is also how a wheel notch over the volume cluster
+  /// reports itself. Optional; a bar without a listener behaves as before.
+  final ValueChanged<bool>? onScrubActive;
+
   /// Fired once when a volume drag settles, so the caller can persist it.
   final ValueChanged<double>? onVolumeChanged;
   final VoidCallback? onVolumeChangeEnd;
@@ -438,6 +484,7 @@ class PlayerControlBar extends StatefulWidget {
     this.hasEpisodes = false,
     this.onPlayPause,
     this.onSeek,
+    this.onScrubActive,
     this.onVolumeChanged,
     this.onVolumeChangeEnd,
     this.onToggleMute,
@@ -513,9 +560,22 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
         final played = duration > 0
             ? (_scrubMs ?? widget.position.inMilliseconds.toDouble()) / duration
             : 0.0;
-        final buffered = duration > 0
+
+        // Both ends of a drag are announced; a null handler means "no seek
+        // available", which is also when the slider refuses the touch.
+        void scrub(bool active) => widget.onScrubActive?.call(active);
+        // `secondaryTrackValue` may be null — Flutter only bounds it to [min, max],
+        // it does not require it to be ahead of `value` — and null is the honest
+        // answer when nothing is buffered ahead: after a seek into an unbuffered
+        // region media_kit reports a buffered end BEHIND the position, and the
+        // secondary track would be painted backwards from the thumb.
+        final playedFraction = played.clamp(0.0, 1.0);
+        final bufferedRaw = duration > 0
             ? (widget.buffer.inMilliseconds / duration).clamp(0.0, 1.0)
             : 0.0;
+        final double? buffered = bufferedRaw > playedFraction
+            ? bufferedRaw
+            : null;
 
         return Container(
           decoration: const BoxDecoration(
@@ -553,6 +613,14 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                   child: Slider(
                     value: played.clamp(0.0, 1.0),
                     secondaryTrackValue: buffered,
+                    // A drag on the bar is an interaction in progress, like an
+                    // open panel: the screen holds its idle timer off for its
+                    // duration and re-arms it at the end. Without this the bar
+                    // — slider under the finger included — faded out two
+                    // seconds into every scrub.
+                    onChangeStart: widget.onSeek == null || duration <= 0
+                        ? null
+                        : (_) => scrub(true),
                     onChanged: widget.onSeek == null || duration <= 0
                         ? null
                         : (v) => setState(() => _scrub = v * duration),
@@ -563,6 +631,7 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                             widget.onSeek!(
                               Duration(milliseconds: (v * duration).round()),
                             );
+                            scrub(false);
                           },
                   ),
                 ),
@@ -578,10 +647,15 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                     size: m.icon + 2,
                     tooltip: widget.playing ? 'Pause' : 'Play',
                   ),
-                  _gap(m),
-                  // Volume: the mute button is unconditional, the slider is
-                  // whatever the budget allowed.
-                  _volumeGroup(m, plan.volumeSliderWidth),
+                  // Volume: the mute button unless the width ladder had to give
+                  // it up, the slider whatever the budget allowed. The gap
+                  // belongs to the block — the budget counts one gap per painted
+                  // control, so an unconditional gap here is a 2dp overflow at
+                  // the narrowest widths.
+                  if (plan.showMute) ...[
+                    _gap(m),
+                    _volumeGroup(m, plan.volumeSliderWidth),
+                  ],
                   if (plan.showPosition) ...[
                     _gap(m),
                     Text(
@@ -628,15 +702,19 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                       tooltip: 'Episodes',
                     ),
                   ],
-                  _gap(m),
-                  _iconButton(
-                    m,
-                    icon: widget.fullscreen
-                        ? Icons.fullscreen_exit
-                        : Icons.fullscreen,
-                    onPressed: widget.onFullscreen,
-                    tooltip: widget.fullscreen ? 'Exit fullscreen' : 'Fullscreen',
-                  ),
+                  if (plan.showFullscreen) ...[
+                    _gap(m),
+                    _iconButton(
+                      m,
+                      icon: widget.fullscreen
+                          ? Icons.fullscreen_exit
+                          : Icons.fullscreen,
+                      onPressed: widget.onFullscreen,
+                      tooltip: widget.fullscreen
+                          ? 'Exit fullscreen'
+                          : 'Fullscreen',
+                    ),
+                  ],
                 ],
               ),
             ],
@@ -646,10 +724,24 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
     );
   }
 
+  /// The previewed position while the user drags the bar, in milliseconds.
+  ///
+  /// `_scrub` is ALREADY milliseconds — the slider reports a fraction, but the
+  /// write site (`_scrub = v * duration`) has already scaled it. This getter used
+  /// to multiply by the duration a second time, so the label showed
+  /// `ms × ms` — the "random memory number" on the scrubber after the controls
+  /// rewrite.
+  ///
+  /// Clamped to the media: a drag is bounded by the bar, but a duration that
+  /// shrank (metadata arrived, or the stream re-reported it) can leave a stale
+  /// value beyond the end, and `null` is the honest answer when the duration is
+  /// not known yet — the bar then falls back to the player's own position.
   double? get _scrubMs {
     final s = _scrub;
-    if (s == null) return null;
-    return s * widget.duration.inMilliseconds;
+    if (s == null || !s.isFinite) return null;
+    final total = widget.duration.inMilliseconds.toDouble();
+    if (total <= 0) return null;
+    return s.clamp(0.0, total);
   }
 
   Widget _gap(PlayerChromeMetrics m) => SizedBox(width: m.gap);
@@ -698,6 +790,10 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
               if (next == widget.volume) return;
               widget.onVolumeChanged!(next);
               widget.onVolumeChangeEnd?.call();
+              // A notch is an interaction that has already settled: the idle
+              // countdown starts over rather than expiring while the user is
+              // still working the wheel.
+              widget.onScrubActive?.call(false);
             },
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -728,8 +824,18 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                 child: Slider(
                   value: widget.volume.clamp(0.0, 100.0),
                   max: 100,
+                  // Announced the same way as the seek bar: a two-second drag
+                  // for volume used to fade the bar — the slider under the
+                  // finger included — out from under the user. A slider with no
+                  // change handler is inert, so it announces nothing.
+                  onChangeStart: widget.onVolumeChanged == null
+                      ? null
+                      : (_) => widget.onScrubActive?.call(true),
                   onChanged: widget.onVolumeChanged,
-                  onChangeEnd: (_) => widget.onVolumeChangeEnd?.call(),
+                  onChangeEnd: (_) {
+                    widget.onVolumeChangeEnd?.call();
+                    widget.onScrubActive?.call(false);
+                  },
                 ),
               ),
             ),
@@ -785,14 +891,31 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
   /// theme's font — Roboto, Segoe UI, whatever the platform picked) merged
   /// with [style], at the user's font scaling. Budgeting with a different
   /// font than the one that renders is how a "fits" bar overflows.
+  ///
+  /// Memoised because the bar rebuilds on every position tick (up to 10/s while
+  /// playing) and would otherwise re-layout the same three strings every time —
+  /// text layout is the expensive part of this widget. The cache is keyed by the
+  /// inputs that can change the answer: the text, the resolved style and the
+  /// text scale.
+  static final Map<(String, TextStyle, double), double> _widthCache = {};
+
   static double _measure(BuildContext context, String text, TextStyle style) {
     final effective = DefaultTextStyle.of(context).style.merge(style);
+    final scale = MediaQuery.textScalerOf(context);
+    final key = (text, effective, scale.scale(1));
+    final cached = _widthCache[key];
+    if (cached != null) return cached;
     final tp = TextPainter(
       text: TextSpan(text: text, style: effective),
-      textScaler: MediaQuery.textScalerOf(context),
+      textScaler: scale,
       textDirection: TextDirection.ltr,
       maxLines: 1,
     )..layout();
+    // Bounded: a library full of distinct titles could otherwise grow this map
+    // for the life of the process, and the entries are only worth keeping while
+    // the same few strings keep being measured (a bar with a fixed layout).
+    if (_widthCache.length >= 128) _widthCache.clear();
+    _widthCache[key] = tp.width;
     return tp.width;
   }
 }

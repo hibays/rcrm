@@ -22,6 +22,7 @@ import '../widgets/double_back_exit.dart';
 import '../services/preview_player.dart';
 import '../services/cast_remote.dart';
 import '../services/cast_session_store.dart';
+import '../utils/poster_quiet_route.dart';
 import 'video_player_screen.dart';
 import 'search_screen.dart';
 import 'video_screen.dart';
@@ -560,7 +561,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       if (mounted) {
         Navigator.push(
           context,
-          MaterialPageRoute(builder: (_) => VideoPlayerScreen(item: item)),
+          // Creates the screen's playback player inside the push and keeps the
+          // poster pool suspended for as long as it is on screen — see
+          // `utils/poster_quiet_route.dart`.
+          PosterQuietRoute(
+            build: (warm) => VideoPlayerScreen(item: item, warmPlayer: warm),
+          ),
         );
       }
     });

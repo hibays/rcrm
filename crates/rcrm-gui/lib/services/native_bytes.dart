@@ -12,14 +12,19 @@
 //   * `media_metadata.dart` — the EXIF/track head for the viewer's info sheet
 //     (`headBytes`: a Range request, never the whole file).
 //   * `mobile_image_decoder.dart` → `fetchForDecode` — the compressed original
-//     for the software AVIF/JXL decoder, used by `AuthImage`, the full-res
+//     for the software AVIF/JXL/HEIC decoder, used by `AuthImage`, the full-res
 //     viewer provider and `DiskThumbImage`.
 //   * `disk_thumb_image.dart` → `ThumbWebpWorker.generateThumb` — the
 //     compressed original for the on-disk thumbnail cache, where Rust decodes,
 //     downscales and encodes WebP without the pixels entering Dart.
 //
 // Ownership is single and explicit: whoever holds a [NativeBytes] either
-// `free()`s it, or `disown()`s it because Rust took over the allocation.
+// `free()`s it, or `disown()`s it because Rust took over the allocation. The
+// routes to Rust differ in what the ABI demands, and the types say which is
+// which: the ownership-taking exports (decode, metadata) rebuild their `Vec`
+// from the length alone, so they take a [NativeTransfer] — obtainable only from
+// a whole-file buffer — while the borrowing exports read a plain [NativeBytes]
+// the caller frees afterwards.
 
 import 'dart:async';
 import 'dart:ffi';
@@ -37,26 +42,99 @@ class NativeBytes {
   /// Bytes filled — 0 for a genuinely empty response.
   final int len;
 
-  /// Bytes actually allocated. Rust rebuilds the allocation with this when it
-  /// takes ownership, and a whole-file fetch requires `len == cap` because the
-  /// decoders' ABI reconstructs their `Vec` from the length alone.
+  /// Bytes actually allocated — for a whole-file fetch this equals [len].
+  ///
+  /// It is never handed to Rust as a capacity: both ownership-taking ABIs
+  /// rebuild their `Vec` from the length alone, so the only sound input is an
+  /// allocation of exactly [len] bytes. This field exists so this side can tell
+  /// the two shapes apart (see [transferIfWhole]); it is not a promise to Rust.
   final int cap;
 
   bool _owned;
 
+  /// Set by the first free, whichever path performs it. `reclaim()` runs from
+  /// exit handlers and reply handlers that can both observe the same buffer, so
+  /// the guard is what keeps a double free from happening at all.
+  bool _freed = false;
+
   NativeBytes(this.ptr, this.len, this.cap) : _owned = true;
 
   void free() {
-    if (_owned && ptr != nullptr) calloc.free(ptr);
+    if (_owned && !_freed && ptr != nullptr) {
+      _freed = true;
+      calloc.free(ptr);
+    }
     _owned = false;
   }
 
   /// Marks the buffer as Rust's: nothing on this side may free it again.
   void disown() => _owned = false;
 
+  /// Whether the buffer has been handed to Rust (or to a worker that owns it).
+  /// False means this side still holds the allocation.
+  bool get isDisowned => !_owned;
+
+  /// Frees a buffer that was [disown]ed, once the consumer is **provably**
+  /// finished with it: either that consumer replied (it has left the call that
+  /// was reading the buffer) or its isolate's exit event has been observed (an
+  /// isolate that has terminated cannot still be reading — whereas killing one
+  /// does not cancel a native call already in flight). Idempotent, because those
+  /// two events can both happen for the same buffer.
+  void reclaim() {
+    if (_freed || ptr == nullptr) return;
+    _freed = true;
+    calloc.free(ptr);
+    _owned = false;
+  }
+
   /// A view over the filled bytes, for tests and for Dart APIs that need a
   /// list (production hands [ptr] to Rust instead).
   Uint8List get view => ptr.asTypedList(len);
+
+  /// The hand-over shape for a buffer Rust is meant to free, or null when this
+  /// one is not shaped for it.
+  ///
+  /// The ownership-taking ABIs rebuild their `Vec` from the **length** alone,
+  /// so the buffer must have been allocated with exactly [len] bytes. Only a
+  /// whole-file fetch is (a head may be filled only part way, and its
+  /// allocation is the ask, not the payload), and this is the only way to get a
+  /// [NativeTransfer] — so no call site *can* hand Rust a partial buffer,
+  /// however it was reached. Callers that get null fall back to the retryable
+  /// "not reusable" path instead of sending a capacity that might be a lie.
+  NativeTransfer? transferIfWhole() =>
+      len == cap ? NativeTransfer._(this) : null;
+}
+
+/// A [NativeBytes] that may be handed to an export which takes ownership.
+///
+/// Only [NativeBytes.transferIfWhole] produces one, and that refuses anything
+/// but a whole-file buffer, so "the allocation is exactly [len] bytes" holds by
+/// construction here — the ABI's precondition is a property of the type rather
+/// than a comment someone has to honour. Rust then frees the allocation on
+/// every path (including its refusals), so [free] after the call would be a
+/// double free: the raw pointer and the length are what the call takes, and
+/// nothing else on this side may touch the buffer afterwards.
+final class NativeTransfer {
+  final NativeBytes _bytes;
+
+  NativeTransfer._(this._bytes)
+    : assert(_bytes.len == _bytes.cap, 'a partial buffer cannot be transferred');
+
+  /// Address of the allocation — exactly [len] bytes of it.
+  Pointer<Uint8> get ptr => _bytes.ptr;
+
+  /// Bytes to hand over, and the size the buffer was allocated with.
+  int get len => _bytes.len;
+
+  /// Frees the buffer while this side still owns it — for the paths that fail
+  /// before the call (no export, for instance). After the call Rust owns it and
+  /// this is a no-op, exactly like [NativeBytes.free] on a disowned buffer.
+  /// Idempotent, and it does not resurrect a buffer another route reclaimed.
+  void free() => _bytes.free();
+
+  /// Marks the buffer as Rust's, *before* the call, so every path out of the
+  /// hand-off — a throw included — leaves it to Rust rather than abandoned.
+  void disown() => _bytes.disown();
 }
 
 /// Outcome of [fetchNativeBytes].
@@ -91,32 +169,78 @@ class NativeFetch {
 /// handing Rust a buffer whose capacity disagrees with its length would be
 /// unsound. `Content-Encoding` disqualifies it too — the declared length would
 /// describe the compressed bytes while the stream yields decoded ones.
+/// Fetches [url] straight into native memory (copy-free path) — see the header
+/// for when the result is authoritative.
+///
+/// **Deadlines are load-bearing.** `sharedHttpClient` bounds only the *connect*
+/// phase (`connectionTimeout`) and pooled-idle sockets (`idleTimeout`); a server
+/// that accepts and then goes silent keeps a response body open forever. Callers
+/// hold an `ImageLoadGate` token across this call, so a wedged fetch would pin
+/// the whole grid's thumbnail slots (6 desktop / 2 mobile) and the library would
+/// look frozen. [stallTimeout] caps the silence between chunks, [totalTimeout]
+/// caps the whole body — both end in `NativeFetch.refused`, never in a hang.
 Future<NativeFetch> fetchNativeBytes(
   String url, {
   int? headBytes,
   int maxBytes = 512 << 20,
+  Duration stallTimeout = const Duration(seconds: 15),
+  Duration totalTimeout = const Duration(seconds: 120),
 }) async {
+  // ONE budget for the whole request, not one per phase: `getUrl`, `close` and the
+  // body loop each starting a fresh `totalTimeout` let a server that accepts and
+  // then stalls hold an ImageLoadGate token for ~4 minutes, which is the freeze
+  // this method exists to prevent.
+  final deadline = DateTime.now().add(totalTimeout);
+  Duration remaining() {
+    final left = deadline.difference(DateTime.now());
+    return left.isNegative ? Duration.zero : left;
+  }
+
   final HttpClientRequest request;
   try {
-    request = await sharedHttpClient.getUrl(Uri.parse(Uri.encodeFull(url)));
+    // Parse, do NOT re-encode (`Uri.encodeFull` here was the bug). Its
+    // ECMA-262 `encodeURI` mask escapes `%`, and callers legitimately hand over
+    // URLs that are ALREADY percent-encoded: the cast proxy builds its stream
+    // URL as `?path=${Uri.encodeQueryComponent(path)}`
+    // (`cast_receiver.dart:637-638`), so re-encoding sent `path=%252Fphotos%2F…`
+    // and the proxy's `startsWith('/')` check answered 400 — the copy-free path
+    // was never taken for ANY cast image. `Uri.parse` normalises a raw URL
+    // instead: spaces and non-ASCII still get escaped, while existing `%XX`
+    // escapes are preserved and canonicalised.
+    //
+    // Two raw-URL caveats this accepts, both of which normally self-heal
+    // through the caller's fallback at the cost of one wasted request: a literal
+    // `%` in a file name followed by two hex digits (`a%41b.jpg`) is read back
+    // as the character that escape denotes, and a literal backslash is not
+    // escaped into `%5C`. The wrong name simply 404s — and only when the
+    // decoded name happens to be a real sibling file can the wrong image show.
+    //
+    // `bounded_fetch.dart:67` carries the same double-encoding, deliberately
+    // NOT changed here: it has no encoded caller today, and there the parse sits
+    // OUTSIDE the try, so its exception contract (a `FormatException` escaping a
+    // call documented to raise `HttpException`/`TimeoutException`) would need
+    // care first. Keep the two files' comment in step if that changes.
+    request = await sharedHttpClient
+        .getUrl(Uri.parse(url))
+        .timeout(remaining());
   } catch (_) {
     return NativeFetch.refused;
   }
-  final auth = sharedAuthHeader;
-  if (auth != null) {
-    request.headers.set('Authorization', auth['Authorization']!);
-  }
+  // The map exists but is not guaranteed to carry the key; a missing header
+  // must not turn into a null-check throw on the fetch path.
+  final token = sharedAuthHeader?['Authorization'];
+  if (token != null) request.headers.set('Authorization', token);
   if (headBytes != null) {
     request.headers.set(HttpHeaders.rangeHeader, 'bytes=0-${headBytes - 1}');
   }
   final HttpClientResponse response;
   try {
-    response = await request.close();
+    response = await request.close().timeout(remaining());
   } catch (_) {
     return NativeFetch.refused;
   }
   if (response.statusCode != 200 && response.statusCode != 206) {
-    await response.drain<void>();
+    await response.drain<void>().timeout(remaining()).catchError((_) {});
     return NativeFetch.refused;
   }
 
@@ -132,7 +256,17 @@ Future<NativeFetch> fetchNativeBytes(
     }
   }
   if (cap == null) {
-    await response.drain<void>();
+    // Do NOT drain here. Reading the body just to throw it away costs a full
+    // download — and a full server-side decryption — that every caller then
+    // repeats with the general path, which is exactly the double download the
+    // old comment claimed could not happen. Cancelling closes the connection
+    // instead, so the fallback pays for the resource once.
+    try {
+      final sub = response.listen(null);
+      await sub.cancel().timeout(remaining());
+    } catch (_) {
+      // A response that refuses to be cancelled is not worth hanging for.
+    }
     return NativeFetch.unsized;
   }
 
@@ -140,14 +274,47 @@ Future<NativeFetch> fetchNativeBytes(
   final view = buffer.asTypedList(cap);
   var filled = 0;
   try {
-    // Leaving the loop cancels the subscription, which is what we want once the
-    // ask is satisfied (the Range header or the declared length is the ask).
-    await for (final chunk in response) {
+    // `timeout` on the stream (rather than on the future around this loop) is
+    // deliberate: it raises *inside* the loop, so the subscription is cancelled
+    // before the handler below frees the buffer. Timing out a future would leave
+    // the loop writing into freed memory.
+    //
+    // The loop is NOT left early once the ask is satisfied: a server that
+    // under-declares `Content-Length` keeps sending, and stopping at `cap` would
+    // hand Rust a truncated prefix that looks like a whole file. Reading to the
+    // end of a well-behaved body costs nothing, and anything past `cap` is a
+    // mismatch worth refusing.
+    await for (final chunk in response.timeout(
+      stallTimeout,
+      onTimeout: (sink) =>
+          sink.addError(TimeoutException('stalled for $stallTimeout')),
+    )) {
+      if (DateTime.now().isAfter(deadline)) {
+        throw TimeoutException('body exceeded $totalTimeout');
+      }
+      if (filled == cap) {
+        // Only a whole-file fetch can be lied to: `cap` then came from the
+        // declared Content-Length, so a further byte means the buffer would be a
+        // silently truncated prefix. With `headBytes` the cap IS the ask — a
+        // server answering a Range request with 200 and the whole body is
+        // normal, and stopping at the cap is the point.
+        if (headBytes != null) break;
+        calloc.free(buffer);
+        return NativeFetch.unsized;
+      }
       final room = cap - filled;
       if (chunk.length >= room) {
         view.setRange(filled, filled + room, chunk);
         filled = cap;
-        break;
+        if (headBytes != null) break;
+        if (chunk.length > room) {
+          // This very chunk already carried the extra bytes.
+          calloc.free(buffer);
+          return NativeFetch.unsized;
+        }
+        // Exactly filled: keep reading so the next chunk (if any) is caught above
+        // instead of being silently dropped.
+        continue;
       }
       view.setRange(filled, filled + chunk.length, chunk);
       filled += chunk.length;

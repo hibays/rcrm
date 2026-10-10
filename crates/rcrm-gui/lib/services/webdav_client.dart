@@ -284,12 +284,31 @@ String _fileName(String p) {
 /// silently cost the viewer's info sheet its "file timestamp" fallback and
 /// left date sorting with nothing to sort by.
 ///
-/// An RFC 1123 value parses to **UTC**; callers that display it must convert
-/// (`.toLocal()`), while comparisons and sorting do not care.
+/// **Every value comes back on one clock (UTC).** RFC 1123 carries a zone and
+/// `HttpDate.parse` honours it; an ISO-8601 value *without* a zone is read as
+/// UTC rather than as local time (`DateTime.parse` would otherwise interpret
+/// it locally, which would make two entries in the same listing disagree by the
+/// UTC offset — sorting and "newest first" both depend on a single clock).
+/// Callers that *display* it convert with `.toLocal()`.
 DateTime? _parseLastModified(String? raw) {
   if (raw == null) return null;
   final iso = DateTime.tryParse(raw);
-  if (iso != null) return iso;
+  if (iso != null) {
+    if (iso.isUtc) return iso;
+    // Naive: the wall-clock fields are the server's, but they are the only
+    // thing on offer, so treat them as UTC (same reading as the RFC 1123
+    // branch) instead of mixing the local zone into the comparison.
+    return DateTime.utc(
+      iso.year,
+      iso.month,
+      iso.day,
+      iso.hour,
+      iso.minute,
+      iso.second,
+      iso.millisecond,
+      iso.microsecond,
+    );
+  }
   try {
     return HttpDate.parse(raw);
   } catch (_) {

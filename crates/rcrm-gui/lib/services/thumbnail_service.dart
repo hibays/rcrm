@@ -15,6 +15,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import '../ffi/rust_bridge.dart';
+import '../utils/poster_queue.dart';
 import 'item_cache_limit.dart';
 import 'player_factory.dart';
 import 'thumb_cache.dart';
@@ -37,18 +38,103 @@ class ThumbnailService {
 
   /// Throttle: mobile serializes (1) through a single reused Player to bound
   /// memory; desktop runs several ffmpeg processes in parallel.
-  static final _posterQ = <void Function()>[];
+  ///
+  /// Waiting jobs, oldest first. Running jobs are not in here — the runner pops
+  /// one as it hands it a slot — so this list is exactly what
+  /// `ItemCacheLimit.videoPosterQueueMax` caps (see `admitPosterJob`).
+  static final _posterQ = <PosterJob>[];
   static int _posterRunning = 0;
   static final int _maxRunning = ItemCacheLimit.videoPosterConcurrency;
 
+  // ── Suspension (the player route owns the screen) ────────────
+  // Poster players and the playback player share media_kit's STATIC
+  // `NativePlayer.lock`, so one mobile poster job — which holds it across
+  // `open`, and again across each `seek` + `screenshot` — is enough to make the
+  // playback player's `open`/`play` wait. While the player route is installed,
+  // the pool therefore starts nothing new and parks what it is already running.
+  //
+  // A DEPTH counter, not a bool: `_go`'s `pushReplacement` makes the outgoing
+  // screen's `dispose` and the incoming route's `install` overlap, and with a
+  // bool the first of those to run would lift the suspension while the other
+  // route is still on screen.
+  static int _posterSuspendDepth = 0;
+
+  /// How many suspended jobs are held right now. Read by the kick plan: a
+  /// parked job still owns its slot and may be mid-`open`, so nothing else may
+  /// start until it is back in its loop.
+  static int _posterParked = 0;
+
+  static Completer<void>? _posterWake;
+
+  /// Resolves when a suspended job may carry on. Created on demand and
+  /// recreated once completed, so `resume()` always has a fresh one to signal
+  /// and a job can await it any number of times.
+  static Completer<void> get _posterResumeSignal {
+    final wake = _posterWake;
+    if (wake != null && !wake.isCompleted) return wake;
+    return _posterWake = Completer<void>();
+  }
+
+  /// True while a player route is installed. Test-visible so the depth counter's
+  /// pairing can be pinned without a media_kit `Player`.
+  @visibleForTesting
+  static bool get posterSuspended => _posterSuspendDepth > 0;
+
+  /// Stop starting poster work and park what is running. Called by the player
+  /// route's `install()`, so the gate closes before that route builds — the
+  /// playback player is created inside the push, and the pool must already be
+  /// quiet by then.
+  static void suspend() {
+    _posterSuspendDepth++;
+    // The "pool is idle exactly when the push happens" case: that idle timer
+    // would otherwise fire during playback and dispose the pool then.
+    _tnIdleTimer?.cancel();
+    _tnIdleTimer = null;
+  }
+
+  /// Let poster work continue: wake every parked job and restart the queue.
+  /// Called by the player route's `dispose()`, so a pop or a replace both lift
+  /// the gate immediately — no delay, and no ping-pong while the two overlap.
+  static void resume() {
+    if (_posterSuspendDepth > 0) _posterSuspendDepth--;
+    if (_posterSuspendDepth == 0) _posterWake?.complete();
+    // Wakes the jobs that were waiting for a slot, and arms the idle timer
+    // again — `_posterKick` does both, and it refuses to arm it while suspended.
+    _posterKick();
+  }
+
+  /// Park here until the suspension lifts. A parked job keeps its completer, its
+  /// slot and its `_posterInflight` entry: it is never answered with null, never
+  /// evicted and never re-admitted (see `_posterMobile`).
+  static Future<void> _posterWaitForResume() => _posterResumeSignal.future;
+
   static void _posterKick() {
     _tnIdleTimer?.cancel();
-    while (_posterRunning < _maxRunning && _posterQ.isNotEmpty) {
-      _posterRunning++;
-      _posterQ.removeAt(0)();
+    final plan = planPosterKick(
+      queue: _posterQ,
+      running: _posterRunning,
+      max: _maxRunning,
+      suspended: posterSuspended,
+      anyParked: _posterParked > 0,
+    );
+    for (var i = 0; i < plan.start; i++) {
+      final job = _posterQ.removeAt(0);
+      // Before it runs, so the admission rule can never pick a job that already
+      // owns a slot even if one were still in the list.
+      job.started = true;
+      job.run();
     }
+    // Publish the planned count, not a decrement per start: the jobs handed a
+    // slot here are running from this line, whatever a synchronous part of
+    // `run` did in between.
+    _posterRunning = plan.running;
     if (_posterQ.isEmpty && _posterRunning == 0) {
-      _tnIdleTimer = Timer(const Duration(seconds: 30), _tnDisposePool);
+      // Never arm it while suspended: a pool that has just been parked (or one
+      // that has no job at all) must not be disposed out from under the route
+      // that suspended it. `resume()` kicks, and that is when it is armed.
+      if (!posterSuspended) {
+        _tnIdleTimer = Timer(const Duration(seconds: 30), _tnDisposePool);
+      }
     }
   }
 
@@ -85,20 +171,41 @@ class ThumbnailService {
 
     final completer = Completer<Uint8List?>();
     _posterInflight[videoUrl] = completer;
-    _posterQ.add(() async {
-      try {
-        final result = isMobile
-            ? await _posterMobile(videoUrl)
-            : await _posterDesktop(videoUrl);
-        if (!completer.isCompleted) completer.complete(result);
-      } catch (_) {
-        if (!completer.isCompleted) completer.complete(null);
-      } finally {
-        _posterInflight.remove(videoUrl);
-        _posterRunning--;
-        _posterKick();
-      }
-    });
+    final job = PosterJob(
+      url: videoUrl,
+      completer: completer,
+      run: () async {
+        try {
+          final result = isMobile
+              ? await _posterMobile(videoUrl)
+              : await _posterDesktop(videoUrl);
+          if (!completer.isCompleted) completer.complete(result);
+        } catch (_) {
+          if (!completer.isCompleted) completer.complete(null);
+        } finally {
+          _posterInflight.remove(videoUrl);
+          _posterRunning--;
+          _posterKick();
+        }
+      },
+    );
+    // Admission is capped (see `admitPosterJob`): at the limit the oldest
+    // *waiting* request is dropped and answered null instead of deferred, so a
+    // wall of failing posters cannot grow this queue without bound while every
+    // caller keeps a future open. A running job is never the one dropped.
+    final evicted = admitPosterJob(
+      _posterQ,
+      job,
+      max: ItemCacheLimit.videoPosterQueueMax,
+    );
+    if (evicted != null &&
+        identical(_posterInflight[evicted.url], evicted.completer)) {
+      // No longer in flight. Leaving it in the map would make the next
+      // `generatePoster` for that URL reuse an answer already given (null)
+      // instead of asking again — the same trap `media_metadata.dart` avoids by
+      // caching successes only.
+      _posterInflight.remove(evicted.url);
+    }
     _posterKick();
     return completer.future;
   }
@@ -235,6 +342,12 @@ class ThumbnailService {
   static void _tnDisposePool() {
     _tnIdleTimer?.cancel();
     _tnIdleTimer = null;
+    // The idle timer is armed only when both are empty/zero, so this is the
+    // invariant rather than a new condition — but it is a hard one: a live job
+    // is either inside `screenshot()` (which holds the lock across a `compute`
+    // the wrapper does not re-check `disposed` for) or parked holding its slot.
+    // Disposing its player in either state is a native crash, so refuse instead.
+    if (_posterRunning != 0 || _posterQ.isNotEmpty) return;
     for (final p in _tnPlayers) {
       try {
         p.dispose();
@@ -283,6 +396,18 @@ class ThumbnailService {
     final player = _tnPlayers[slot];
     final controller = _tnControllers[slot];
     Uint8List? result;
+    // PARKED, NOT DROPPED. A job suspended mid-run finishes with real bytes or
+    // with the "no poster" answer its own attempts produced — never with an
+    // early null. A null makes `VideoCard` paint its gray placeholder, and
+    // nothing retries: the card asked once per mount and the poster cache stores
+    // successes only. So every card that was loading when the player opened
+    // would stay blank for good after the user came back. That is why this job
+    // keeps its completer pending, its slot (a running job is never evictable)
+    // and its `_posterInflight` entry — a re-request joins this future — and why
+    // it is never re-queued and never passes through `admitPosterJob` again.
+    // True only while this job is parked, so the `finally` can tell "nothing was
+    // left behind" from "the re-open threw while the pool was still holding us".
+    var parked = false;
     try {
       await player
           .open(Media(videoUrl, httpHeaders: sharedAuthHeader), play: true)
@@ -297,6 +422,42 @@ class ThumbnailService {
       final dur = player.state.duration;
       const positions = [0.0, 30.0, 15.0, 0.5, 3.0, 60.0, 120.0, 240.0];
       for (final pos in positions) {
+        // Yield point, taken BEFORE the seek: the player is between `open` and
+        // the next lock-holding call, and each of seek/_waitForSeek/screenshot
+        // is its own `lock.synchronized`, so the static `NativePlayer.lock` is
+        // genuinely free here and playback's `open`/`play` can have it.
+        // `_waitForSeek` is deliberately not a yield point — it is a stream
+        // wait, lock-free already.
+        while (posterSuspended) {
+          parked = true;
+          _posterParked++;
+          try {
+            try {
+              await player.stop();
+              // `stop()` is where a suspended job lets the lock go. No timeout:
+              // timing out here could only answer this caller with null, and the
+              // contract above says a parked job is never answered with null —
+              // `resume()` is the one way out, and the route that suspended us
+              // always reaches `dispose`.
+              await _posterWaitForResume();
+            } finally {
+              _posterParked--;
+            }
+          } finally {
+            // The parked job leaves even when the wait throws, and its own
+            // departure is what kicks the queue again.
+            _posterKick();
+          }
+          if (!posterSuspended) {
+            // Re-open, because `stop()` ended the media session: without this
+            // the remaining positions would seek a player with nothing loaded.
+            // The single `continue` re-checks the gate at the top.
+            await player
+                .open(Media(videoUrl, httpHeaders: sharedAuthHeader), play: true)
+                .timeout(const Duration(seconds: 15));
+            parked = false;
+          }
+        }
         final seekTo = Duration(milliseconds: (pos * 1000).round());
         if (dur > Duration.zero && seekTo > dur) continue;
         try {
@@ -323,6 +484,11 @@ class ThumbnailService {
         await player.stop();
       } catch (_) {}
     } finally {
+      // Only if the re-open threw: otherwise the gate's own loop released both.
+      if (parked) {
+        _posterParked--;
+        _posterKick();
+      }
       _tnReleaseSlot(slot);
     }
     return result;

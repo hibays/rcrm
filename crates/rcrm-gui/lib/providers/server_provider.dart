@@ -10,6 +10,7 @@ import '../services/thumbnail_service.dart';
 import '../services/net.dart';
 import '../services/webdav_client.dart';
 import '../services/cast_https_relay.dart';
+import '../services/media_metadata.dart';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -150,6 +151,15 @@ class ServerNotifier extends Notifier<ServerState> {
 
   Future<void> _startLocal(ServerConfig config) async {
     if (state.status == ServerStatus.running) return;
+    // The library is (re)established here, so this is where previously cached
+    // metadata stops applying: the identity is part of the cache key, so a
+    // re-scan (different roots, or another server) invalidates by itself instead
+    // of relying on somebody calling clearCache. Bind address and port are
+    // deliberately excluded — a per-launch port would make every launch look like
+    // a different library for no reason.
+    MediaMetadataService.setLibraryIdentity(
+      'local|${config.directories.join('|')}',
+    );
     state = state.copyWith(status: ServerStatus.starting, error: null);
     try {
       if (!_bridge.isLoaded) _bridge.load();
@@ -257,6 +267,13 @@ class ServerNotifier extends Notifier<ServerState> {
         );
         return;
       }
+      // Same declaration as the local path: this is the moment a *cloud* library is
+      // established, so previously cached metadata stops applying. The URL and the
+      // account identify it; the password is deliberately not part of the identity
+      // (a re-entered password is the same library).
+      MediaMetadataService.setLibraryIdentity(
+        'cloud|${config.remoteUrl}|${config.remoteUsername}',
+      );
       await connectCloud(config.remoteUrl, config.remoteUsername, '');
       return;
     }
