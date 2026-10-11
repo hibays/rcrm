@@ -13,6 +13,7 @@ import '../models/album.dart';
 import '../models/media_item.dart';
 import '../providers/library_provider.dart';
 import '../providers/settings_provider.dart';
+import '../services/media_library.dart';
 import '../utils/natural_sort.dart';
 import '../widgets/album_card.dart';
 import '../widgets/image_grid.dart';
@@ -95,6 +96,13 @@ class _ImageScreenState extends ConsumerState<ImageScreen> {
   Widget build(BuildContext context) {
     final albums = ref.watch(albumsProvider);
     final uiSettings = ref.watch(uiSettingsProvider);
+    // Ungrouped means the tab shows the images THEMSELVES: `albumsProvider` is
+    // empty for it by construction (`MediaLibrary.buildAlbums` returns nothing
+    // for `none`), so the flat view reads the same list the grouping would have.
+    final ungrouped = uiSettings.imageClassification == 'none';
+    final images = ungrouped
+        ? ref.watch(imagesMapProvider).values.toList()
+        : const <MediaItem>[];
 
     // Handle external album selection from home_screen.
     final external = ref.watch(selectedAlbumProvider);
@@ -121,7 +129,20 @@ class _ImageScreenState extends ConsumerState<ImageScreen> {
         }
       },
       child: _selectedAlbum != null
-          ? _buildAlbumView(_selectedAlbum!, uiSettings.imageLayout)
+          ? _buildView(
+              _selectedAlbum!.name,
+              _selectedAlbum!.items,
+              uiSettings.imageLayout,
+            )
+          : ungrouped
+          // Flat, like the video tab's ungrouped view: every image at once, and
+          // nothing to open or go back from.
+          ? _buildView(
+              kUngroupedAlbumName,
+              images,
+              uiSettings.imageLayout,
+              closable: false,
+            )
           : _buildAlbumList(context, albums),
     );
   }
@@ -183,8 +204,20 @@ class _ImageScreenState extends ConsumerState<ImageScreen> {
     );
   }
 
-  Widget _buildAlbumView(Album album, String layout) {
-    final items = _sortImages(album.items);
+  /// The grid of [items], with the header that goes above it.
+  ///
+  /// Shared by an open album and by the UNGROUPED view, which is why [title] and
+  /// [items] are parameters rather than an `Album`: ungrouped has no album to
+  /// name or to go back to, and used to be a single "All Images" album that
+  /// everything was poured into — a grouping, which is exactly what "ungrouped"
+  /// must not be.
+  Widget _buildView(
+    String title,
+    List<MediaItem> source,
+    String layout, {
+    bool closable = true,
+  }) {
+    final items = _sortImages(source);
     final storedCols = ref.watch(uiSettingsProvider).imageColumns;
     // Cap columns to screen width: min 100 px per image.
     final width = MediaQuery.of(context).size.width;
@@ -192,8 +225,10 @@ class _ImageScreenState extends ConsumerState<ImageScreen> {
     final cols = storedCols.clamp(2, maxColsByWidth);
     return Shortcuts(
       shortcuts: {
-        const SingleActivator(LogicalKeyboardKey.escape):
-            const _CloseAlbumIntent(),
+        // Esc closes an open album; the ungrouped view has nothing to close.
+        if (closable)
+          const SingleActivator(LogicalKeyboardKey.escape):
+              const _CloseAlbumIntent(),
       },
       child: Actions(
         actions: {
@@ -215,23 +250,24 @@ class _ImageScreenState extends ConsumerState<ImageScreen> {
                 color: Theme.of(context).colorScheme.surface,
                 child: Row(
                   children: [
-                    IconButton(
-                      icon: const Icon(Icons.arrow_back, size: 20),
-                      onPressed: () => _selectAlbum(null),
-                      visualDensity: VisualDensity.compact,
-                    ),
+                    if (closable)
+                      IconButton(
+                        icon: const Icon(Icons.arrow_back, size: 20),
+                        onPressed: () => _selectAlbum(null),
+                        visualDensity: VisualDensity.compact,
+                      ),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            album.name,
+                            title,
                             style: Theme.of(context).textTheme.titleMedium,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
                           Text(
-                            '${album.itemCount} images',
+                            '${items.length} images',
                             style: Theme.of(context).textTheme.bodySmall,
                           ),
                         ],

@@ -104,6 +104,8 @@ Video tab: two arrangements of ONE list, chosen by `videoClassification`
     cannot regroup the photo tab
   → a group opens into its own videos (`video_screen.dart`), Esc or the header's
     back returns to the group list
+  → the photo tab answers `none` the same way: `ImageScreen` shows every image in
+    one flat grid rather than opening its old single "All Images" album
 VideoCard tap → Navigator.push(video_player_screen)
   → Player.create() in addPostFrameCallback
   → Media(url, httpHeaders: {Authorization: ...})

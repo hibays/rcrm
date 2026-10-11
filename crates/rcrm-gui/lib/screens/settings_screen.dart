@@ -462,7 +462,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               segments: const [
                 ButtonSegment(value: 'folder', label: Text('Folder')),
                 ButtonSegment(value: 'format', label: Text('Format')),
-                ButtonSegment(value: 'none', label: Text('None')),
+                ButtonSegment(value: 'none', label: Text('Ungrouped')),
               ],
               onChanged: (v) {
                 ref

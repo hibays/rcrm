@@ -355,7 +355,14 @@ final albumsProvider = Provider<List<Album>>((ref) {
   final images = ref.watch(imagesMapProvider).values.toList();
   final lib = ref.watch(mediaLibraryProvider);
   if (lib == null) return const [];
-  return lib.buildAlbums(images);
+  final albums = lib.buildAlbums(images);
+  if (albums.isNotEmpty || images.isEmpty) return albums;
+  // Ungrouped: no groups to show, and the photo TAB does not need one — it shows
+  // the images flat. The HOME page has only albums to offer, so it gets the one
+  // album that opens that flat view, or the photos would be unreachable from home.
+  return lib.imageClassification == MediaClassification.none
+      ? [lib.flatAlbum(images)]
+      : const [];
 });
 
 /// The video tab's folders — the same grouping `albumsProvider` uses for
