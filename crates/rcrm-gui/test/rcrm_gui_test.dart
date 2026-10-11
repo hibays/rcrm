@@ -1,7 +1,9 @@
 // test/rcrm_gui_test.dart
-// RCrm GUI — pure-Dart unit tests (no Flutter runtime needed)
+// RCrm GUI — unit tests (no widgets pumped)
 //
-// Run:  dart test test/rcrm_gui_test.dart
+// Run:  flutter test test/rcrm_gui_test.dart
+// (`dart test` cannot load this file: webdav_client.dart imports
+// package:flutter/foundation.dart, so the chain reaches dart:ui.)
 // Widget tests live in test/widgets/ and use `flutter test`.
 
 import 'dart:io';
