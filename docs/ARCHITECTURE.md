@@ -101,12 +101,21 @@ VideoCard tap → Navigator.push(video_player_screen)
   → Media(url, httpHeaders: {Authorization: ...})
   → media_kit (libmpv) plays
   → Custom controls overlay (2s idle fade)
-  → Jump: push the video being left onto the jump stack
-    (providers/video_jump_stack.dart, capped at the `video_jump_history_limit`
-    setting) → pushReplacement the next player
-  → Back: pop that stack and play the entry; empty stack → leave the player
+  → Jump (the transport bar's prev/next): open the other video IN the player
+    that is already playing (`_playInPlace`) — no new route, so fullscreen,
+    picture-in-picture with its dragged geometry, the scroll position behind it,
+    the rate, the volume, the screen brightness and the chrome's visibility are
+    all untouched by construction; a forward step also pushes the video being
+    left onto the jump stack (providers/video_jump_stack.dart, capped at the
+    `video_jump_history_limit` setting)
+  → Back: pop that stack and play the entry as a ROUTE step, so it carries the
+    platform's back-direction transition (that transition is what makes Back a
+    different gesture from the transport's prev, which reaches the same video
+    with nothing on screen moving); an empty stack leaves the player
   → Related list (utils/related_videos.dart) excludes the stack's entries
-  → Player.stop() before Navigator.pop
+  → Player.stop() before Navigator.pop — a route the player REPLACES is stopped
+    and disposed by its own `dispose()`, i.e. once its transition has finished,
+    which is what keeps its last frame on screen instead of blanking it
 ```
 
 ### Thumbnail Pipeline

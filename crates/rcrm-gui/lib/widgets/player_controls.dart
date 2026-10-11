@@ -263,8 +263,15 @@ PlayerControlPlan planPlayerControlBar({
     bool fullscreen = true,
   }) {
     // Only controls that will really be painted may be budgeted for: a
-    // reserved-but-absent skip button silently steals the volume slider's
-    // space and then renders nothing.
+    // reserved-but-absent control silently steals the volume slider's space and
+    // then renders nothing.
+    //
+    // The skip pair follows AVAILABILITY, so a button the user can see is always
+    // one they can press: no history to go back to means no Previous button, and
+    // an empty Related list means no Next button. That costs one reflow, the
+    // first time the history becomes non-empty; a permanently greyed-out slot was
+    // tried instead and rejected, because it puts a control in the row that can
+    // do nothing for as long as the user has not jumped, at every bar size.
     final showPrev = prev && hasPrev;
     final showNext = next && hasNext;
     final showEpisodes = episodes && hasEpisodes;
@@ -446,6 +453,10 @@ class PlayerControlBar extends StatefulWidget {
   /// Safe-area insets of the surface it sits on (notch, home indicator).
   final EdgeInsets safe;
 
+  /// Whether there is a video to skip TO: something to go back to in the jump
+  /// history, or something to go on to in the Related list. False means the
+  /// button is not painted at all — the plan reserves no width for a control
+  /// that could only sit there greyed out (see `planPlayerControlBar`).
   final bool hasPrev;
   final bool hasNext;
   final bool hasEpisodes;
@@ -940,8 +951,11 @@ class PlayerTopBar extends StatelessWidget {
   final VoidCallback onBack;
 
   /// Leaves the player chain for the library — the way home that is not a step
-  /// back through it. Always present, like [onBack].
-  final VoidCallback onHome;
+  /// back through it. Null hides it, which is what the caller does while the jump
+  /// history is empty: `Back` then leaves the player too (`_handleBack` pops the
+  /// route when there is nothing to retrace), so the two buttons would be the
+  /// same action twice. With history they differ, and both are shown.
+  final VoidCallback? onHome;
 
   /// Null hides the settings button (windowed player).
   final VoidCallback? onSettings;
@@ -953,7 +967,7 @@ class PlayerTopBar extends StatelessWidget {
     super.key,
     required this.title,
     required this.onBack,
-    required this.onHome,
+    this.onHome,
     this.onSettings,
     this.safe = EdgeInsets.zero,
   });
@@ -989,15 +1003,16 @@ class PlayerTopBar extends StatelessWidget {
             constraints: BoxConstraints.tightFor(width: m.tap, height: m.tap),
             splashRadius: m.tap / 2,
           ),
-          IconButton(
-            icon: Icon(Icons.home, color: Colors.white, size: m.icon),
-            onPressed: onHome,
-            tooltip: 'Home',
-            padding: EdgeInsets.zero,
-            visualDensity: VisualDensity.compact,
-            constraints: BoxConstraints.tightFor(width: m.tap, height: m.tap),
-            splashRadius: m.tap / 2,
-          ),
+          if (onHome != null)
+            IconButton(
+              icon: Icon(Icons.home, color: Colors.white, size: m.icon),
+              onPressed: onHome,
+              tooltip: 'Home',
+              padding: EdgeInsets.zero,
+              visualDensity: VisualDensity.compact,
+              constraints: BoxConstraints.tightFor(width: m.tap, height: m.tap),
+              splashRadius: m.tap / 2,
+            ),
           SizedBox(width: m.gap * 2),
           Expanded(
             child: Text(

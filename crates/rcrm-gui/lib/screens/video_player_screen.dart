@@ -87,6 +87,13 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// could not read it.
   VideoJumpStackNotifier? _jumpStack;
 
+  /// The video this screen is playing. It is STATE rather than `widget.item`
+  /// because the transport bar's prev/next change it INSIDE this screen
+  /// (`_playInPlace`): the title, the Related list, the poster key and the info
+  /// sheet all derive from the current video, so they have to follow an
+  /// assignment instead of a new route.
+  late MediaItem _item;
+
   /// Persistent focus node for keyboard shortcuts. `Focus(autofocus: true)`
   /// only grabs focus on first mount; clicking a slider/button moves focus
   /// away and arrows/space/ESC stop reaching the CallbackShortcuts. We
@@ -98,6 +105,12 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   Timer? _gOverlayTimer;
   Timer? _videoTapTimer;
   bool _navigating = false;
+
+  /// True while `_playInPlace` is swapping the media in the player this screen
+  /// already owns. A separate flag from `_navigating` because that one also
+  /// means "this screen is on its way out" — `dispose()` reads it to decide
+  /// whether to drop the jump history — and a switch never leaves.
+  bool _switching = false;
   // The route being popped if its animation is reversing or the route is gone.
   bool get _isRoutePopping {
     final route = ModalRoute.of(context);
@@ -210,6 +223,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   @override
   void initState() {
     super.initState();
+    _item = widget.item;
     _jumpStack = ref.read(videoJumpStackProvider.notifier);
     _initVolPrefs().then((_) {
       if (_volPrefs != null && mounted) {
@@ -241,16 +255,16 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       });
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      // Guard against a mid-first-frame navigation (_go disposes p and
-      // sets _navigating): don't spawn a stray Player on the widget
-      // being replaced.
+      // Guard against a mid-first-frame navigation (_go hands this route's place
+      // to another screen and sets _navigating): don't spawn a stray Player on
+      // the widget being replaced.
       if (!mounted || _disposed || _navigating) return;
       // The route already created one (see `PosterQuietRoute`), so the
       // expensive native init is behind us; otherwise create it here as
       // before. Either way exactly one player, owned by this screen.
       p = widget.warmPlayer ?? PlayerFactory.playback();
       vc = VideoController(p!);
-      p!.open(Media(widget.item.url, httpHeaders: sharedAuthHeader));
+      p!.open(Media(_item.url, httpHeaders: sharedAuthHeader));
       p!.play();
       p!.setVolume(_volume.value);
       if (_disposed && p != null) {
@@ -288,7 +302,13 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       });
       bool handlingCompletion = false;
       _completedSub = p!.stream.completed.listen((_) {
-        if (!mounted || _disposed || handlingCompletion || _navigating) return;
+        if (!mounted ||
+            _disposed ||
+            handlingCompletion ||
+            _navigating ||
+            _switching) {
+          return;
+        }
         if (!hasBeenPlaying) return;
         handlingCompletion = true;
         if (!mounted) return;
@@ -661,21 +681,16 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     Set<String> excluded,
     int scanGen,
   ) {
-    final key =
-        '$scanGen\u0000${widget.item.url}\u0000${excluded.join('\u0000')}';
+    final key = '$scanGen\u0000${_item.url}\u0000${excluded.join('\u0000')}';
     if (_relCache != null && _relCacheKey == key) return _relCache!;
-    final list = relatedFor(
-      widget.item,
-      allVideos,
-      excludePaths: excluded,
-    );
+    final list = relatedFor(_item, allVideos, excludePaths: excluded);
     _relCache = list;
     _relCacheKey = key;
     return list;
   }
 
   void onNext() {
-    if (_navigating || _isRoutePopping) return;
+    if (_navigating || _switching || _isRoutePopping) return;
     // The same list the user is looking at, exclusions included: "next" must
     // not play a video the Related list refuses to show.
     final r = _relatedFor(
@@ -684,16 +699,68 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       ref.read(scanStateProvider).scanGen,
     );
     if (r.isEmpty) return;
-    _go(r.first);
+    _playInPlace(r.first, back: false);
   }
 
   void onPrev() {
-    if (_navigating || _isRoutePopping) return;
+    if (_navigating || _switching || _isRoutePopping) return;
     // Back through the jump history: the newest entry is where this screen was
     // jumped from, and popping it is what makes the step one-way.
     final from = ref.read(videoJumpStackProvider.notifier).pop();
     if (from == null) return;
-    _go(from, back: true);
+    _playInPlace(from, back: true);
+  }
+
+  /// Switches to [item] inside this screen — what the transport bar's prev/next
+  /// do.
+  ///
+  /// Not `_go`, and that difference is the whole point of the pair. `_go`
+  /// REPLACES the route, so the incoming screen is built from its constructor:
+  /// everything the outgoing one held is gone unless it is handed over again.
+  /// Fullscreen survives only because it is passed explicitly; the speed,
+  /// picture-in-picture (with the geometry it was dragged to AND the scroll
+  /// position that put it there), the chrome's visibility and the screen
+  /// brightness are silently reset. Opening the media in the player that is
+  /// already playing keeps every one of them BY CONSTRUCTION — nothing is
+  /// re-created, so there is nothing to carry and nothing to forget — and
+  /// nothing on screen moves: no route transition, no re-mount, no second player
+  /// starting while the first one is torn down.
+  ///
+  /// [back] is the direction the history is walked in, exactly as in `_go`: a
+  /// forward step records the video being left, a back step has already popped
+  /// the entry it plays. The transition is what the two paths no longer share.
+  /// `Back` still walks the history as a ROUTE step, with the platform's
+  /// back-direction animation, which is what keeps it a different gesture from
+  /// this control ("like back, but not the same").
+  Future<void> _playInPlace(MediaItem item, {required bool back}) async {
+    final player = p;
+    if (player == null) {
+      // The player is created in the first post-frame callback, so a switch
+      // cannot normally arrive before it exists; a route step is the honest
+      // fallback if one ever does.
+      _go(item, back: back);
+      return;
+    }
+    _switching = true;
+    try {
+      if (!back) ref.read(videoJumpStackProvider.notifier).push(_item);
+      setState(() {
+        _item = item;
+        // The episodes panel lists the SIBLINGS of the video it was opened on,
+        // and auto-advance can fire while it is open.
+        _showEpisodes = false;
+      });
+      await player.open(Media(item.url, httpHeaders: sharedAuthHeader));
+      if (_disposed || !mounted) return;
+      // A fresh load resets what the user set on the player, so the two facts
+      // mpv does not carry across are re-applied from this screen's own state —
+      // which is the state they were watching in.
+      player.setVolume(_volume.value);
+      player.setRate(_rate.value);
+      player.play();
+    } finally {
+      _switching = false;
+    }
   }
 
   /// Replaces this route with [item]'s player.
@@ -710,11 +777,19 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   ///    through the history enters from the left, so it no longer looks like
   ///    opening a video.
   void _go(MediaItem item, {bool back = false}) {
-    if (_navigating || _isRoutePopping) return;
+    if (_navigating || _switching || _isRoutePopping) return;
     _navigating = true;
-    if (!back) ref.read(videoJumpStackProvider.notifier).push(widget.item);
-    // Tear down our Player/Video synchronously so the outgoing route doesn't
-    // keep rendering a disposed texture during the transition (black screen).
+    if (!back) ref.read(videoJumpStackProvider.notifier).push(_item);
+    // Stop feeding the outgoing screen, but leave its player ALIVE. This route
+    // stays in the tree until the replacement has finished animating (measured
+    // on a 300ms zoom: its subtree is present at 0/100/200ms and gone once
+    // settled), so disposing the player here — as this used to — blanks the
+    // video area for exactly the length of the transition: the black was the
+    // disposed texture's, not the route's absence. Muting is enough to keep the
+    // two soundtracks from overlapping, and it happens after the volume
+    // subscription is cancelled so the bar cannot flicker to 0 on the way out.
+    // The player is stopped and disposed by this screen's own `dispose()`, when
+    // the route really goes.
     _posSub?.cancel();
     _durSub?.cancel();
     _bufSub?.cancel();
@@ -723,10 +798,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _volumeSub?.cancel();
     _rateSub?.cancel();
     _scrollCtrl?.removeListener(_onScroll);
-    p?.stop();
-    p?.dispose();
-    p = null;
-    vc = null;
+    p?.setVolume(0);
     if (mounted) setState(() {});
     Navigator.pushReplacement(
       context,
@@ -767,7 +839,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   ///    Related list), the system UI/orientation and window chrome are restored
   ///    as on any other exit.
   void _goHome() {
-    if (_navigating || _isRoutePopping) return;
+    if (_navigating || _switching || _isRoutePopping) return;
     p?.stop();
     Navigator.popUntil(context, isLibraryLandingRoute);
   }
@@ -833,8 +905,11 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     final allVideos = ref.watch(videosListProvider);
     final scanGen = ref.watch(scanStateProvider).scanGen;
     // The jump stack is an input to the Related list — its entries are excluded
-    // — so it is watched here, and `_relatedFor` caches on it.
+    // — so it is watched here, and `_relatedFor` caches on it. It is also what
+    // decides whether the chrome offers Previous and Home at all: with an empty
+    // history `Back` leaves the player by itself, so both would repeat it.
     final excluded = ref.watch(jumpExcludedPathsProvider);
+    final hasHistory = ref.watch(videoJumpStackProvider).isNotEmpty;
     final related = _relatedFor(allVideos, excluded, scanGen);
     final size = MediaQuery.of(c).size;
     final isLandscape = size.width > size.height;
@@ -919,9 +994,11 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                             opacity: _showControls ? 1.0 : 0.0,
                             duration: _fadeMs,
                             child: PlayerTopBar(
-                              title: widget.item.name,
+                              title: _item.name,
                               onBack: _handleBack,
-                              onHome: _goHome,
+                              // Only while the history makes it a DIFFERENT
+                              // action from Back; see `PlayerTopBar.onHome`.
+                              onHome: hasHistory ? _goHome : null,
                               onSettings: _toggleSettings,
                               safe: safe,
                             ),
@@ -1168,12 +1245,16 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                     ),
                     // Beside Back because it is the other way OUT of the player:
                     // back retraces one jump of the history, home leaves the
-                    // whole chain for the library (`_goHome`).
-                    IconButton(
-                      icon: const Icon(Icons.home, color: Colors.white70),
-                      tooltip: 'Home',
-                      onPressed: _goHome,
-                    ),
+                    // whole chain for the library (`_goHome`). Only while there
+                    // IS a history to retrace — with an empty stack Back leaves
+                    // the player too, and two buttons for one action is one too
+                    // many.
+                    if (ref.watch(videoJumpStackProvider).isNotEmpty)
+                      IconButton(
+                        icon: const Icon(Icons.home, color: Colors.white70),
+                        tooltip: 'Home',
+                        onPressed: _goHome,
+                      ),
                   ],
                 ),
               ),
@@ -1220,12 +1301,16 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       return;
     }
     // The same guards the jump paths use: a navigation already owns this route
-    // (a jump in flight, or this route already reversing), so back must not pop
-    // the route out from under it — nor consume a stack entry that nothing
-    // would then navigate to.
-    if (_navigating || _isRoutePopping) return;
+    // (a jump in flight, a media swap, or this route already reversing), so back
+    // must not pop the route out from under it — nor consume a stack entry that
+    // nothing would then navigate to.
+    if (_navigating || _switching || _isRoutePopping) return;
     final from = ref.read(videoJumpStackProvider.notifier).pop();
     if (from != null) {
+      // Deliberately the ROUTE step and not the transport bar's in-place switch:
+      // back is "leave this video", so it plays the platform's back-direction
+      // transition. The transport's prev reaches the same video with nothing on
+      // screen moving at all — the same navigation, presented differently.
       _go(from, back: true);
       return;
     }
@@ -1628,7 +1713,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          widget.item.name,
+          _item.name,
           style: const TextStyle(
             color: Colors.white,
             fontSize: 20,
@@ -1638,9 +1723,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         const SizedBox(height: 8),
         Row(
           children: [
-            if (widget.item.durationSeconds != null) ...[
+            if (_item.durationSeconds != null) ...[
               Text(
-                widget.item.formattedDuration,
+                _item.formattedDuration,
                 style: const TextStyle(color: Colors.white54, fontSize: 13),
               ),
               const SizedBox(width: 8),
@@ -1648,14 +1733,14 @@ class _State extends ConsumerState<VideoPlayerScreen> {
             ],
             const SizedBox(width: 8),
             Text(
-              widget.item.formattedSize,
+              _item.formattedSize,
               style: const TextStyle(color: Colors.white54, fontSize: 13),
             ),
             const SizedBox(width: 8),
             const Text('•', style: TextStyle(color: Colors.white54)),
             const SizedBox(width: 8),
             Text(
-              widget.item.extension.toUpperCase(),
+              _item.extension.toUpperCase(),
               style: const TextStyle(color: Colors.white54, fontSize: 13),
             ),
           ],

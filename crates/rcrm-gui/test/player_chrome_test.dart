@@ -31,6 +31,7 @@ Future<void> _pumpBar(
   bool hasEpisodes = true,
   VoidCallback? onPlayPause,
   VoidCallback? onToggleMute,
+  VoidCallback? onPrev,
   ValueChanged<double>? onVolumeChanged,
   ValueChanged<Duration>? onSeek,
 }) async {
@@ -55,7 +56,7 @@ Future<void> _pumpBar(
         onSeek: onSeek,
         onFullscreen: () {},
         onNext: () {},
-        onPrev: () {},
+        onPrev: onPrev ?? () {},
         onEpisodes: () {},
         onSpeedChanged: (_) {},
       ),
@@ -211,6 +212,64 @@ void main() {
           reason: '${entry.key}: painted $painted, budgeted ${m.tap}',
         );
       }
+    });
+
+    testWidgets('no dead skip buttons: one is painted only when it can act', (
+      tester,
+    ) async {
+      // Nothing to go back to → no button at all. A greyed-out slot was tried
+      // and rejected: it puts a control in the row that can do nothing for as
+      // long as the user has not jumped, and every bar size has to reserve its
+      // width for it.
+      await _pumpBar(tester, size: const Size(1280, 720), hasPrev: false);
+      expect(find.byIcon(Icons.skip_previous), findsNothing);
+
+      var taps = 0;
+      await _pumpBar(
+        tester,
+        size: const Size(1280, 720),
+        hasPrev: true,
+        onPrev: () => taps++,
+      );
+      expect(find.byIcon(Icons.skip_previous), findsOneWidget);
+      await tester.tap(find.byIcon(Icons.skip_previous));
+      expect(taps, 1);
+
+      // The other side of the pair keeps the same rule.
+      await _pumpBar(tester, size: const Size(1280, 720), hasNext: false);
+      expect(find.byIcon(Icons.skip_next), findsNothing);
+      await _pumpBar(tester, size: const Size(1280, 720), hasNext: true);
+      expect(find.byIcon(Icons.skip_next), findsOneWidget);
+    });
+
+    testWidgets('hasPrev/hasNext are read on every build, never captured once', (
+      tester,
+    ) async {
+      // Two pumps over the same widget type update the element IN PLACE — the
+      // assertions on the state object below prove it — so this is the live path
+      // the screen drives with `ref.watch(videoJumpStackProvider)`: the bar
+      // rebuilds and the plan is recomputed from the fields it was just handed.
+      // Caching the plan (or the buttons) would leave the row stale until
+      // something else forced a remount.
+      await _pumpBar(tester, size: const Size(1280, 720), hasPrev: false);
+      final state = tester.state(find.byType(PlayerControlBar));
+      expect(find.byIcon(Icons.skip_previous), findsNothing);
+
+      await _pumpBar(tester, size: const Size(1280, 720), hasPrev: true);
+      expect(
+        identical(tester.state(find.byType(PlayerControlBar)), state),
+        isTrue,
+        reason: 'same element: an update, not a remount',
+      );
+      expect(find.byIcon(Icons.skip_previous), findsOneWidget);
+
+      // ...and back to empty, still in place.
+      await _pumpBar(tester, size: const Size(1280, 720), hasPrev: false);
+      expect(
+        identical(tester.state(find.byType(PlayerControlBar)), state),
+        isTrue,
+      );
+      expect(find.byIcon(Icons.skip_previous), findsNothing);
     });
 
     testWidgets('when there is room, every control is there', (tester) async {
@@ -370,8 +429,8 @@ void main() {
       expect(find.text('holiday.mp4'), findsOneWidget);
       expect(find.byIcon(Icons.arrow_back), findsOneWidget);
       // Home is a way OUT of the player chain, not a jump step: it sits beside
-      // back and is always there — the transport bar keeps the history's
-      // one-step skip buttons.
+      // back, and the transport bar keeps the history's one-step skip buttons.
+      // (It is absent while the history is empty — see the next test.)
       expect(find.byIcon(Icons.home), findsOneWidget);
       expect(find.byIcon(Icons.settings), findsOneWidget);
       await tester.tap(find.byIcon(Icons.arrow_back));
@@ -380,6 +439,31 @@ void main() {
       expect(backs, 1);
       expect(homes, 1);
       expect(settings, 1);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('no home button while the jump history is empty', (
+      tester,
+    ) async {
+      // `onHome: null` is that case. Back already leaves the player when there is
+      // nothing to retrace, so Home would be the same action twice; it appears
+      // once the two really differ (`_go` vs one step back).
+      await tester.binding.setSurfaceSize(const Size(640, 360));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            backgroundColor: Colors.black,
+            body: Align(
+              alignment: Alignment.topCenter,
+              child: PlayerTopBar(title: 'holiday.mp4', onBack: () {}),
+            ),
+          ),
+        ),
+      );
+      expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+      expect(find.byIcon(Icons.home), findsNothing);
+      expect(find.text('holiday.mp4'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 

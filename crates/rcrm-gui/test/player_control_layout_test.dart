@@ -180,6 +180,9 @@ void main() {
     });
 
     test('absent neighbours are never planned', () {
+      // Presence follows availability, so a skip button the user can see is
+      // always one they can press. The cost — the row reflows once, when the
+      // jump history first becomes non-empty — is the accepted one.
       final p = plan(1920, hasPrev: false, hasNext: false, hasEpisodes: false);
       expect(p.showPrev, isFalse);
       expect(p.showNext, isFalse);
