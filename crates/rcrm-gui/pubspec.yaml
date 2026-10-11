@@ -28,8 +28,8 @@ dependencies:
   shared_preferences: ^2.3.4
   path_provider: ^2.1.4
 
-  # File/folder picking
-  file_picker: ^10.0.0
+  # File/folder picking (static API; the federated 13.x split the platform impls)
+  file_picker: ^13.1.0
 
   # Desktop window (fullscreen)
   window_manager: ^0.5.2

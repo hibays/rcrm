@@ -64,7 +64,7 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
   bool get _hasFolders => _selectedDirs.isNotEmpty;
 
   Future<void> _pickFolder() async {
-    final result = await FilePicker.platform.getDirectoryPath();
+    final result = await FilePicker.getDirectoryPath();
     if (result != null && !_selectedDirs.contains(result)) {
       setState(() => _selectedDirs.add(result));
     }

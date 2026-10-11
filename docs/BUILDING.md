@@ -17,9 +17,22 @@ Changing any version independently WILL break the build. All components are inte
 | Min SDK | **24** | ✅ | `android/app/build.gradle.kts` |
 | MSVC | VS 2022 Build Tools v18 | ✅ | Visual Studio Installer |
 | ffmpeg | MSYS2 ucrt64 (system PATH), **9.x** | ⚠️ see Known issues | `ffmpeg -version` |
-| file_picker | 10.3.10 resolved (Android) | ✅ | `pubspec.lock` |
+| file_picker | 13.1.0 resolved (Android APK + Windows exe built) | ✅ | `pubspec.lock` |
 | `rav1d` (git) | rev `9f00b03b…` | ✅ | `crates/rcrm-flutter-bridge/Cargo.toml` |
 | `heic` (git) | rev `db52055b…` | ✅ | `crates/rcrm-flutter-bridge/Cargo.toml` |
+
+**`file_picker` 13.x and our AGP 9 flags.** The Android build runs with
+`android.newDsl=false` + `android.builtInKotlin=false` (both written by the Flutter template), so
+every Android plugin has to cope with Kotlin being applied on its behalf. 13.x does: its Android
+module declares its own buildscript classpath and applies KGP only when built-in Kotlin is off, and
+the Windows implementation is Dart-only (`windows_file_picker`, `win32` FFI), so it needs no native
+module. The 11.x line was unusable here — its Android build applied KGP in a way Kotlin 2.3.20
+rejects. The 12.0 federated rewrite also split the plugin into per-platform packages
+(`android_file_picker`, `windows_file_picker`, `file_picker_darwin/linux/web`) and made the API
+**static**: `FilePicker.getDirectoryPath()`, never `FilePicker.platform.*` (that accessor is gone,
+not deprecated). With this set (file_picker 13.1.0, package_info_plus 10.2.2, wakelock_plus 1.8.1)
+**no Android plugin declares KGP any more**, so Flutter's "plugins that apply Kotlin Gradle Plugin —
+future versions of Flutter will fail to build" warning no longer appears.
 
 **If Gradle/AGP/Kotlin must be upgraded:**
 

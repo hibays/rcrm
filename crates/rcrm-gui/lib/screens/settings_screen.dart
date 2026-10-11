@@ -903,7 +903,7 @@ class _DirEditorState extends State<_DirEditor> {
 
   void _remove(String p) => setState(() => _dirs.remove(p));
   Future<void> _pick() async {
-    final r = await FilePicker.platform.getDirectoryPath();
+    final r = await FilePicker.getDirectoryPath();
     if (r != null && !_dirs.contains(r)) setState(() => _dirs.add(r));
   }
 
