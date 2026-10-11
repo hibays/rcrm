@@ -43,15 +43,6 @@ typedef ThumbCacheChoice = ({
   int limitMb,
 });
 
-/// The sizes Auto trim can aim for, in MB; `0` is the platform default.
-const List<int> kThumbCacheLimitChoices = [0, 64, 256, 1024];
-
-String thumbCacheLimitLabel(int mb) => switch (mb) {
-  0 => 'Default',
-  1024 => '1 GB',
-  _ => '$mb MB',
-};
-
 class ThumbCacheDialog extends StatefulWidget {
   /// The grading to show — `ThumbCache.preview()`, or a plan already in hand.
   final FutureOr<ThumbCachePlan> plan;
@@ -242,11 +233,29 @@ class _ThumbCacheDialogState extends State<ThumbCacheDialog> {
   Widget _tierTile(ThumbCachePlan plan, ThumbCacheTier tier, DateTime now) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final (label, bytes, upTo) = switch (tier) {
-      ThumbCacheTier.cold => ('Cold', plan.coldBytes, plan.coldUpTo),
-      ThumbCacheTier.warm => ('Warm', plan.warmBytes, plan.warmUpTo),
+    // ONE switch for one tier. The label, its bytes, when it was generated and when
+    // it was last opened all belong to the same question; reading them out in two
+    // switches was two places to forget a tier in.
+    final (label, bytes, upTo, used) = switch (tier) {
+      ThumbCacheTier.cold => (
+        'Cold',
+        plan.coldBytes,
+        plan.coldUpTo,
+        plan.coldUsedAt,
+      ),
+      ThumbCacheTier.warm => (
+        'Warm',
+        plan.warmBytes,
+        plan.warmUpTo,
+        plan.warmUsedAt,
+      ),
       // The newest tier has no cut of its own: it runs to now.
-      ThumbCacheTier.fresh => ('Fresh', plan.freshBytes, null),
+      ThumbCacheTier.fresh => (
+        'Fresh',
+        plan.freshBytes,
+        null,
+        plan.freshUsedAt,
+      ),
     };
     final age = upTo == null
         ? 'newest — what you are looking at'
@@ -255,11 +264,6 @@ class _ThumbCacheDialogState extends State<ThumbCacheDialog> {
     // has ever read says only when it was generated, and inventing "never opened"
     // for a cache that simply predates the access log would be a claim we cannot
     // support.
-    final used = switch (tier) {
-      ThumbCacheTier.cold => plan.coldUsedAt,
-      ThumbCacheTier.warm => plan.warmUsedAt,
-      ThumbCacheTier.fresh => plan.freshUsedAt,
-    };
     final usedLine = used == null
         ? ''
         : ' · opened ${describeAge(used, now: now)}';

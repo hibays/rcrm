@@ -133,8 +133,11 @@ VideoCard tap → Navigator.push(video_player_screen)
 > The on-disk `ThumbCache` (mobile by default) is **managed, not evicted**:
 > `ThumbCache.manage()` scores every entry — last use (weight 3), generation time
 > (weight 1) and size (weight −2), each normalised by the median of this cache —
-> and cuts cold / warm / fresh at the terciles of that score, spending the
-> lowest-scoring first only until the platform budget is met. The access record is
+> and cuts cold / warm / fresh at the TWO LARGEST GAPS in that score order, when
+> they are significant against the cache's own median gap (a cache with no shape
+> keeps equal thirds), so the coldest third of this cache is cold whatever its
+> calendar ages are. Auto trim then spends the lowest-scoring first, only until the
+> target is met. The access record is
 > a separate log (`<base>/._thumbs_used`, written on a cache hit, throttled),
 > because the file's mtime IS the generation time and a read must not rewrite it.
 > Nothing is asserted from outside, so a thumbnail generated three years ago and
@@ -142,10 +145,11 @@ VideoCard tap → Navigator.push(video_player_screen)
 > the same rule is right for a library scanned weekly and one opened twice a year.
 > The rule is pure (`utils/thumb_cache_policy.dart`); the settings row has one
 > entry point (`ThumbCacheDialog`) whose tier rows show size and age in words and
-> are ticked to choose what may be spent. **Nothing prunes on its own**: `write`
-> only writes, and the cache grows until the user opens the cache row and chooses
-> Clean up, which trims it to the target set there (platform default 96 MB mobile
-> / 512 MB desktop).
+> delete their own tier whole. **Nothing prunes on its own**: `write`
+> only writes, and the cache grows until the user opens the cache row: each tier
+> row deletes its own tier whole, and Auto trim spends the coldest entries down to
+> the target set in that same dialog (platform default 96 MB mobile / 512 MB
+> desktop).
 
 Video posters (ffmpeg / media_kit):
 

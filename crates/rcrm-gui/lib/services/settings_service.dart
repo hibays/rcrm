@@ -241,7 +241,7 @@ class SettingsService {
   /// One number rather than a switch plus a size, because they are the same
   /// decision — how much disk this app may spend on thumbnails. Nothing is
   /// automatic: the cache grows until the user opens the cache row and chooses
-  /// Clean up, which then trims it to this.
+  /// Auto trim, which then trims it to this.
   Future<int> getThumbCacheLimitMb() async {
     final p = await prefs;
     return p.getInt(_keyThumbCacheLimit) ?? 0; // 0 = platform default

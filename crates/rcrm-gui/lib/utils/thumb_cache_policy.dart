@@ -219,8 +219,9 @@ ThumbCachePlan planThumbCache(
     for (final e in run) {
       // Two intents, one walk. With [dropWholeTiers] the SELECTION is the whole
       // decision: the tier the user ticked goes entirely, and the budget gets no
-      // veto — that is what "Clean up removes what I ticked" has to mean, or the
-      // ticks are decoration. Without it the walk stops as soon as the budget is
+      // veto — that is what "a row's delete removes that tier whole" has to mean,
+      // or the button is a suggestion. Without it the walk stops as soon as the
+      // budget is
       // met, which is the size-targeted clean-up `maxBytes` describes.
       if (!dropWholeTiers && kept <= (maxBytes ?? total)) return;
       drop.add(e.name);
@@ -365,6 +366,20 @@ DateTime? _newestUsed(List<ThumbCacheEntry> run) {
   }
   return newest;
 }
+
+/// The sizes Auto trim can aim for, in MB; `0` is the platform default.
+///
+/// Here rather than in the dialog: these are PRODUCT values — what the app offers
+/// to trim to — and the view layer is where they are shown, not where they are
+/// decided. Same layer as [thumbCacheBudgetBytes], which turns one of them into
+/// bytes.
+const List<int> kThumbCacheLimitChoices = [0, 64, 256, 1024];
+
+String thumbCacheLimitLabel(int mb) => switch (mb) {
+  0 => 'Default',
+  1024 => '1 GB',
+  _ => '$mb MB',
+};
 
 /// The cache's own budget: mobile keeps less, because its private cache counts
 /// against a tighter app-storage allowance.
