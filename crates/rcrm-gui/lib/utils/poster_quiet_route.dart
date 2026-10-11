@@ -25,6 +25,15 @@
 // job holds the pool player across a `screenshot()` whose native side re-checks
 // nothing, so disposing the pool for the duration of playback would be a crash
 // rather than a saving. The pool is *parked*, not destroyed.
+//
+// The route also carries the player's DIRECTION. `_go` REPLACES the player route
+// on every jump — forward through the history and back through it — so both
+// steps are a push, and without a flag the back step played the platform's
+// forward transition, i.e. a step back into the history looked exactly like
+// opening a video. `backStep` makes that step play what a POP reveals on the
+// platform instead, which is a different animation on every platform family —
+// Android's slide + fade, the desktop zoom, Cupertino's own slide. The
+// `buildTransitions` override below is the only thing it changes.
 
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
@@ -43,10 +52,23 @@ class PosterQuietRoute<T> extends MaterialPageRoute<T> {
   /// The builder receives the player this route created, or null when creating
   /// it failed, and returns the screen — normally
   /// `VideoPlayerScreen(item: item, warmPlayer: warm)`.
-  PosterQuietRoute({required this._build, super.settings})
-    : super(builder: _routeBuilder);
+  PosterQuietRoute({
+    required this._build,
+    this.backStep = false,
+    super.settings,
+  }) : super(builder: _routeBuilder);
 
   final Widget Function(Player? warmPlayer) _build;
+
+  /// True when this route is the BACK step of the jump history — the video
+  /// `Back` is returning to. It then enters with the mirror of the platform's
+  /// forward transition (in from the left) instead of that transition itself.
+  ///
+  /// A flag here rather than at the call site's widget: the transition belongs
+  /// to the ROUTE, so it is decided wherever a route is created — `_go` in
+  /// `video_player_screen.dart` is the only such site, and it is the only place
+  /// that knows which way the history is being walked.
+  final bool backStep;
 
   /// Resolved through the route rather than through a captured closure: the
   /// builder runs while this route is the modal route of its own overlay entry,
@@ -100,10 +122,107 @@ class PosterQuietRoute<T> extends MaterialPageRoute<T> {
   /// own post-frame callback, which is exactly the pre-existing behaviour.
   static Player? _createWarmPlayer() {
     try {
-      return PlayerFactory.playback();
+      return warmPlayerFactory();
     } catch (_) {
       return null;
     }
+  }
+
+  /// The warm player's factory. Production always uses `PlayerFactory.playback`.
+  ///
+  /// A seam because this route can be pushed in a widget test (its transition
+  /// and its poster-pool gate are drivable there) while a real media_kit
+  /// `Player` cannot be created in a test process at all — a test that silently
+  /// relied on `PlayerFactory.playback()` throwing would start leaking a native
+  /// player the day it does not.
+  @visibleForTesting
+  static Player? Function() warmPlayerFactory = PlayerFactory.playback;
+
+  // ── Direction ──────────────────────────────────────────────
+  // The back step's entrance, as the animation the platform plays for the page a
+  // pop REVEALS. A pop drives that page with one specific pair — its own
+  // animation already complete, its secondary animation running 1 -> 0 — so
+  // `buildTransitions` below either reproduces what that pair produces or hands
+  // the pair to the platform's own builder. Neither is a table of per-platform
+  // numbers invented here; the difference between them is which one can be
+  // reproduced exactly.
+  //
+  // Android can be, and these two tweens are it verbatim: its reveal is
+  // `_secondaryForwardTranslationTween` and `_fadeInTransition` from
+  // `FadeForwardsPageTransitionsBuilder` (a `PredictiveBackPageTransitionsBuilder`
+  // programmatic push delegates to it) — a slide from -0.25 of the width on
+  // `Curves.easeInOutCubicEmphasized`, fading in over `Interval(0, 0.75)`. The
+  // route's own `transitionDuration` is not touched, so the length stays the
+  // platform's 450ms. Measured against a real pop on the same navigator, the
+  // revealed page and this route sample identically: 181.26px / 100.34px /
+  // 21.39px from settled at 10% / 25% / 50% of 450ms.
+  //
+  // Hand-writing it for the other platforms is what was wrong before, and the
+  // same measurement says so: Cupertino's reveal (iOS/macOS) travels from -1/3
+  // with its own curve — 197.19px / 100.34px / 21.39px, so NOT Android's numbers
+  // — and the desktop zoom (Windows/Linux) has no sideways travel at all (it
+  // scales and fades, snapshot-painted, leaving the widget tree's geometry
+  // identity). A 0.25 slide on Windows was therefore Android's animation painted
+  // on a desktop, which is exactly what a "native differences" rule forbids.
+  static final Animatable<Offset> _backSlideTween = Tween<Offset>(
+    begin: const Offset(-0.25, 0.0),
+    end: Offset.zero,
+  ).chain(CurveTween(curve: Curves.easeInOutCubicEmphasized));
+
+  static final Animatable<double> _backFadeTween = Tween<double>(
+    begin: 0.0,
+    end: 1.0,
+  ).chain(CurveTween(curve: const Interval(0.0, 0.75)));
+
+  @override
+  Widget buildTransitions(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    // Forward: the platform's transition, untouched — this is the same call the
+    // theme would make for a plain `MaterialPageRoute`, so opening a video still
+    // feels exactly as it did.
+    if (!backStep) {
+      return super.buildTransitions(
+        context,
+        animation,
+        secondaryAnimation,
+        child,
+      );
+    }
+    // Back. Which animation that is comes from the theme, not from this file:
+    // an app that swapped its `PageTransitionsTheme` gets its own answer here.
+    final theme = Theme.of(context);
+    final builder =
+        theme.pageTransitionsTheme.builders[theme.platform] ??
+        const ZoomPageTransitionsBuilder();
+    if (builder is FadeForwardsPageTransitionsBuilder ||
+        builder is PredictiveBackPageTransitionsBuilder) {
+      return SlideTransition(
+        position: _backSlideTween.animate(animation),
+        child: FadeTransition(
+          opacity: _backFadeTween.animate(animation),
+          child: child,
+        ),
+      );
+    }
+    // Everything else asks the platform's own builder to play the revealed page,
+    // by making the call the framework makes for it: this route's animation
+    // already complete (so the builder does not also play an entrance), and a
+    // secondary animation running 1 -> 0 — the page above is going away, which
+    // over this route's own duration is `ReverseAnimation(animation)`. Windows
+    // and Linux then scale and fade as they do for any revealed page, and
+    // iOS/macOS slide in from -1/3 on Cupertino's curve, without this file
+    // knowing either animation.
+    return builder.buildTransitions<T>(
+      this,
+      context,
+      const AlwaysStoppedAnimation<double>(1.0),
+      ReverseAnimation(animation),
+      child,
+    );
   }
 
   @override

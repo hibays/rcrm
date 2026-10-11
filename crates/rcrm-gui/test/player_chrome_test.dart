@@ -345,8 +345,9 @@ void main() {
   });
 
   group('PlayerTopBar', () {
-    testWidgets('carries back, title and settings', (tester) async {
+    testWidgets('carries back, home, title and settings', (tester) async {
       var backs = 0;
+      var homes = 0;
       var settings = 0;
       await tester.binding.setSurfaceSize(const Size(640, 360));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -359,6 +360,7 @@ void main() {
               child: PlayerTopBar(
                 title: 'holiday.mp4',
                 onBack: () => backs++,
+                onHome: () => homes++,
                 onSettings: () => settings++,
               ),
             ),
@@ -367,10 +369,16 @@ void main() {
       );
       expect(find.text('holiday.mp4'), findsOneWidget);
       expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+      // Home is a way OUT of the player chain, not a jump step: it sits beside
+      // back and is always there — the transport bar keeps the history's
+      // one-step skip buttons.
+      expect(find.byIcon(Icons.home), findsOneWidget);
       expect(find.byIcon(Icons.settings), findsOneWidget);
       await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.tap(find.byIcon(Icons.home));
       await tester.tap(find.byIcon(Icons.settings));
       expect(backs, 1);
+      expect(homes, 1);
       expect(settings, 1);
       expect(tester.takeException(), isNull);
     });
@@ -388,6 +396,7 @@ void main() {
               child: PlayerTopBar(
                 title: 'a-very-long-episode-name-that-would-never-fit-' * 3,
                 onBack: () {},
+                onHome: () {},
                 onSettings: () {},
               ),
             ),
@@ -397,6 +406,7 @@ void main() {
       expect(tester.takeException(), isNull);
       expect(find.byIcon(Icons.settings), findsOneWidget);
       expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+      expect(find.byIcon(Icons.home), findsOneWidget);
     });
 
     testWidgets('no settings button in the windowed player', (tester) async {
@@ -405,7 +415,11 @@ void main() {
           home: Scaffold(
             body: Align(
               alignment: Alignment.topCenter,
-              child: PlayerTopBar(title: 'clip.mp4', onBack: () {}),
+              child: PlayerTopBar(
+                title: 'clip.mp4',
+                onBack: () {},
+                onHome: () {},
+              ),
             ),
           ),
         ),

@@ -11,6 +11,19 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/server_config.dart';
 
+/// Bounds and default of the video jump-history limit — how many previous
+/// videos `Back` can return to (`providers/video_jump_stack.dart`) and how many
+/// are kept out of the Related list. The range lives here, next to the key that
+/// persists it, so the service's clamp and the settings slider's travel cannot
+/// drift apart.
+///
+/// 1 is the floor because one remembered video is the smallest useful history;
+/// 50 is the ceiling because past that the exclusion set swallows whole small
+/// libraries' Related lists for no gain.
+const int kVideoJumpHistoryMin = 1;
+const int kVideoJumpHistoryMax = 50;
+const int kVideoJumpHistoryDefault = 10;
+
 class SettingsService {
   static const _keyServerConfig = 'server_config';
   static const _keyVideoLayout = 'video_layout'; // 'grid' or 'list'
@@ -31,6 +44,8 @@ class SettingsService {
       'playback_mode'; // 'loopAll' | 'loopOne' | 'pauseAfter'
   static const _keyAutoRotate = 'auto_rotate'; // bool
   static const _keyCastAutoNext = 'cast_auto_next'; // bool
+  static const _keyVideoJumpHistory =
+      'video_jump_history_limit'; // int, 1..50
 
   SharedPreferences? _prefs;
 
@@ -259,5 +274,26 @@ class SettingsService {
   Future<void> setCastAutoNext(bool enabled) async {
     final p = await prefs;
     await p.setBool(_keyCastAutoNext, enabled);
+  }
+
+  // ── Video jump history ────────────────────────────────────
+  // The size of the jump stack whose entries `Back` returns to and the Related
+  // list excludes. The stack itself is session state and is never persisted —
+  // only this limit is. Read back clamped, so a hand-edited or legacy value can
+  // never leave the range the slider (and the stack) is built on.
+  Future<int> getVideoJumpHistoryLimit() async {
+    final p = await prefs;
+    return (p.getInt(_keyVideoJumpHistory) ?? kVideoJumpHistoryDefault).clamp(
+      kVideoJumpHistoryMin,
+      kVideoJumpHistoryMax,
+    );
+  }
+
+  Future<void> setVideoJumpHistoryLimit(int limit) async {
+    final p = await prefs;
+    await p.setInt(
+      _keyVideoJumpHistory,
+      limit.clamp(kVideoJumpHistoryMin, kVideoJumpHistoryMax),
+    );
   }
 }

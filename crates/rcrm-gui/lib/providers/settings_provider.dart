@@ -30,6 +30,11 @@ class SettingsState {
   final String playbackMode; // 'loopAll' | 'loopOne' | 'pauseAfter'
   final bool autoRotate;
   final bool castAutoNext;
+
+  /// How many previous videos the video player's jump stack keeps — the entries
+  /// `Back` returns to and the Related list excludes
+  /// (`providers/video_jump_stack.dart`). Persisted; the stack itself is not.
+  final int videoJumpHistoryLimit;
   const SettingsState({
     this.imageLayout = 'masonry',
     this.imageColumns = 3,
@@ -44,6 +49,7 @@ class SettingsState {
     this.autoRotate = false,
     this.castAutoNext = true,
     this.pipSize = 'normal',
+    this.videoJumpHistoryLimit = kVideoJumpHistoryDefault,
   });
 
   SettingsState copyWith({
@@ -60,6 +66,7 @@ class SettingsState {
     bool? autoRotate,
     bool? castAutoNext,
     String? pipSize,
+    int? videoJumpHistoryLimit,
   }) {
     return SettingsState(
       imageLayout: imageLayout ?? this.imageLayout,
@@ -75,6 +82,8 @@ class SettingsState {
       autoRotate: autoRotate ?? this.autoRotate,
       castAutoNext: castAutoNext ?? this.castAutoNext,
       pipSize: pipSize ?? this.pipSize,
+      videoJumpHistoryLimit:
+          videoJumpHistoryLimit ?? this.videoJumpHistoryLimit,
     );
   }
 }
@@ -103,6 +112,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
     final playbackMode = await _service.getPlaybackMode();
     final autoRotate = await _service.getAutoRotate();
     final castAutoNext = await _service.getCastAutoNext();
+    final videoJumpHistoryLimit = await _service.getVideoJumpHistoryLimit();
 
     // Restore video sort/grid columns from persistence. The video sort field
     // goes through `restore`, not `set`: `set` carries the re-pick rule below,
@@ -129,6 +139,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
       autoRotate: autoRotate,
       castAutoNext: castAutoNext,
       pipSize: pipSize,
+      videoJumpHistoryLimit: videoJumpHistoryLimit,
     );
   }
 
@@ -218,6 +229,21 @@ class SettingsNotifier extends Notifier<SettingsState> {
   Future<void> setCastAutoNext(bool enabled) async {
     state = state.copyWith(castAutoNext: enabled);
     await _service.setCastAutoNext(enabled);
+  }
+
+  /// The settings slider (`screens/settings_screen.dart`) committed [limit] —
+  /// the size of the video jump stack.
+  ///
+  /// A drag reports a value per frame: writing every one of them would queue a
+  /// platform write per frame, and consecutive frames usually round to the same
+  /// entry anyway, so only a real change is applied and persisted. The stack's
+  /// own re-trim follows from this state change
+  /// (`VideoJumpStackNotifier.build` listens to it).
+  Future<void> setVideoJumpHistoryLimit(int limit) async {
+    final v = limit.clamp(kVideoJumpHistoryMin, kVideoJumpHistoryMax);
+    if (v == state.videoJumpHistoryLimit) return;
+    state = state.copyWith(videoJumpHistoryLimit: v);
+    await _service.setVideoJumpHistoryLimit(v);
   }
 }
 

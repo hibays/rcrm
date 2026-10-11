@@ -925,12 +925,23 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
 
 // ── Fullscreen top bar ──────────────────────────────────────────────
 
-/// Fullscreen chrome: back on the left, title in the middle, settings on the
-/// right — where the eye looks for them, and clear of the transport bar that
+/// Fullscreen chrome: back and home on the left, title in the middle, settings on
+/// the right — where the eye looks for them, and clear of the transport bar that
 /// runs out of room first.
+///
+/// Back and home are the two ways OUT of the player, and they are not the same
+/// way: back retraces one step (first the jump history, then the route behind
+/// the player), home leaves the whole chain for the library. The transport bar's
+/// skip buttons are the history's forward/back one step — a third pair of
+/// navigation icons in the width-budgeted row would be the wrong vocabulary
+/// (and the budget's admission ladder is a tested contract).
 class PlayerTopBar extends StatelessWidget {
   final String title;
   final VoidCallback onBack;
+
+  /// Leaves the player chain for the library — the way home that is not a step
+  /// back through it. Always present, like [onBack].
+  final VoidCallback onHome;
 
   /// Null hides the settings button (windowed player).
   final VoidCallback? onSettings;
@@ -942,6 +953,7 @@ class PlayerTopBar extends StatelessWidget {
     super.key,
     required this.title,
     required this.onBack,
+    required this.onHome,
     this.onSettings,
     this.safe = EdgeInsets.zero,
   });
@@ -972,6 +984,15 @@ class PlayerTopBar extends StatelessWidget {
             icon: Icon(Icons.arrow_back, color: Colors.white, size: m.icon),
             onPressed: onBack,
             tooltip: 'Back',
+            padding: EdgeInsets.zero,
+            visualDensity: VisualDensity.compact,
+            constraints: BoxConstraints.tightFor(width: m.tap, height: m.tap),
+            splashRadius: m.tap / 2,
+          ),
+          IconButton(
+            icon: Icon(Icons.home, color: Colors.white, size: m.icon),
+            onPressed: onHome,
+            tooltip: 'Home',
             padding: EdgeInsets.zero,
             visualDensity: VisualDensity.compact,
             constraints: BoxConstraints.tightFor(width: m.tap, height: m.tap),

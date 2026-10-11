@@ -9,6 +9,7 @@ import '../config/theme.dart';
 import '../providers/server_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/net.dart';
+import '../services/settings_service.dart';
 import '../services/thumb_cache.dart';
 
 const _hintSilver = TextStyle(color: RCrmColors.silver);
@@ -523,6 +524,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               },
             ),
           ]),
+          const SizedBox(height: 8),
+          _group([
+            _limitSlider(
+              title: 'Jump History',
+              subtitle:
+                  'How many previous videos Back returns to; those videos are '
+                  'also kept out of Related',
+              value: ui.videoJumpHistoryLimit,
+              min: kVideoJumpHistoryMin,
+              max: kVideoJumpHistoryMax,
+              onChanged: (v) {
+                ref
+                    .read(uiSettingsProvider.notifier)
+                    .setVideoJumpHistoryLimit(v);
+              },
+            ),
+          ]),
           const Divider(),
           _sectionHeader('Casting'),
           const SizedBox(height: 8),
@@ -648,6 +666,93 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             segments: segments,
             selected: selected,
             onSelectionChanged: onChanged,
+          ),
+        );
+      },
+    );
+  }
+
+  /// Integer slider row, in the shape of [_seg]: on narrow cards a title with
+  /// the value beside it, its subtitle under that and the slider below; on wide
+  /// ones a `ListTile` with the slider and the value as its trailing control.
+  ///
+  /// Styled with the design system's slider tokens (docs/DESIGN.md → Sliders:
+  /// Marquee Orange track and thumb, silver-transparent inactive track) — the
+  /// same ones the player's seek slider uses.
+  Widget _limitSlider({
+    required String title,
+    String? subtitle,
+    required int value,
+    required int min,
+    required int max,
+    required ValueChanged<int> onChanged,
+  }) {
+    final valueLabel = Text(
+      '$value',
+      style: Theme.of(
+        context,
+      ).textTheme.bodyLarge?.copyWith(color: RCrmColors.silver),
+    );
+    final slider = SliderTheme(
+      data: SliderTheme.of(context).copyWith(
+        activeTrackColor: RCrmColors.primary,
+        inactiveTrackColor: RCrmColors.silverDim,
+        thumbColor: RCrmColors.primary,
+      ),
+      child: Slider(
+        value: value.toDouble(),
+        min: min.toDouble(),
+        max: max.toDouble(),
+        // The setting is a count of entries, so the drag is snapped to whole
+        // ones here. `divisions` is deliberately left null: 49 subdivisions
+        // would draw 49 tick marks across the track.
+        onChanged: (v) => onChanged(v.round()),
+      ),
+    );
+    return LayoutBuilder(
+      builder: (ctx, c) {
+        if (c.maxWidth < 520) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: Theme.of(ctx).textTheme.bodyLarge,
+                      ),
+                    ),
+                    valueLabel,
+                  ],
+                ),
+                if (subtitle != null) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: Theme.of(ctx).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(ctx).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 4),
+                slider,
+              ],
+            ),
+          );
+        }
+        return ListTile(
+          title: Text(title),
+          subtitle: subtitle != null ? Text(subtitle) : null,
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(width: 200, child: slider),
+              const SizedBox(width: 8),
+              valueLabel,
+            ],
           ),
         );
       },

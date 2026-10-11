@@ -6,7 +6,6 @@
 
 import 'dart:async';
 import 'dart:io' show Platform;
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:flutter/services.dart';
@@ -19,6 +18,7 @@ import '../services/net.dart';
 import '../services/player_factory.dart';
 import '../providers/library_provider.dart';
 import '../providers/settings_provider.dart';
+import '../providers/video_jump_stack.dart';
 import '../providers/window_chrome_provider.dart';
 import '../widgets/video_card.dart';
 import '../widgets/media_player_keys.dart';
@@ -29,8 +29,10 @@ import '../widgets/player_settings_panel.dart';
 import '../widgets/episode_picker_panel.dart';
 import '../utils/format.dart';
 import '../utils/pan_lock.dart';
+import '../utils/player_exit.dart';
 import '../utils/player_panels.dart';
 import '../utils/poster_quiet_route.dart';
+import '../utils/related_videos.dart';
 import '../utils/seek_preview.dart';
 import '../utils/wheel_guard.dart';
 
@@ -76,8 +78,14 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   Timer? _hideTimer;
   Timer? _exitTimer;
   static const _idleSecs = 2;
-  final List<MediaItem> hist = [];
   final _videoKey = GlobalKey();
+
+  /// The session's jump history, captured once so `dispose` can drop it without
+  /// touching `ref` after the element is deactivated (see the dispose body).
+  /// The stack itself lives in `providers/video_jump_stack.dart` — a field here
+  /// would be born empty in the screen a jump creates, and the Related list
+  /// could not read it.
+  VideoJumpStackNotifier? _jumpStack;
 
   /// Persistent focus node for keyboard shortcuts. `Focus(autofocus: true)`
   /// only grabs focus on first mount; clicking a slider/button moves focus
@@ -101,9 +109,14 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   bool _disposed = false;
   bool _globalImmersive = false;
   double _savedRate = 1.0;
+
+  /// The Related list and the key it was computed for. The list is a pure
+  /// function of (item, scan generation, jump stack's excluded paths) — see
+  /// `utils/related_videos.dart` — so the key is those three inputs, and a
+  /// rebuild that changes none of them (a play/pause repaint) reuses the list
+  /// instead of shuffling again.
   List<MediaItem>? _relCache;
-  int _relCacheGen = -1;
-  String? _relCacheUrl;
+  String? _relCacheKey;
 
   // Mini progress bar (shown when controls hidden) — throttled-lightweight.
   final ValueNotifier<Duration> _miniPos = ValueNotifier(Duration.zero);
@@ -197,6 +210,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   @override
   void initState() {
     super.initState();
+    _jumpStack = ref.read(videoJumpStackProvider.notifier);
     _initVolPrefs().then((_) {
       if (_volPrefs != null && mounted) {
         _setVolume(
@@ -328,6 +342,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     p?.dispose();
     p = null;
     vc = null;
+    // Leaving the player for good drops the session's jump history. A jump
+    // (`_navigating`) must not: the screen replacing this one is the stack's
+    // reader, and its own `Back` needs what is left in it.
+    if (!_navigating) _jumpStack?.clear();
     if (_isMobile) {
       // When navigating to another player (_go), the new screen manages its
       // own UI mode/orientation. Resetting here would override its immersive
@@ -633,62 +651,68 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   }
 
   // ── Navigation ─────────────────────────────────────────
-  int _urlSeed(String url) =>
-      url.codeUnits.fold(0, (h, c) => ((h << 5) + h) ^ c);
 
-  List<MediaItem> _relFor(MediaItem vid, List<MediaItem> allVideos) {
-    final dir = vid.name.contains('/')
-        ? vid.name.substring(0, vid.name.lastIndexOf('/') + 1)
-        : '';
-    final seed = _urlSeed(vid.url);
-    final rng = Random(seed);
-
-    var all = allVideos.where((v) => v.path != vid.path).toList();
-
-    // Fisher-Yates shuffle with seeded RNG
-    for (var i = all.length - 1; i > 0; i--) {
-      final j = rng.nextInt(i + 1);
-      final tmp = all[i];
-      all[i] = all[j];
-      all[j] = tmp;
-    }
-
-    // Stable priority: same-directory first, then same-extension, then rest
-    final sameDir = <MediaItem>[];
-    final sameExt = <MediaItem>[];
-    final rest = <MediaItem>[];
-    for (final v in all) {
-      final vDir = v.name.contains('/')
-          ? v.name.substring(0, v.name.lastIndexOf('/') + 1)
-          : '';
-      if (vDir == dir && dir.isNotEmpty) {
-        sameDir.add(v);
-      } else if (v.extension == vid.extension) {
-        sameExt.add(v);
-      } else {
-        rest.add(v);
-      }
-    }
-    return [...sameDir, ...sameExt, ...rest].take(24).toList();
+  /// The Related list for this screen, cached by its three inputs: the item,
+  /// the scan generation and the jump stack's excluded paths. The shuffle
+  /// itself is `relatedFor` (`utils/related_videos.dart`) — a pure function,
+  /// because the player cannot be mounted in a test.
+  List<MediaItem> _relatedFor(
+    List<MediaItem> allVideos,
+    Set<String> excluded,
+    int scanGen,
+  ) {
+    final key =
+        '$scanGen\u0000${widget.item.url}\u0000${excluded.join('\u0000')}';
+    if (_relCache != null && _relCacheKey == key) return _relCache!;
+    final list = relatedFor(
+      widget.item,
+      allVideos,
+      excludePaths: excluded,
+    );
+    _relCache = list;
+    _relCacheKey = key;
+    return list;
   }
 
   void onNext() {
     if (_navigating || _isRoutePopping) return;
-    final r = _relFor(widget.item, ref.read(videosListProvider));
+    // The same list the user is looking at, exclusions included: "next" must
+    // not play a video the Related list refuses to show.
+    final r = _relatedFor(
+      ref.read(videosListProvider),
+      ref.read(jumpExcludedPathsProvider),
+      ref.read(scanStateProvider).scanGen,
+    );
     if (r.isEmpty) return;
-    hist.add(widget.item);
     _go(r.first);
   }
 
   void onPrev() {
     if (_navigating || _isRoutePopping) return;
-    if (hist.isEmpty) return;
-    _go(hist.removeLast());
+    // Back through the jump history: the newest entry is where this screen was
+    // jumped from, and popping it is what makes the step one-way.
+    final from = ref.read(videoJumpStackProvider.notifier).pop();
+    if (from == null) return;
+    _go(from, back: true);
   }
 
-  void _go(MediaItem item) {
+  /// Replaces this route with [item]'s player.
+  ///
+  /// [back] is the direction the history is being walked in, and it is one flag
+  /// because it decides two things that must never disagree:
+  ///
+  ///  * the jump stack's push. Every FORWARD jump records the video it leaves —
+  ///    that entry is exactly what `Back` returns to. The back paths (`onPrev`,
+  ///    the back button) have already popped the entry they are navigating to,
+  ///    and re-recording it would make `Back` bounce between the same two
+  ///    videos.
+  ///  * the route's transition (`PosterQuietRoute.backStep`): a step back
+  ///    through the history enters from the left, so it no longer looks like
+  ///    opening a video.
+  void _go(MediaItem item, {bool back = false}) {
     if (_navigating || _isRoutePopping) return;
     _navigating = true;
+    if (!back) ref.read(videoJumpStackProvider.notifier).push(widget.item);
     // Tear down our Player/Video synchronously so the outgoing route doesn't
     // keep rendering a disposed texture during the transition (black screen).
     _posSub?.cancel();
@@ -712,6 +736,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       // callback. Its install/dispose depth is what keeps this replacement from
       // lifting the suspension between the two screens.
       PosterQuietRoute(
+        backStep: back,
         build: (warm) => VideoPlayerScreen(
           item: item,
           startFullscreen: fullscreen,
@@ -719,6 +744,32 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         ),
       ),
     );
+  }
+
+  /// Leaves the whole player chain and lands on the library — the "home" action
+  /// in the player chrome.
+  ///
+  /// Not one more jump step, and deliberately not a `_go`: a jump replaces this
+  /// route with another player and keeps the history, while this ends the
+  /// session. So it takes the ordinary "leaving the player for good" path,
+  /// which is the one the screen already has:
+  ///
+  ///  * `p?.stop()` first — the documented rule before any navigation away from
+  ///    the player (the route's `dispose()` disposes the player, and a player
+  ///    must not be mid-playback when it is dropped);
+  ///  * `popUntil` on the landing rule in `utils/player_exit.dart`, which
+  ///    unwinds the player AND the search screen a player may have been opened
+  ///    from, and stops at the library;
+  ///  * `_navigating` stays false, so `dispose()` runs its "leaving for good"
+  ///    branch: the jump stack is CLEARED (every entry in it is a video on the
+  ///    chain being left, and a stale stack would both offer `Back` a jump into
+  ///    a session that is over and hide those videos from the next player's
+  ///    Related list), the system UI/orientation and window chrome are restored
+  ///    as on any other exit.
+  void _goHome() {
+    if (_navigating || _isRoutePopping) return;
+    p?.stop();
+    Navigator.popUntil(context, isLibraryLandingRoute);
   }
 
   // Keyboard shortcuts (space/arrows/F/ESC) — the verified global-key
@@ -781,17 +832,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   Widget build(BuildContext c) {
     final allVideos = ref.watch(videosListProvider);
     final scanGen = ref.watch(scanStateProvider).scanGen;
-    final List<MediaItem> related;
-    if (_relCache != null &&
-        _relCacheGen == scanGen &&
-        _relCacheUrl == widget.item.url) {
-      related = _relCache!;
-    } else {
-      related = _relFor(widget.item, allVideos);
-      _relCache = related;
-      _relCacheGen = scanGen;
-      _relCacheUrl = widget.item.url;
-    }
+    // The jump stack is an input to the Related list — its entries are excluded
+    // — so it is watched here, and `_relatedFor` caches on it.
+    final excluded = ref.watch(jumpExcludedPathsProvider);
+    final related = _relatedFor(allVideos, excluded, scanGen);
     final size = MediaQuery.of(c).size;
     final isLandscape = size.width > size.height;
     final wide = _isMobile
@@ -877,6 +921,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                             child: PlayerTopBar(
                               title: widget.item.name,
                               onBack: _handleBack,
+                              onHome: _goHome,
                               onSettings: _toggleSettings,
                               safe: safe,
                             ),
@@ -993,18 +1038,30 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                 )
               : narrow);
     return _withShortcuts(
-      Scaffold(
-        backgroundColor: Colors.black,
-        body: SafeArea(
-          child: Stack(
-            children: [
-              body,
-              if (_pip &&
-                  !fullscreen &&
-                  ref.watch(uiSettingsProvider).pipEnabled)
-                _pipWidget(),
-              if (_showSettings) _settingsOverlay(),
-            ],
+      // The platform back gesture takes the same path as the on-screen back
+      // button here too, so it retraces the jump history (and closes overlays)
+      // instead of popping the route behind the screen's back. Mirrors the
+      // fullscreen branch above, `canPop: false` included: an empty stack pops
+      // the route from `_handleBack`.
+      PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (didPop) return;
+          _handleBack();
+        },
+        child: Scaffold(
+          backgroundColor: Colors.black,
+          body: SafeArea(
+            child: Stack(
+              children: [
+                body,
+                if (_pip &&
+                    !fullscreen &&
+                    ref.watch(uiSettingsProvider).pipEnabled)
+                  _pipWidget(),
+                if (_showSettings) _settingsOverlay(),
+              ],
+            ),
           ),
         ),
       ),
@@ -1101,10 +1158,23 @@ class _State extends ConsumerState<VideoPlayerScreen> {
               duration: _fadeMs,
               child: SafeArea(
                 bottom: false,
-                child: IconButton(
-                  icon: const Icon(Icons.arrow_back, color: Colors.white70),
-                  tooltip: 'Back',
-                  onPressed: _handleBack,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.arrow_back, color: Colors.white70),
+                      tooltip: 'Back',
+                      onPressed: _handleBack,
+                    ),
+                    // Beside Back because it is the other way OUT of the player:
+                    // back retraces one jump of the history, home leaves the
+                    // whole chain for the library (`_goHome`).
+                    IconButton(
+                      icon: const Icon(Icons.home, color: Colors.white70),
+                      tooltip: 'Home',
+                      onPressed: _goHome,
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -1131,7 +1201,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   );
 
   /// Windowed back: leaves the player. Fullscreen back (top bar) exits
-  /// fullscreen first — overlays close before either.
+  /// fullscreen first — overlays close before either. Before leaving, back
+  /// retraces one jump: the newest entry of the shared stack is popped and
+  /// played, and only an empty stack lets the player route itself be popped.
   void _handleBack() {
     if (_showEpisodes) {
       setState(() => _showEpisodes = false);
@@ -1145,6 +1217,16 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     }
     if (fullscreen) {
       _setFullscreen(false);
+      return;
+    }
+    // The same guards the jump paths use: a navigation already owns this route
+    // (a jump in flight, or this route already reversing), so back must not pop
+    // the route out from under it — nor consume a stack entry that nothing
+    // would then navigate to.
+    if (_navigating || _isRoutePopping) return;
+    final from = ref.read(videoJumpStackProvider.notifier).pop();
+    if (from != null) {
+      _go(from, back: true);
       return;
     }
     Navigator.pop(context);
@@ -1166,7 +1248,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
               volume: _volume.value,
               speed: _rate.value,
               fullscreen: fullscreen,
-              hasPrev: hist.isNotEmpty,
+              hasPrev: ref.watch(videoJumpStackProvider).isNotEmpty,
               hasNext: _relCache?.isNotEmpty ?? false,
               // The episode sheet only exists in fullscreen.
               hasEpisodes: fullscreen && (_relCache?.isNotEmpty ?? false),
@@ -1451,6 +1533,29 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                     padding: const EdgeInsets.all(6),
                     child: const Icon(
                       Icons.fullscreen,
+                      size: 18,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+              // Home (leave the player chain for the library). The PiP is what
+              // the windowed chrome collapses to once the page is scrolled, and
+              // the video's own Back/Home cluster is not in the tree then — so
+              // the way out has to live here too.
+              Positioned(
+                top: 4,
+                right: 76,
+                child: GestureDetector(
+                  onTap: _goHome,
+                  child: Container(
+                    decoration: const BoxDecoration(
+                      color: Colors.black54,
+                      shape: BoxShape.circle,
+                    ),
+                    padding: const EdgeInsets.all(6),
+                    child: const Icon(
+                      Icons.home,
                       size: 18,
                       color: Colors.white,
                     ),

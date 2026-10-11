@@ -101,6 +101,11 @@ VideoCard tap → Navigator.push(video_player_screen)
   → Media(url, httpHeaders: {Authorization: ...})
   → media_kit (libmpv) plays
   → Custom controls overlay (2s idle fade)
+  → Jump: push the video being left onto the jump stack
+    (providers/video_jump_stack.dart, capped at the `video_jump_history_limit`
+    setting) → pushReplacement the next player
+  → Back: pop that stack and play the entry; empty stack → leave the player
+  → Related list (utils/related_videos.dart) excludes the stack's entries
   → Player.stop() before Navigator.pop
 ```
 
@@ -217,7 +222,11 @@ Zero disk writes — stdout pipe → `Uint8List` in RAM. Desktop uses `Process.r
 > ffmpeg **≥ 9** verifies TLS peers by default (`tls_verify=1`), so posters from
 > an HTTPS server with the app's self-signed certificate fail at the handshake
 > unless the ffmpeg invocation opts out or is routed through a loopback relay.
-> See `docs/BUILDING.md` → Known toolchain issues.
+> `-tls_verify` is an option *of the `tls` protocol*, so the poster argv carries
+> it for `https://` only: ffmpeg resolves an input option's name against the
+> protocol the URL selects and aborts on a name that protocol does not define,
+> which would empty every plain-HTTP poster (the desktop app's own server is
+> `http://127.0.0.1:<port>`). See `docs/BUILDING.md` → Known toolchain issues.
 
 ### Images: AuthImage + in-memory cache
 
