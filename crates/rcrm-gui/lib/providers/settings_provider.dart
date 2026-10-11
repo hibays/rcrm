@@ -25,6 +25,11 @@ class SettingsState {
   final bool thumbCacheEnabled;
   final String videoLayout; // 'grid' or 'list'
   final String imageClassification; // 'folder' or 'format'
+
+  /// How the video tab organizes its list: 'none' (flat grid, the default and
+  /// the tab's historical behaviour), 'folder' or 'format'. Persisted; the
+  /// folders themselves are derived, not stored (`videoFoldersProvider`).
+  final String videoClassification; // 'none' | 'folder' | 'format'
   final bool pipEnabled;
   final String pipSize; // 'normal' or 'small'
   final String playbackMode; // 'loopAll' | 'loopOne' | 'pauseAfter'
@@ -44,6 +49,7 @@ class SettingsState {
     this.thumbCacheEnabled = true,
     this.videoLayout = 'grid',
     this.imageClassification = 'folder',
+    this.videoClassification = 'none',
     this.pipEnabled = true,
     this.playbackMode = 'pauseAfter',
     this.autoRotate = false,
@@ -61,6 +67,7 @@ class SettingsState {
     bool? thumbCacheEnabled,
     String? videoLayout,
     String? imageClassification,
+    String? videoClassification,
     bool? pipEnabled,
     String? playbackMode,
     bool? autoRotate,
@@ -77,6 +84,7 @@ class SettingsState {
       thumbCacheEnabled: thumbCacheEnabled ?? this.thumbCacheEnabled,
       videoLayout: videoLayout ?? this.videoLayout,
       imageClassification: imageClassification ?? this.imageClassification,
+      videoClassification: videoClassification ?? this.videoClassification,
       playbackMode: playbackMode ?? this.playbackMode,
       pipEnabled: pipEnabled ?? this.pipEnabled,
       autoRotate: autoRotate ?? this.autoRotate,
@@ -107,6 +115,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
     ThumbCache.enabled = thumbCacheEnabled;
     final videoLayout = await _service.getVideoLayout();
     final imageClassification = await _service.getImageClassification();
+    final videoClassification = await _service.getVideoClassification();
     final pipEnabled = await _service.getPipEnabled();
     final pipSize = await _service.getPipSize();
     final playbackMode = await _service.getPlaybackMode();
@@ -134,6 +143,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
       thumbCacheEnabled: thumbCacheEnabled,
       videoLayout: videoLayout,
       imageClassification: imageClassification,
+      videoClassification: videoClassification,
       pipEnabled: pipEnabled,
       playbackMode: playbackMode,
       autoRotate: autoRotate,
@@ -185,13 +195,25 @@ class SettingsNotifier extends Notifier<SettingsState> {
       final mediaLib = MediaLibrary(
         serverState.client!,
         imageClassification: switch (method) {
-          'format' => ImageClassification.format,
-          'none' => ImageClassification.none,
-          _ => ImageClassification.folder,
+          'format' => MediaClassification.format,
+          'none' => MediaClassification.none,
+          _ => MediaClassification.folder,
         },
       );
       unawaited(ref.read(scanStateProvider.notifier).scan(mediaLib));
     }
+  }
+
+  /// The video tab's grouping — the toolbar's grouping button commits here.
+  ///
+  /// Unlike [setImageClassification] this needs no re-scan: the video folders are
+  /// DERIVED from the already-scanned list (`videoFoldersProvider`), so a new
+  /// grouping is in the next frame. The photo path re-scans because its albums
+  /// are built inside the [MediaLibrary] it was constructed with, which makes the
+  /// classification a property of the library rather than of the view.
+  Future<void> setVideoClassification(String method) async {
+    state = state.copyWith(videoClassification: method);
+    await _service.setVideoClassification(method);
   }
 
   Future<void> setPreviewEnabled(bool enabled) async {

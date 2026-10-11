@@ -8,6 +8,62 @@
 import 'package:flutter/material.dart';
 import 'column_button.dart';
 
+/// The icon for each grouping, for the toolbar's button — the one place that has
+/// to pick an icon at RUNTIME.
+///
+/// That is also the whole trouble with it: the release icon tree-shaker keeps a
+/// glyph only when the `IconData` is a constant at a use site, which is why
+/// `Icons.folder` has always rendered (eight files use it as a `const Icon`)
+/// while `Icons.apps` and `Icons.category` — reachable here only through a
+/// lookup — shipped as EMPTY GLYPHS. The grouping menu therefore writes its
+/// three icons out as literals, and those literals are what keeps all three
+/// glyphs in the font; this map is free to choose among them afterwards.
+const Map<String, Icon> kGroupingIcons = {
+  'none': Icon(Icons.apps, size: 16),
+  'folder': Icon(Icons.folder, size: 16),
+  'format': Icon(Icons.category, size: 16),
+};
+
+/// See [kGroupingIcons].
+Icon groupingIcon(String grouping) =>
+    kGroupingIcons[grouping] ?? kGroupingIcons['none']!;
+
+/// One row of the grouping menu: the check marking the arrangement in effect,
+/// the icon, and the label.
+///
+/// The check's width is reserved whether or not it is drawn, so the three icons
+/// sit in one column. `CheckedPopupMenuItem` would do the checking itself, but it
+/// lays its title out through a `ListTile`, which overflows a popup menu's 280dp
+/// as soon as the row carries an icon too.
+///
+/// The labels stay short for the same 280dp: with a check slot, an icon and two
+/// gaps beside it, a wordy label overflows the row.
+Widget _groupingRow(
+  BuildContext context, {
+  required bool selected,
+  required Widget icon,
+  required String label,
+}) {
+  return Row(
+    children: [
+      SizedBox(
+        width: 16,
+        child: selected
+            ? Icon(
+                Icons.check,
+                size: 16,
+                color: Theme.of(context).colorScheme.primary,
+              )
+            : null,
+      ),
+      const SizedBox(width: 8),
+      icon,
+      const SizedBox(width: 8),
+      Text(label),
+    ],
+  );
+}
+
 class MediaToolbar extends StatelessWidget {
   final List<String> sortOptions;
   final String currentSort;
@@ -36,6 +92,16 @@ class MediaToolbar extends StatelessWidget {
   final bool? isGrid;
   final VoidCallback? onLayoutToggle;
 
+  /// Optional grouping selector: what the list is ORGANIZED into — the video
+  /// tab's flat / by-folder / by-format choice. Null hides it, like
+  /// [onLayoutToggle], because the toolbar is shared with screens that have
+  /// nothing to group by.
+  ///
+  /// A menu rather than a cycling button: three arrangements are not a sequence
+  /// a user can predict from an icon, so the items say what they are.
+  final String? currentGrouping;
+  final ValueChanged<String>? onGroupingChanged;
+
   const MediaToolbar({
     super.key,
     required this.sortOptions,
@@ -52,6 +118,8 @@ class MediaToolbar extends StatelessWidget {
     this.maxColumns = 6,
     this.isGrid,
     this.onLayoutToggle,
+    this.currentGrouping,
+    this.onGroupingChanged,
   });
 
   @override
@@ -100,6 +168,57 @@ class MediaToolbar extends StatelessWidget {
             tooltip: isAscending ? 'Sort descending' : 'Sort ascending',
             visualDensity: VisualDensity.compact,
           ),
+
+          // Grouping (optional): the button's icon reports the arrangement in
+          // effect, so every item wears the SAME icon its own mode puts on the
+          // button — otherwise the menu names three arrangements whose icons the
+          // user can only see one of, and picking one looks like it changed the
+          // icon to something the menu never offered. (The sort and filter menus
+          // beside it carry no item icons, but their buttons do not change icon
+          // with the selection either.)
+          if (currentGrouping != null && onGroupingChanged != null)
+            PopupMenuButton<String>(
+              tooltip: 'Organize',
+              icon: groupingIcon(currentGrouping!),
+              onSelected: onGroupingChanged,
+              itemBuilder: (context) => [
+                // Written out rather than looped over a label map, and each icon
+                // a literal `const Icon`: the release icon tree-shaker keeps a
+                // glyph only when its `IconData` reaches it as a constant at a
+                // USE SITE, so an icon chosen through a lookup ships as an EMPTY
+                // GLYPH — which is how the button and "By format" shipped blank
+                // while the hardcoded `Icons.folder` in the sort menu rendered.
+                // These three literals are what keeps all three glyphs in the
+                // font; the button below may then pick among them at runtime.
+                PopupMenuItem<String>(
+                  value: 'none',
+                  child: _groupingRow(
+                    context,
+                    selected: currentGrouping == 'none',
+                    icon: const Icon(Icons.apps, size: 16),
+                    label: 'Ungrouped',
+                  ),
+                ),
+                PopupMenuItem<String>(
+                  value: 'folder',
+                  child: _groupingRow(
+                    context,
+                    selected: currentGrouping == 'folder',
+                    icon: const Icon(Icons.folder, size: 16),
+                    label: 'By folder',
+                  ),
+                ),
+                PopupMenuItem<String>(
+                  value: 'format',
+                  child: _groupingRow(
+                    context,
+                    selected: currentGrouping == 'format',
+                    icon: const Icon(Icons.category, size: 16),
+                    label: 'By format',
+                  ),
+                ),
+              ],
+            ),
 
           // Grid/List layout toggle (optional)
           if (isGrid != null && onLayoutToggle != null)

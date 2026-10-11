@@ -9,16 +9,33 @@ import '../models/media_item.dart';
 import '../utils/natural_sort.dart';
 import 'webdav_client.dart';
 
-/// How images are grouped into albums.
-enum ImageClassification { folder, format, none }
+/// How media items are grouped into albums/folders.
+///
+/// The photo tab uses it for its albums (the classification lives on the library
+/// instance it was built with); the video tab uses the same rule for its folder
+/// view, passed in explicitly (`videoFoldersProvider`). One enum because the
+/// grouping is identical — only what is being grouped differs.
+enum MediaClassification { folder, format, none }
+
+/// The name of the one album the home page offers for media that is NOT grouped.
+///
+/// The tabs show ungrouped items flat — there is nothing to open — but a home
+/// page has only albums to offer, so it offers this one, and opening it lands on
+/// that same flat view. One string, so the album and the view it opens are named
+/// alike.
+const String kUngroupedAlbumName = 'Ungrouped';
 
 class MediaLibrary {
   final WebDavClient _client;
-  final ImageClassification imageClassification;
+
+  /// How IMAGES are grouped for the photo tab. The video side keeps its own
+  /// setting and passes it to [buildAlbums], so one tab's choice can never
+  /// rewrite the other's grouping.
+  final MediaClassification imageClassification;
 
   MediaLibrary(
     this._client, {
-    this.imageClassification = ImageClassification.folder,
+    this.imageClassification = MediaClassification.folder,
   });
 
   /// Scan the entire media library starting from root (/).
@@ -35,28 +52,44 @@ class MediaLibrary {
     final allVideos = <MediaItem>[];
     final allImages = <MediaItem>[];
     await _scanRecursive('/', allVideos, allImages, onBatch: onBatch);
-    final albumList = switch (imageClassification) {
-      ImageClassification.folder => _groupByFolder(allImages),
-      ImageClassification.format => _groupByFormat(allImages),
-      ImageClassification.none => _groupNone(allImages),
-    };
+    final albumList = _group(allImages, imageClassification);
     return (videos: allVideos, albums: albumList);
   }
 
-  /// Build albums from the given images using the current classification.
-  /// Used by callers to incrementally reconstruct albums during a batch scan.
-  List<Album> buildAlbums(List<MediaItem> images) {
-    return switch (imageClassification) {
-      ImageClassification.folder => _groupByFolder(images),
-      ImageClassification.format => _groupByFormat(images),
-      ImageClassification.none => _groupNone(images),
-    };
-  }
+  /// Group [items] into albums/folders by [classification], defaulting to this
+  /// library's own image classification.
+  ///
+  /// Used by callers to incrementally reconstruct albums during a batch scan,
+  /// and — with an explicit classification — by the video tab, whose folder view
+  /// is this same grouping applied to videos.
+  List<Album> buildAlbums(
+    List<MediaItem> items, {
+    MediaClassification? classification,
+  }) => _group(items, classification ?? imageClassification);
 
-  /// Group images by parent folder (original behavior).
-  List<Album> _groupByFolder(List<MediaItem> allImages) {
+  /// The one place the classification is turned into albums — the scan above and
+  /// [buildAlbums] both come through here, so the three branches cannot drift
+  /// apart (they did: `none` was spelled out at both call sites).
+  ///
+  /// `none` yields NOTHING, on purpose. "Ungrouped" is the caller showing the
+  /// items themselves in one flat grid (both tabs do); a single group holding
+  /// them all — which is what an "All Images" album used to be here — is exactly
+  /// what the setting says not to do. That is why this branch is an empty list
+  /// and not a call like the other two: there is no grouping work to do, and a
+  /// method whose whole body is `const []`, ignoring its argument, would claim
+  /// otherwise.
+  List<Album> _group(List<MediaItem> items, MediaClassification by) =>
+      switch (by) {
+        MediaClassification.folder => _groupByFolder(items),
+        MediaClassification.format => _groupByFormat(items),
+        MediaClassification.none => const <Album>[],
+      };
+
+  /// Group by parent folder — the original behaviour, and what the video tab's
+  /// folder view uses.
+  List<Album> _groupByFolder(List<MediaItem> items) {
     final albums = <String, List<MediaItem>>{};
-    for (final img in allImages) {
+    for (final img in items) {
       final key = img.albumName.isNotEmpty ? img.albumName : '_root';
       albums.putIfAbsent(key, () => []).add(img);
     }
@@ -73,19 +106,6 @@ class MediaLibrary {
 
     albumList.sort((a, b) => naturalCompare(a.name, b.name));
     return albumList;
-  }
-
-  /// Group all images into a single flat album.
-  List<Album> _groupNone(List<MediaItem> allImages) {
-    if (allImages.isEmpty) return [];
-    return [
-      Album.fromItems(
-        name: 'All Images',
-        path: '/',
-        url: _client.authenticatedBaseUrl,
-        items: allImages,
-      ),
-    ];
   }
 
   /// Human-readable names for common image formats.
@@ -113,10 +133,26 @@ class MediaLibrary {
     'orf': 'ORF',
   };
 
-  /// Group images by file format (extension).
-  List<Album> _groupByFormat(List<MediaItem> allImages) {
+  /// The single album the HOME page shows when the classification is `none`.
+  ///
+  /// [buildAlbums] deliberately returns nothing for `none`: the tabs show those
+  /// items flat, and one group holding everything is exactly what "ungrouped"
+  /// must not be. A home page has no flat view of its own, so it offers this
+  /// album, and tapping it opens that same flat grid — `ImageScreen` branches on
+  /// the setting, not on this album, so the tab does not gain a folder from it.
+  Album flatAlbum(List<MediaItem> items) => Album.fromItems(
+    name: kUngroupedAlbumName,
+    path: '/',
+    url: _client.authenticatedBaseUrl,
+    items: items,
+  );
+
+  /// Group by file format (extension). `_formatNames` covers the image
+  /// extensions; a video extension falls back to its uppercase form (MKV, MP4),
+  /// which is already the name a user would give it.
+  List<Album> _groupByFormat(List<MediaItem> items) {
     final groups = <String, List<MediaItem>>{};
-    for (final img in allImages) {
+    for (final img in items) {
       final ext = img.extension;
       final label = _formatNames[ext] ?? ext.toUpperCase();
       groups.putIfAbsent(label, () => []).add(img);

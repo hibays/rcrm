@@ -183,9 +183,9 @@ final mediaLibraryProvider = Provider<MediaLibrary?>((ref) {
   return MediaLibrary(
     client,
     imageClassification: switch (imageClass) {
-      'format' => ImageClassification.format,
-      'none' => ImageClassification.none,
-      _ => ImageClassification.folder,
+      'format' => MediaClassification.format,
+      'none' => MediaClassification.none,
+      _ => MediaClassification.folder,
     },
   );
 });
@@ -356,6 +356,28 @@ final albumsProvider = Provider<List<Album>>((ref) {
   final lib = ref.watch(mediaLibraryProvider);
   if (lib == null) return const [];
   return lib.buildAlbums(images);
+});
+
+/// The video tab's folders — the same grouping `albumsProvider` uses for
+/// photos, over the videos and by the VIDEO tab's own classification
+/// (`videoClassification`), so switching one tab's grouping cannot silently
+/// regroup the other's.
+///
+/// Empty for the default `'none'`: "no grouping" is the flat grid of every
+/// video, not a folder that holds them all, so nothing here renders it.
+final videoFoldersProvider = Provider<List<Album>>((ref) {
+  final videos = ref.watch(videosListProvider);
+  final lib = ref.watch(mediaLibraryProvider);
+  if (lib == null) return const [];
+  final classification = switch (ref.watch(
+    uiSettingsProvider.select((s) => s.videoClassification),
+  )) {
+    'folder' => MediaClassification.folder,
+    'format' => MediaClassification.format,
+    _ => null,
+  };
+  if (classification == null) return const [];
+  return lib.buildAlbums(videos, classification: classification);
 });
 
 final videosListProvider = Provider<List<MediaItem>>(

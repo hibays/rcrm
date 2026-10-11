@@ -36,6 +36,8 @@ class SettingsService {
   static const _keyImageSortAsc = 'image_sort_asc';
   static const _keyImageClassification =
       'image_classification'; // 'folder' | 'format'
+  static const _keyVideoClassification =
+      'video_classification'; // 'none' | 'folder' | 'format'
   static const _keyPreviewEnabled = 'preview_enabled';
   static const _keyThumbCache = 'thumb_cache_enabled';
   static const _keyPipEnabled = 'pip_enabled';
@@ -44,8 +46,7 @@ class SettingsService {
       'playback_mode'; // 'loopAll' | 'loopOne' | 'pauseAfter'
   static const _keyAutoRotate = 'auto_rotate'; // bool
   static const _keyCastAutoNext = 'cast_auto_next'; // bool
-  static const _keyVideoJumpHistory =
-      'video_jump_history_limit'; // int, 1..50
+  static const _keyVideoJumpHistory = 'video_jump_history_limit'; // int, 1..50
 
   SharedPreferences? _prefs;
 
@@ -186,6 +187,22 @@ class SettingsService {
   Future<void> setImageClassification(String method) async {
     final p = await prefs;
     await p.setString(_keyImageClassification, method);
+  }
+
+  // ── Video classification ─────────────────────────────────
+  // How the video tab organizes its list: 'none' (the flat grid of every video,
+  // which is what the tab has always shown, and the default), 'folder' (by
+  // parent folder) or 'format' (by extension). Read back unvalidated on purpose:
+  // an unknown value means "no grouping", the same as an absent one, so the
+  // reader maps it in one place (`videoFoldersProvider`).
+  Future<String> getVideoClassification() async {
+    final p = await prefs;
+    return p.getString(_keyVideoClassification) ?? 'none';
+  }
+
+  Future<void> setVideoClassification(String method) async {
+    final p = await prefs;
+    await p.setString(_keyVideoClassification, method);
   }
 
   // ── Preview settings ──────────────────────────────────────

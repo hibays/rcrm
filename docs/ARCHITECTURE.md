@@ -96,6 +96,14 @@ Server start → generate random user:pass
 ### Video Playback
 
 ```
+Video tab: two arrangements of ONE list, chosen by `videoClassification`
+('none' = the flat grid/list above, the default; 'folder' | 'format' = grouped)
+  → the groups are DERIVED, not stored: `videoFoldersProvider` calls the same
+    `MediaLibrary.buildAlbums` the photo tab's albums use, with the video tab's
+    own classification passed in — so switching arrangements costs no re-scan and
+    cannot regroup the photo tab
+  → a group opens into its own videos (`video_screen.dart`), Esc or the header's
+    back returns to the group list
 VideoCard tap → Navigator.push(video_player_screen)
   → Player.create() in addPostFrameCallback
   → Media(url, httpHeaders: {Authorization: ...})

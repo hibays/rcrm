@@ -6,13 +6,12 @@
 
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import '../models/media_item.dart';
 import '../widgets/marquee_text.dart';
-import '../services/thumbnail_service.dart';
 import '../services/preview_player.dart';
+import 'video_poster.dart';
 
 class VideoCard extends StatefulWidget {
   final MediaItem item;
@@ -34,26 +33,14 @@ class VideoCard extends StatefulWidget {
 
 class _VideoCardState extends State<VideoCard> {
   static final _isMobile = Platform.isAndroid || Platform.isIOS;
-  final ThumbnailService _ts = ThumbnailService();
-  Uint8List? _poster;
-  bool _posterLoading = true;
   Timer? _ht;
   bool _disposing = false;
   int _hoverGen = 0;
-  int _posterGen = 0;
 
   // Shared-preview claim state
   int? _claimToken;
   VideoController? _previewController;
   StreamSubscription? _playSub;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _loadPoster();
-    });
-  }
 
   @override
   void dispose() {
@@ -68,14 +55,12 @@ class _VideoCardState extends State<VideoCard> {
     super.didUpdateWidget(old);
     // Item changed under a recycled element (e.g. grid re-sort with null keys):
     if (old.item.url != widget.item.url) {
+      // The poster reloads itself (`VideoPoster.didUpdateWidget`); what this
+      // widget owns is the preview, which must not go on playing the video that
+      // has just left the card.
       _hoverGen++;
       _stopPreview();
       _ht?.cancel();
-      setState(() {
-        _poster = null;
-        _posterLoading = true;
-      });
-      _loadPoster();
       return;
     }
     if (widget.preview != old.preview) {
@@ -84,24 +69,6 @@ class _VideoCardState extends State<VideoCard> {
       } else {
         _stopPreview();
       }
-    }
-  }
-
-  Future<void> _loadPoster() async {
-    final gen = ++_posterGen;
-    try {
-      final p = await _ts.generatePoster(widget.item.url);
-      if (!mounted || _posterGen != gen) return;
-      setState(() {
-        _poster = p;
-        _posterLoading = false;
-      });
-    } catch (_) {
-      if (!mounted || _posterGen != gen) return;
-      setState(() {
-        _poster = null;
-        _posterLoading = false;
-      });
     }
   }
 
@@ -214,17 +181,12 @@ class _VideoCardState extends State<VideoCard> {
         ],
       );
     }
-    if (_poster != null) {
-      return Image.memory(
-        _poster!,
-        fit: BoxFit.cover,
-        cacheWidth: 640,
-        gaplessPlayback: true,
-        errorBuilder: (_, _, _) => _ph(),
-      );
-    }
-    if (_posterLoading) {
-      return Container(
+    // Not previewing: the poster, with the two states this card has always
+    // drawn — a spinner while it is being generated, and the extension
+    // placeholder when there is none.
+    return VideoPoster(
+      item: widget.item,
+      loading: Container(
         color: const Color(0xFF2A2A2A),
         child: const Center(
           child: SizedBox(
@@ -236,9 +198,9 @@ class _VideoCardState extends State<VideoCard> {
             ),
           ),
         ),
-      );
-    }
-    return _ph();
+      ),
+      fallback: _ph(),
+    );
   }
 
   Widget _dur() => Positioned(
