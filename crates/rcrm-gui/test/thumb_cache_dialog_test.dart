@@ -46,7 +46,7 @@ ThumbCachePlan _plan() => planThumbCache([
 /// so on the 800x600 test default the last action sits off-screen inside the
 /// dialog's scroll view, and a tap there fails the hit test — which says nothing
 /// about the dialog and everything about the window.
-Future<ThumbCacheChoice? Function()> _open(
+Future<ThumbCacheIntent? Function()> _open(
   WidgetTester tester, {
   ThumbCachePlan? plan,
   int initialLimitMb = 0,
@@ -54,7 +54,7 @@ Future<ThumbCacheChoice? Function()> _open(
   await tester.binding.setSurfaceSize(const Size(500, 900));
   addTearDown(() => tester.binding.setSurfaceSize(null));
 
-  ThumbCacheChoice? result;
+  ThumbCacheIntent? result;
   await tester.pumpWidget(
     MaterialApp(
       home: Builder(
@@ -62,7 +62,7 @@ Future<ThumbCacheChoice? Function()> _open(
           body: Center(
             child: ElevatedButton(
               onPressed: () async {
-                result = await showDialog<ThumbCacheChoice>(
+                result = await showDialog<ThumbCacheIntent>(
                   context: context,
                   builder: (_) => ThumbCacheDialog(
                     plan: plan ?? _plan(),
@@ -133,9 +133,11 @@ void main() {
     await tester.pumpAndSettle();
     await tester.pump();
 
-    expect(readChoice()?.wholeTier, isTrue, reason: 'the whole tier goes');
-    expect(readChoice()?.spend, {ThumbCacheTier.cold}, reason: 'and only that');
-    expect(readChoice()?.clearAll, isFalse);
+    final intent = readChoice();
+    expect(intent, isA<DeleteTiers>(), reason: 'the whole tier goes');
+    expect((intent as DeleteTiers).tiers, {
+      ThumbCacheTier.cold,
+    }, reason: 'and only that');
   });
 
   testWidgets('the default strategy is stated, and switchable here', (
@@ -157,17 +159,20 @@ void main() {
 
     await _tap(tester, SimpleDialogOption, 'Auto trim');
 
-    expect(readChoice()?.wholeTier, isFalse, reason: 'a strategy, not a tier');
-    expect(readChoice()?.clearAll, isFalse);
-    expect(readChoice()?.limitMb, 256, reason: 'carried out with the target');
+    final intent = readChoice();
+    expect(intent, isA<AutoTrim>(), reason: 'a strategy, not a tier');
+    expect(
+      (intent as AutoTrim).targetMb,
+      256,
+      reason: 'carried out with the target',
+    );
   });
 
   testWidgets('"Delete all" asks for the clear path, no tiers', (tester) async {
     final readChoice = await _open(tester);
     await _tap(tester, SimpleDialogOption, 'Delete all');
 
-    expect(readChoice()?.clearAll, isTrue);
-    expect(readChoice()?.spend, isEmpty);
+    expect(readChoice(), isA<ClearAll>());
   });
 
   testWidgets('an empty cache offers no clean-up to run', (tester) async {

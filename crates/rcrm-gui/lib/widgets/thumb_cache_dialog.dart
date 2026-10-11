@@ -30,19 +30,6 @@ import '../utils/thumb_cache_policy.dart';
 /// What the user chose. Null (the dialog was dismissed) means nothing runs.
 ///
 /// [limitMb] is the size Auto trim trims to — chosen HERE, in the flow, rather
-/// than as a settings row of its own: it is part of deciding how to clean the
-/// cache, not a separate policy the user has to go and find. `0` means the
-/// platform's default budget.
-typedef ThumbCacheChoice = ({
-  bool clearAll,
-
-  /// True when the choice is "delete the tiers in [spend] WHOLE" (a row's own
-  /// delete); false for the default strategy, which stops at the budget.
-  bool wholeTier,
-  Set<ThumbCacheTier> spend,
-  int limitMb,
-});
-
 class ThumbCacheDialog extends StatefulWidget {
   /// The grading to show — `ThumbCache.preview()`, or a plan already in hand.
   final FutureOr<ThumbCachePlan> plan;
@@ -188,12 +175,7 @@ class _ThumbCacheDialogState extends State<ThumbCacheDialog> {
                 SimpleDialogOption(
                   onPressed: nothing
                       ? null
-                      : () => Navigator.pop(context, (
-                          clearAll: false,
-                          wholeTier: false,
-                          spend: kAllThumbCacheTiers,
-                          limitMb: _limitMb,
-                        )),
+                      : () => Navigator.pop(context, AutoTrim(_limitMb)),
                   child: _Option(
                     icon: const Icon(Icons.auto_delete),
                     title: 'Auto trim',
@@ -206,12 +188,7 @@ class _ThumbCacheDialogState extends State<ThumbCacheDialog> {
                 SimpleDialogOption(
                   onPressed: nothing
                       ? null
-                      : () => Navigator.pop(context, (
-                          clearAll: true,
-                          wholeTier: false,
-                          spend: const <ThumbCacheTier>{},
-                          limitMb: _limitMb,
-                        )),
+                      : () => Navigator.pop(context, const ClearAll()),
                   child: _Option(
                     icon: Icon(Icons.delete_sweep),
                     title: 'Delete all',
@@ -289,12 +266,7 @@ class _ThumbCacheDialogState extends State<ThumbCacheDialog> {
         icon: const Icon(Icons.delete_outline),
         tooltip: 'Delete the $label tier',
         color: scheme.error,
-        onPressed: () => Navigator.pop(context, (
-          clearAll: false,
-          wholeTier: true,
-          spend: {tier},
-          limitMb: _limitMb,
-        )),
+        onPressed: () => Navigator.pop(context, DeleteTiers({tier})),
       ),
     );
   }

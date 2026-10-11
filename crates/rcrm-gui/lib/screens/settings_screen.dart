@@ -67,7 +67,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     // directory is disk work that must not hold a tap hostage — and in a widget
     // test it cannot complete at all, which is what made an awaiting version of
     // this impossible to test.
-    final choice = await showDialog<ThumbCacheChoice>(
+    final choice = await showDialog<ThumbCacheIntent>(
       context: context,
       builder: (_) => ThumbCacheDialog(
         plan: ThumbCache.preview(),
@@ -76,31 +76,33 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
     if (choice == null || !mounted) return;
 
-    // The chosen target is remembered (it is the same setting the dialog reads
-    // back next time) but applied HERE, to the clean-up the user just asked for —
-    // nothing runs on its own.
-    await ref
-        .read(uiSettingsProvider.notifier)
-        .setThumbCacheLimitMb(choice.limitMb);
-
-    if (choice.clearAll) {
-      await ThumbCache.clear();
-      _loadCacheSize();
-      _snack('Cache cleared');
-      return;
+    // One switch, three intents, no fields to read and guess at: `AutoTrim` and
+    // `DeleteTiers` differ in the TYPE, which is where that difference belongs.
+    // The chosen target is remembered (the dialog reads it back next time) and
+    // applied here, to the clean-up the user just asked for — nothing runs by
+    // itself.
+    switch (choice) {
+      case ClearAll():
+        await ThumbCache.clear();
+        _loadCacheSize();
+        _snack('Cache cleared');
+      case DeleteTiers(:final tiers):
+        final done = await ThumbCache.manage(
+          spend: tiers,
+          dropWholeTiers: true,
+        );
+        _loadCacheSize();
+        _snack(describeThumbCachePlan(done, formatBytes: ThumbCache.human));
+      case AutoTrim(:final targetMb):
+        await ref
+            .read(uiSettingsProvider.notifier)
+            .setThumbCacheLimitMb(targetMb);
+        final done = await ThumbCache.manage(
+          maxBytes: targetMb > 0 ? targetMb * 1024 * 1024 : null,
+        );
+        _loadCacheSize();
+        _snack(describeThumbCachePlan(done, formatBytes: ThumbCache.human));
     }
-    // Two different acts, and the dialog says which one it returned: a row's own
-    // delete takes that tier WHOLE (the budget has no veto), while the default
-    // clean-up spends the coldest entries until the cache is under the target.
-    final done = await ThumbCache.manage(
-      maxBytes: choice.wholeTier || choice.limitMb <= 0
-          ? null
-          : choice.limitMb * 1024 * 1024,
-      spend: choice.spend,
-      dropWholeTiers: choice.wholeTier,
-    );
-    _loadCacheSize();
-    _snack(describeThumbCachePlan(done, formatBytes: ThumbCache.human));
   }
 
   void _snack(String message) {

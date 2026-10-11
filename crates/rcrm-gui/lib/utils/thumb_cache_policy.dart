@@ -29,6 +29,33 @@
 /// someone and a policy offered to them.
 enum ThumbCacheTier { cold, warm, fresh }
 
+/// What the user asked the cache to do. THREE intents that cannot be combined —
+/// which is the whole point of a sealed type here: the record this replaces carried
+/// four fields for three mutually exclusive meanings, so `clearAll: true` together
+/// with a tier list was expressible and meaningless. Now the caller does not read
+/// fields and guess; it matches, and the analyzer checks the cases.
+sealed class ThumbCacheIntent {
+  const ThumbCacheIntent();
+}
+
+/// Delete every entry.
+final class ClearAll extends ThumbCacheIntent {
+  const ClearAll();
+}
+
+/// Delete these tiers WHOLE: no budget, no veto — a row's own delete.
+final class DeleteTiers extends ThumbCacheIntent {
+  final Set<ThumbCacheTier> tiers;
+  const DeleteTiers(this.tiers);
+}
+
+/// The default strategy: coldest entries first, down to [targetMb] (`0` = the
+/// platform's default budget).
+final class AutoTrim extends ThumbCacheIntent {
+  final int targetMb;
+  const AutoTrim(this.targetMb);
+}
+
 /// Every tier — the default, "manage it for me, down to the budget".
 const Set<ThumbCacheTier> kAllThumbCacheTiers = {
   ThumbCacheTier.cold,
