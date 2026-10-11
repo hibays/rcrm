@@ -17,7 +17,7 @@ rcrm-server = { path = "crates/rcrm-server" }
 clap = { version = "4", features = ["derive"] }
 dialoguer = "0.12"
 indicatif = "0.18"
-mimalloc = { version = "*", features = ["v3"] }
+mimalloc = { version = "*" }
 dunce = "1.0.5"
 zeroize = { version = "1.8.2", features = ["simd"] }
 ctrlc = "3"
