@@ -43,8 +43,9 @@ void main() {
     return c;
   }
 
-  testWidgets('the slider shows the current limit and writes a change through',
-      (tester) async {
+  testWidgets('the slider shows the current limit and writes a change through', (
+    tester,
+  ) async {
     final c = await pumpSettings(tester);
 
     expect(find.text('Jump History'), findsOneWidget);
@@ -71,8 +72,9 @@ void main() {
     expect(find.text('$kVideoJumpHistoryDefault'), findsNothing);
   });
 
-  testWidgets('dragging the slider moves the limit and persists it',
-      (tester) async {
+  testWidgets('dragging the slider moves the limit and persists it', (
+    tester,
+  ) async {
     final c = await pumpSettings(tester);
 
     await tester.drag(find.byType(Slider), const Offset(60, 0));
@@ -90,8 +92,9 @@ void main() {
     expect(find.text('$limit'), findsOneWidget);
   });
 
-  testWidgets('a stored limit is restored into the slider at launch',
-      (tester) async {
+  testWidgets('a stored limit is restored into the slider at launch', (
+    tester,
+  ) async {
     SharedPreferences.setMockInitialValues({'video_jump_history_limit': 42});
     final c = ProviderContainer();
     // What `app.dart` does at startup.
@@ -104,8 +107,9 @@ void main() {
     expect(find.text('42'), findsOneWidget);
   });
 
-  testWidgets('narrow cards stack the label over the slider without overflow',
-      (tester) async {
+  testWidgets('narrow cards stack the label over the slider without overflow', (
+    tester,
+  ) async {
     await pumpSettings(tester, size: const Size(360, 1500));
 
     expect(find.text('Jump History'), findsOneWidget);

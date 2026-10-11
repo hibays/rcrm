@@ -40,6 +40,7 @@ class SettingsService {
       'video_classification'; // 'none' | 'folder' | 'format'
   static const _keyPreviewEnabled = 'preview_enabled';
   static const _keyThumbCache = 'thumb_cache_enabled';
+  static const _keyThumbCacheLimit = 'thumb_cache_limit_mb';
   static const _keyPipEnabled = 'pip_enabled';
   static const _keyPipSize = 'pip_size'; // 'normal' or 'small'
   static const _keyPlaybackMode =
@@ -229,6 +230,26 @@ class SettingsService {
   Future<void> setThumbCacheEnabled(bool enabled) async {
     final p = await prefs;
     await p.setBool(_keyThumbCache, enabled);
+  }
+
+  /// The size the MANUAL clean-up trims the thumbnail cache to, in MB.
+  ///
+  ///   * `0`  — the platform default (`thumbCacheBudgetBytes`: 96 MB mobile /
+  ///            512 MB desktop), which is what an untouched install does;
+  ///   * `>0` — that limit, whatever the platform.
+  ///
+  /// One number rather than a switch plus a size, because they are the same
+  /// decision — how much disk this app may spend on thumbnails. Nothing is
+  /// automatic: the cache grows until the user opens the cache row and chooses
+  /// Clean up, which then trims it to this.
+  Future<int> getThumbCacheLimitMb() async {
+    final p = await prefs;
+    return p.getInt(_keyThumbCacheLimit) ?? 0; // 0 = platform default
+  }
+
+  Future<void> setThumbCacheLimitMb(int mb) async {
+    final p = await prefs;
+    await p.setInt(_keyThumbCacheLimit, mb);
   }
 
   // ── PiP settings ──────────────────────────────────────────

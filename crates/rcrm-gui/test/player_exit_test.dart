@@ -104,8 +104,9 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('stops at /home even when /home is not the first route',
-        (tester) async {
+    testWidgets('stops at /home even when /home is not the first route', (
+      tester,
+    ) async {
       // The setup screen is the app's first route; the library is pushed above it
       // and the player above that. `isFirst` alone would land on the setup
       // screen — this is the case the name clause exists for.
@@ -148,7 +149,10 @@ void main() {
 
       // The floor: the first route is still there, and it is the current one.
       expect(nav.canPop(), isFalse);
-      expect(ModalRoute.of(tester.element(find.text('setup')))!.isCurrent, isTrue);
+      expect(
+        ModalRoute.of(tester.element(find.text('setup')))!.isCurrent,
+        isTrue,
+      );
       expect(find.text('player'), findsNothing);
       expect(
         tester.takeException(),
@@ -157,8 +161,9 @@ void main() {
       );
     });
 
-    testWidgets('the player\'s PopScope(canPop: false) does not refuse the pop',
-        (tester) async {
+    testWidgets('the player\'s PopScope(canPop: false) does not refuse the pop', (
+      tester,
+    ) async {
       // `popDisposition` (what `canPop: false` drives) is consulted by
       // `maybePop` only; `popUntil` pops directly. The screen's own handler is
       // still told, with `didPop: true`, so it returns without navigating again.
@@ -176,7 +181,9 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('player'), findsNothing);
-      expect(invoked, [true], reason: 'told once, after the pop really happened');
+      expect(invoked, [
+        true,
+      ], reason: 'told once, after the pop really happened');
       expect(find.text('library'), findsOneWidget);
     });
   });

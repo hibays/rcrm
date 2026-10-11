@@ -23,6 +23,11 @@ class SettingsState {
   final bool imageSortAsc;
   final bool previewEnabled;
   final bool thumbCacheEnabled;
+
+  /// See `SettingsService.getThumbCacheLimitMb`: `0` platform default, `>0` that
+  /// many MB — the size the manual clean-up trims to. Mirrored into
+  /// `ThumbCache.limitMb`.
+  final int thumbCacheLimitMb;
   final String videoLayout; // 'grid' or 'list'
   final String imageClassification; // 'folder' or 'format'
 
@@ -47,6 +52,7 @@ class SettingsState {
     this.imageSortAsc = true,
     this.previewEnabled = true,
     this.thumbCacheEnabled = true,
+    this.thumbCacheLimitMb = 0,
     this.videoLayout = 'grid',
     this.imageClassification = 'folder',
     this.videoClassification = 'none',
@@ -65,6 +71,7 @@ class SettingsState {
     bool? imageSortAsc,
     bool? previewEnabled,
     bool? thumbCacheEnabled,
+    int? thumbCacheLimitMb,
     String? videoLayout,
     String? imageClassification,
     String? videoClassification,
@@ -82,6 +89,7 @@ class SettingsState {
       imageSortAsc: imageSortAsc ?? this.imageSortAsc,
       previewEnabled: previewEnabled ?? this.previewEnabled,
       thumbCacheEnabled: thumbCacheEnabled ?? this.thumbCacheEnabled,
+      thumbCacheLimitMb: thumbCacheLimitMb ?? this.thumbCacheLimitMb,
       videoLayout: videoLayout ?? this.videoLayout,
       imageClassification: imageClassification ?? this.imageClassification,
       videoClassification: videoClassification ?? this.videoClassification,
@@ -113,6 +121,8 @@ class SettingsNotifier extends Notifier<SettingsState> {
     PreviewPlayer.enabled = previewEnabled;
     final thumbCacheEnabled = await _service.getThumbCacheEnabled();
     ThumbCache.enabled = thumbCacheEnabled;
+    final thumbCacheLimitMb = await _service.getThumbCacheLimitMb();
+    ThumbCache.limitMb = thumbCacheLimitMb;
     final videoLayout = await _service.getVideoLayout();
     final imageClassification = await _service.getImageClassification();
     final videoClassification = await _service.getVideoClassification();
@@ -141,6 +151,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
       imageSortAsc: imageSortAsc,
       previewEnabled: previewEnabled,
       thumbCacheEnabled: thumbCacheEnabled,
+      thumbCacheLimitMb: thumbCacheLimitMb,
       videoLayout: videoLayout,
       imageClassification: imageClassification,
       videoClassification: videoClassification,
@@ -226,6 +237,12 @@ class SettingsNotifier extends Notifier<SettingsState> {
     state = state.copyWith(thumbCacheEnabled: enabled);
     ThumbCache.enabled = enabled;
     await _service.setThumbCacheEnabled(enabled);
+  }
+
+  Future<void> setThumbCacheLimitMb(int mb) async {
+    state = state.copyWith(thumbCacheLimitMb: mb);
+    ThumbCache.limitMb = mb;
+    await _service.setThumbCacheLimitMb(mb);
   }
 
   Future<void> setPipSize(String size) async {

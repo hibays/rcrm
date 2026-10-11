@@ -69,7 +69,11 @@ void main() {
 
     // Exclude videos that survive into the unfiltered result, so the two lists
     // really are the same candidates.
-    final excluded = {unfiltered[1].path, unfiltered[3].path, unfiltered[5].path};
+    final excluded = {
+      unfiltered[1].path,
+      unfiltered[3].path,
+      unfiltered[5].path,
+    };
     final filtered = relatedFor(_current, all, excludePaths: excluded);
 
     expect(_paths(filtered), [
@@ -80,7 +84,10 @@ void main() {
 
   test('the same inputs always produce the same list', () {
     final all = [_current, ..._candidates];
-    expect(_paths(relatedFor(_current, all)), _paths(relatedFor(_current, all)));
+    expect(
+      _paths(relatedFor(_current, all)),
+      _paths(relatedFor(_current, all)),
+    );
 
     const excluded = {'/movies/a.mp4', '/clips/c.webm'};
     expect(
@@ -104,30 +111,32 @@ void main() {
     expect(_paths(relatedFor(_current, all)), isNot(contains(_current.path)));
   });
 
-  test('same-directory videos come first, then same-extension, then the rest',
-      () {
-    final all = [_current, ..._candidates];
-    final result = relatedFor(_current, all);
-    expect(result, hasLength(_candidates.length));
+  test(
+    'same-directory videos come first, then same-extension, then the rest',
+    () {
+      final all = [_current, ..._candidates];
+      final result = relatedFor(_current, all);
+      expect(result, hasLength(_candidates.length));
 
-    String dirOf(MediaItem v) => v.name.contains('/')
-        ? v.name.substring(0, v.name.lastIndexOf('/') + 1)
-        : '';
-    final dir = dirOf(_current);
-    final ranks = [
-      for (final v in result)
-        if (dirOf(v) == dir && dir.isNotEmpty)
-          0
-        else if (v.extension == _current.extension)
-          1
-        else
-          2,
-    ];
-    for (var i = 1; i < ranks.length; i++) {
-      expect(ranks[i], greaterThanOrEqualTo(ranks[i - 1]));
-    }
-    expect(ranks, containsAll([0, 1, 2]));
-  });
+      String dirOf(MediaItem v) => v.name.contains('/')
+          ? v.name.substring(0, v.name.lastIndexOf('/') + 1)
+          : '';
+      final dir = dirOf(_current);
+      final ranks = [
+        for (final v in result)
+          if (dirOf(v) == dir && dir.isNotEmpty)
+            0
+          else if (v.extension == _current.extension)
+            1
+          else
+            2,
+      ];
+      for (var i = 1; i < ranks.length; i++) {
+        expect(ranks[i], greaterThanOrEqualTo(ranks[i - 1]));
+      }
+      expect(ranks, containsAll([0, 1, 2]));
+    },
+  );
 
   test('excluding everything yields an empty list, not a fallback', () {
     final all = [_current, ..._candidates];

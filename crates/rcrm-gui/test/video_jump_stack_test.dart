@@ -39,52 +39,58 @@ void main() {
     return c;
   }
 
-  test('a jump records the video it leaves, and back pops the newest first', () {
-    final c = container();
-    final stack = c.read(videoJumpStackProvider.notifier);
+  test(
+    'a jump records the video it leaves, and back pops the newest first',
+    () {
+      final c = container();
+      final stack = c.read(videoJumpStackProvider.notifier);
 
-    // Nothing opened yet: back has nothing to return to.
-    expect(c.read(videoJumpStackProvider), isEmpty);
-    expect(stack.pop(), isNull);
+      // Nothing opened yet: back has nothing to return to.
+      expect(c.read(videoJumpStackProvider), isEmpty);
+      expect(stack.pop(), isNull);
 
-    stack.push(_video('a.mp4'));
-    stack.push(_video('b.mp4'));
-    stack.push(_video('c.mp4'));
+      stack.push(_video('a.mp4'));
+      stack.push(_video('b.mp4'));
+      stack.push(_video('c.mp4'));
 
-    // Newest last, so `top` is where back would go next.
-    expect(_names(c.read(videoJumpStackProvider)), [
-      'a.mp4',
-      'b.mp4',
-      'c.mp4',
-    ]);
-    expect(stack.top?.name, 'c.mp4');
+      // Newest last, so `top` is where back would go next.
+      expect(_names(c.read(videoJumpStackProvider)), [
+        'a.mp4',
+        'b.mp4',
+        'c.mp4',
+      ]);
+      expect(stack.top?.name, 'c.mp4');
 
-    // Back pops the newest entry first (LIFO), then the one before it, then
-    // there is nothing left and the player route pops as it always did.
-    expect(stack.pop()?.name, 'c.mp4');
-    expect(_names(c.read(videoJumpStackProvider)), ['a.mp4', 'b.mp4']);
-    expect(stack.pop()?.name, 'b.mp4');
-    expect(stack.pop()?.name, 'a.mp4');
-    expect(stack.pop(), isNull);
-    expect(c.read(videoJumpStackProvider), isEmpty);
-  });
+      // Back pops the newest entry first (LIFO), then the one before it, then
+      // there is nothing left and the player route pops as it always did.
+      expect(stack.pop()?.name, 'c.mp4');
+      expect(_names(c.read(videoJumpStackProvider)), ['a.mp4', 'b.mp4']);
+      expect(stack.pop()?.name, 'b.mp4');
+      expect(stack.pop()?.name, 'a.mp4');
+      expect(stack.pop(), isNull);
+      expect(c.read(videoJumpStackProvider), isEmpty);
+    },
+  );
 
-  test('the stack is capped at the limit, dropping the OLDEST entries', () async {
-    final c = container();
-    await c.read(uiSettingsProvider.notifier).setVideoJumpHistoryLimit(3);
-    final stack = c.read(videoJumpStackProvider.notifier);
+  test(
+    'the stack is capped at the limit, dropping the OLDEST entries',
+    () async {
+      final c = container();
+      await c.read(uiSettingsProvider.notifier).setVideoJumpHistoryLimit(3);
+      final stack = c.read(videoJumpStackProvider.notifier);
 
-    for (final n in ['a', 'b', 'c', 'd', 'e']) {
-      stack.push(_video('$n.mp4'));
-    }
+      for (final n in ['a', 'b', 'c', 'd', 'e']) {
+        stack.push(_video('$n.mp4'));
+      }
 
-    expect(stack.limit, 3);
-    expect(_names(c.read(videoJumpStackProvider)), [
-      'c.mp4',
-      'd.mp4',
-      'e.mp4',
-    ]);
-  });
+      expect(stack.limit, 3);
+      expect(_names(c.read(videoJumpStackProvider)), [
+        'c.mp4',
+        'd.mp4',
+        'e.mp4',
+      ]);
+    },
+  );
 
   test('a limit of 1 keeps exactly one back step', () async {
     final c = container();
@@ -103,30 +109,32 @@ void main() {
     expect(stack.pop(), isNull);
   });
 
-  test('lowering the limit under the current size shrinks from the oldest end',
-      () async {
-    final c = container();
-    final stack = c.read(videoJumpStackProvider.notifier);
-    for (final n in ['a', 'b', 'c', 'd', 'e', 'f']) {
-      stack.push(_video('$n.mp4'));
-    }
-    expect(_names(c.read(videoJumpStackProvider)), [
-      'a.mp4',
-      'b.mp4',
-      'c.mp4',
-      'd.mp4',
-      'e.mp4',
-      'f.mp4',
-    ]);
+  test(
+    'lowering the limit under the current size shrinks from the oldest end',
+    () async {
+      final c = container();
+      final stack = c.read(videoJumpStackProvider.notifier);
+      for (final n in ['a', 'b', 'c', 'd', 'e', 'f']) {
+        stack.push(_video('$n.mp4'));
+      }
+      expect(_names(c.read(videoJumpStackProvider)), [
+        'a.mp4',
+        'b.mp4',
+        'c.mp4',
+        'd.mp4',
+        'e.mp4',
+        'f.mp4',
+      ]);
 
-    // The settings slider moved down: the entries furthest back go first, so
-    // the immediate "back" step is the one thing that never changes.
-    await c.read(uiSettingsProvider.notifier).setVideoJumpHistoryLimit(2);
-    expect(_names(c.read(videoJumpStackProvider)), ['e.mp4', 'f.mp4']);
-    expect(stack.pop()?.name, 'f.mp4');
-    expect(stack.pop()?.name, 'e.mp4');
-    expect(stack.pop(), isNull);
-  });
+      // The settings slider moved down: the entries furthest back go first, so
+      // the immediate "back" step is the one thing that never changes.
+      await c.read(uiSettingsProvider.notifier).setVideoJumpHistoryLimit(2);
+      expect(_names(c.read(videoJumpStackProvider)), ['e.mp4', 'f.mp4']);
+      expect(stack.pop()?.name, 'f.mp4');
+      expect(stack.pop()?.name, 'e.mp4');
+      expect(stack.pop(), isNull);
+    },
+  );
 
   test('raising the limit again brings nothing back', () async {
     final c = container();
@@ -146,15 +154,24 @@ void main() {
     final notifier = c.read(uiSettingsProvider.notifier);
 
     await notifier.setVideoJumpHistoryLimit(0);
-    expect(c.read(uiSettingsProvider).videoJumpHistoryLimit, kVideoJumpHistoryMin);
-    expect(await SettingsService().getVideoJumpHistoryLimit(), kVideoJumpHistoryMin);
+    expect(
+      c.read(uiSettingsProvider).videoJumpHistoryLimit,
+      kVideoJumpHistoryMin,
+    );
+    expect(
+      await SettingsService().getVideoJumpHistoryLimit(),
+      kVideoJumpHistoryMin,
+    );
 
     await notifier.setVideoJumpHistoryLimit(999);
     expect(
       c.read(uiSettingsProvider).videoJumpHistoryLimit,
       kVideoJumpHistoryMax,
     );
-    expect(await SettingsService().getVideoJumpHistoryLimit(), kVideoJumpHistoryMax);
+    expect(
+      await SettingsService().getVideoJumpHistoryLimit(),
+      kVideoJumpHistoryMax,
+    );
   });
 
   test('the limit is persisted and restored; the stack itself is not', () async {
@@ -197,11 +214,7 @@ void main() {
     stack.push(_video('b.mp4'));
     stack.push(a);
 
-    expect(_names(c.read(videoJumpStackProvider)), [
-      'a.mp4',
-      'b.mp4',
-      'a.mp4',
-    ]);
+    expect(_names(c.read(videoJumpStackProvider)), ['a.mp4', 'b.mp4', 'a.mp4']);
     expect(stack.pop()?.name, 'a.mp4');
     expect(stack.pop()?.name, 'b.mp4');
     expect(stack.pop()?.name, 'a.mp4');

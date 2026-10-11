@@ -11,6 +11,8 @@ import '../providers/settings_provider.dart';
 import '../services/net.dart';
 import '../services/settings_service.dart';
 import '../services/thumb_cache.dart';
+import '../utils/thumb_cache_policy.dart';
+import '../widgets/thumb_cache_dialog.dart';
 
 const _hintSilver = TextStyle(color: RCrmColors.silver);
 
@@ -50,6 +52,62 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Future<void> _loadCacheSize() async {
     final b = await ThumbCache.sizeBytes();
     if (mounted) setState(() => _cacheBytes = b);
+  }
+
+  /// The cache's ONE entry point. Managing it and deleting all of it are two
+  /// answers to the same question, so they are offered at the same moment, in the
+  /// flow the tile opens — and each says what it does to the cache, since the
+  /// difference between them is the whole reason the choice exists.
+  /// The cache's ONE entry point: the grading is read first, then the choice is
+  /// the user's — which tiers may be spent, or all of it — and only then does
+  /// anything run. `preview()` plans without deleting, so what the dialog shows
+  /// and what `manage()` carries out are the same plan.
+  Future<void> _manageCache() async {
+    // The dialog opens FIRST and the grading arrives into it: reading a cache
+    // directory is disk work that must not hold a tap hostage — and in a widget
+    // test it cannot complete at all, which is what made an awaiting version of
+    // this impossible to test.
+    final choice = await showDialog<ThumbCacheChoice>(
+      context: context,
+      builder: (_) => ThumbCacheDialog(
+        plan: ThumbCache.preview(),
+        initialLimitMb: ThumbCache.limitMb,
+      ),
+    );
+    if (choice == null || !mounted) return;
+
+    // The chosen target is remembered (it is the same setting the dialog reads
+    // back next time) but applied HERE, to the clean-up the user just asked for —
+    // nothing runs on its own.
+    await ref
+        .read(uiSettingsProvider.notifier)
+        .setThumbCacheLimitMb(choice.limitMb);
+
+    if (choice.clearAll) {
+      await ThumbCache.clear();
+      _loadCacheSize();
+      _snack('Cache cleared');
+      return;
+    }
+    // Two different acts, and the dialog says which one it returned: a row's own
+    // delete takes that tier WHOLE (the budget has no veto), while the default
+    // clean-up spends the coldest entries until the cache is under the target.
+    final done = await ThumbCache.manage(
+      maxBytes: choice.wholeTier || choice.limitMb <= 0
+          ? null
+          : choice.limitMb * 1024 * 1024,
+      spend: choice.spend,
+      dropWholeTiers: choice.wholeTier,
+    );
+    _loadCacheSize();
+    _snack(describeThumbCachePlan(done, formatBytes: ThumbCache.human));
+  }
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _loadDeployMode() async {
@@ -574,21 +632,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 _loadCacheSize();
               },
             ),
+            // ONE way in. What to do with the cache is a choice made INSIDE that
+            // flow, not a second button beside it: managing and deleting
+            // everything are two things the same person decides at the same
+            // moment, and putting the drastic one on the same level as the
+            // careful one made the careful one look like the exception.
             ListTile(
               leading: const Icon(Icons.sd_storage),
-              title: const Text('Cache Size'),
+              title: const Text('Thumbnail cache'),
               subtitle: Text(
                 _cacheBytes == null
                     ? 'Calculating…'
-                    : ThumbCache.human(_cacheBytes!),
+                    : '${ThumbCache.human(_cacheBytes!)} — managed by generation '
+                          'time; the newest entries are kept',
               ),
-              trailing: TextButton(
-                onPressed: () async {
-                  await ThumbCache.clear();
-                  _loadCacheSize();
-                },
-                child: const Text('Clear'),
-              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _manageCache,
             ),
           ]),
           const Divider(),
