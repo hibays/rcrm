@@ -42,7 +42,7 @@ dependencies:
   crypto: ^3.0.7
 
   # Camera — cast pairing scan (mobile; camera_windows provides the Windows impl)
-  camera: ^0.11.4
+  camera: ^0.12.1
   camera_windows: ^0.2.6+4
 dev_dependencies:
   flutter_test:
