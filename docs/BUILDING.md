@@ -155,11 +155,27 @@ about), so video poster generation over HTTPS fails with:
 Error opening input: I/O error
 ```
 
-Plain-HTTP (local mode) is unaffected. Mobile posters use `media_kit` and are
-unaffected. The desktop video-thumbnail path passes `-hide_banner -tls_verify 0`
-on every fetch (`lib/utils/ffmpeg_thumb_args.dart`): option 3 below, scoped
-to that one subprocess — the Dart client still pins. The alternatives remain for
-other fetches:
+Plain-HTTP (local mode) is unaffected by that default flip. Mobile posters use
+`media_kit` and are unaffected. The desktop video-thumbnail path passes
+`-hide_banner` on every fetch and `-tls_verify 0` **only for an `https://` URL**
+(`lib/utils/ffmpeg_thumb_args.dart`): option 3 below, scoped to that one
+subprocess — the Dart client still pins.
+
+The flag has to be conditional. ffmpeg resolves the *name* of an input option
+against the protocol the URL selects, after choosing it, and aborts the whole
+command when that protocol does not define the name:
+
+```
+file:     + -tls_verify 0  →  Option tls_verify not found.   (exit != 0, no output)
+http://   + -tls_verify 0  →  Option tls_verify not found.   (exit != 0, no output)
+http://   (no flag)        →  exit 0, JPEG
+https://  + -tls_verify 0  →  exit 0, JPEG
+https://  (no flag)        →  exit -5, Peer certificate failed verification
+```
+
+Measured on ffmpeg 9.0.2 with one file served over both schemes. The desktop
+app's own server is `http://127.0.0.1:<port>`, so an unconditional flag leaves
+*every* poster empty. The alternatives for the HTTPS case remain:
 
 1. Route ffmpeg to a loopback HTTP relay that performs the pinned HTTPS upstream.
 2. Pass `-ca_file <pem>` when the server's certificate is file-backed and its

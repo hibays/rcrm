@@ -229,10 +229,12 @@ class ThumbnailService {
     const positions = [0.0, 30.0, 15.0, 0.5, 3.0, 60.0, 120.0, 240.0];
     for (final inputSeek in [true, false]) {
       for (final pos in positions) {
-        // Built by `ffmpegThumbArgs` so the option ORDER is testable:
-        // `-hide_banner` first (global), `-tls_verify 0` an input option before
-        // the `-i` it applies to (the scoped TLS relaxation — see that
-        // function's comment).
+        // Built by `ffmpegThumbArgs` so the option ORDER and the conditional
+        // TLS relaxation are testable: `-hide_banner` first (global),
+        // `-tls_verify 0` an input option before the `-i` it applies to — and
+        // only for an https URL, because no other input protocol defines that
+        // option and ffmpeg aborts on an unknown one (see that function's
+        // comment).
         final args = ffmpegThumbArgs(
           url: safe,
           headers: headers,
