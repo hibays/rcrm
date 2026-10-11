@@ -12,6 +12,7 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 
 import '../utils/thumb_cache_policy.dart';
+import 'thumb_cache_access_log.dart';
 
 class ThumbCache {
   ThumbCache._();
@@ -47,9 +48,7 @@ class ThumbCache {
     _dir = null;
     overrideDir = null;
     limitMb = 0;
-    _lastUsed.clear();
-    _usedLoadedFrom = null;
-    _usedSinceFlush = 0;
+    ThumbCacheAccessLog.reset();
   }
 
   /// How many entries are unlinked at once — see the loop in [manage].
@@ -78,75 +77,6 @@ class ThumbCache {
     return h.toRadixString(16);
   }
 
-  /// When each entry was last READ, keyed by cache file name.
-  ///
-  /// Recorded here because there is nowhere else to get it: the file's mtime is
-  /// the GENERATION time — the whole grading is built on it — so a read must not
-  /// touch it, and `stat().accessed` is unreliable on every platform we ship to
-  /// (mount options, lazy updates). An entry that was never read has no entry
-  /// here, which is honest: we only know when it was made.
-  static final Map<String, DateTime> _lastUsed = {};
-
-  /// How many reads may pass before the access log is written out. The cache is
-  /// read for every visible thumbnail, and this is bookkeeping for a background
-  /// decision — it must not cost a write per image.
-  static const int _usedFlushEvery = 64;
-  static int _usedSinceFlush = 0;
-  static String? _usedLoadedFrom;
-
-  /// Notes that [name] was just used. In memory first, always: the in-flight
-  /// decision must see it even if the write below never happens.
-  static void _noteUsed(String name, DateTime now) {
-    _lastUsed[name] = now;
-    if (++_usedSinceFlush >= _usedFlushEvery) {
-      _usedSinceFlush = 0;
-      unawaited(_flushUsed());
-    }
-  }
-
-  /// The access log next to the entries: one `name<TAB>epochMillis` per line.
-  /// Best-effort like everything else here — losing it costs precision in the
-  /// grading, never correctness.
-  /// The access log, NEXT TO the entries rather than among them: everything that
-  /// lists the cache directory — `preview`, `sizeBytes`, `clear`, a test — must
-  /// see entries and only entries. (It lived inside at first, and every one of
-  /// those callers had to learn to skip it.)
-  static File _usedFile(Directory dir) =>
-      File('${dir.parent.path}/._thumbs_used');
-
-  static Future<void> _loadUsed(Directory dir) async {
-    if (_usedLoadedFrom == dir.path) return;
-    _usedLoadedFrom = dir.path;
-    try {
-      final f = _usedFile(dir);
-      if (!await f.exists()) return;
-      for (final line in await f.readAsLines()) {
-        final tab = line.indexOf('\t');
-        if (tab <= 0) continue;
-        final ms = int.tryParse(line.substring(tab + 1));
-        final when = ms == null
-            ? null
-            : DateTime.fromMillisecondsSinceEpoch(ms);
-        if (when == null) continue;
-        final name = line.substring(0, tab);
-        final known = _lastUsed[name];
-        // A read in THIS session is newer information than the file.
-        if (known == null || known.isBefore(when)) _lastUsed[name] = when;
-      }
-    } catch (_) {}
-  }
-
-  static Future<void> _flushUsed() async {
-    try {
-      final d = await _ensureDir();
-      final lines = [
-        for (final e in _lastUsed.entries)
-          '${e.key}\t${e.value.millisecondsSinceEpoch}',
-      ];
-      await _usedFile(d).writeAsString('${lines.join('\n')}\n');
-    } catch (_) {}
-  }
-
   static Future<Uint8List?> read(String id) async {
     if (!enabled) return null;
     try {
@@ -154,7 +84,7 @@ class ThumbCache {
       if (await f.exists()) {
         final bytes = await f.readAsBytes();
         // Deliberately NOT `setLastModified`: that field is the generation time.
-        _noteUsed(_key(id), DateTime.now());
+        ThumbCacheAccessLog.note(_key(id), DateTime.now());
         return bytes;
       }
     } catch (_) {}
@@ -193,7 +123,7 @@ class ThumbCache {
       // then fails to decode records a name for a file that is not there, which
       // the grading simply never sees (it grades what it lists).
       final key = _key(id);
-      _noteUsed(key, DateTime.now());
+      ThumbCacheAccessLog.note(key, DateTime.now());
       return File('${(await _ensureDir()).path}/$key');
     } catch (_) {
       return null;
@@ -253,10 +183,10 @@ class ThumbCache {
     );
     if (plan.drop.isEmpty) {
       // Still flush: managing is the one point where writing is expected, and
-      // without this a session with fewer than `_usedFlushEvery` reads would
+      // without this a session with fewer than `ThumbCacheAccessLog.flushEvery` reads would
       // record nothing at all — the accesses would exist only in memory and die
       // with the process.
-      await _flushUsed();
+      await ThumbCacheAccessLog.flush();
       return plan;
     }
     try {
@@ -304,8 +234,8 @@ class ThumbCache {
       // opening the dialog wrote the log even with the cache switched off — and a
       // file the user never asked to create is exactly the kind of side effect a
       // preview should not have. Reads persist themselves (throttled, every
-      // `_usedFlushEvery` of them) and `manage` flushes what it applied.
-      await _loadUsed(d);
+      // `ThumbCacheAccessLog.flushEvery` of them) and `manage` flushes what it applied.
+      await ThumbCacheAccessLog.load(d);
       // Listing is one pass; the STATS go in bounded batches. A cache of 50k
       // thumbnails was 50k sequential filesystem round trips — the slowest part of
       // opening this dialog, and it is spent before the user sees a single row.
@@ -333,7 +263,7 @@ class ThumbCache {
             ThumbCacheEntry(
               name: name,
               generatedAt: stat.modified, // generation time
-              lastUsedAt: _lastUsed[name], // null when never read
+              lastUsedAt: ThumbCacheAccessLog.lastUsedAt(name),
               bytes: stat.size,
             ),
           );
@@ -345,7 +275,7 @@ class ThumbCache {
       // above is the authority on what still exists, so the map is pruned against
       // it here — and the next flush writes the pruned truth.
       final alive = {for (final e in entries) e.name};
-      _lastUsed.removeWhere((name, _) => !alive.contains(name));
+      ThumbCacheAccessLog.pruneTo(alive);
       return planThumbCache(
         entries,
         maxBytes: budget,
