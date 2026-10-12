@@ -2,6 +2,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show HandshakeException, HttpDate, TlsException;
+import 'dart:typed_data';
+import 'bounded_fetch.dart' show kBoundedFetchDeadline, kBoundedFetchStall;
 import 'net.dart';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:http/http.dart' as http;
@@ -182,14 +184,76 @@ class WebDavClient {
     return dirs;
   }
 
-  Future<List<int>?> getFile(String path) async {
+  /// Reads the FIRST [maxBytes] of [path] and no more.
+  ///
+  /// This is a health probe, not a download: the only caller
+  /// (`widgets/doctor_panel.dart`) has to prove the decrypt → serve → fetch path
+  /// works, which the first chunk of an encrypted file already does. Asking for
+  /// the whole file — which is what this replaced — means pulling an entire
+  /// video through the decrypting server and into Dart memory just to print its
+  /// length, and doing it while the user is looking at the page.
+  ///
+  /// Bounded twice over, because a bound that can be ignored is not one:
+  ///
+  ///  * the request carries `Range: bytes=0-N-1`, so a server that honours it
+  ///    never decrypts more than the head;
+  ///  * the loop stops at N bytes and BREAKS, which cancels the subscription and
+  ///    stops the app reading — so a server that ignores `Range` and starts
+  ///    streaming the whole file (our own server answers 206, but a cloud WebDAV
+  ///    may answer 200) is read for one head and no more.
+  ///
+  /// What the PEER does next is the socket's business, not this function's: its
+  /// further writes block once the buffers fill, but it can still push a few MiB
+  /// into them before that (measured — a paced 4 MiB body finished writing after
+  /// the client had stopped reading). The guarantee here is about the app's
+  /// memory and its read loop, and that is the half that was missing.
+  ///
+  /// The deadlines are `bounded_fetch.dart`'s, so "how long a fetch may take" has
+  /// one answer in this app rather than one per call site.
+  Future<Uint8List?> getFileHead(String path, {required int maxBytes}) async {
+    if (maxBytes <= 0) return null;
+    final uri = _url(_normPath(path));
+    final deadline = DateTime.now().add(kBoundedFetchDeadline);
     try {
-      final r = http.Request('GET', _url(_normPath(path)));
-      _addAuth(r);
-      final resp = await _client.send(r);
-      if (resp.statusCode == 200) return await resp.stream.toBytes();
-    } catch (_) {}
-    return null;
+      final request = http.Request('GET', uri)
+        ..headers['Range'] = 'bytes=0-${maxBytes - 1}';
+      _addAuth(request);
+      final response = await _client.send(request).timeout(kBoundedFetchStall);
+      if (response.statusCode != 200 && response.statusCode != 206) {
+        // Read the (small, in practice) error body off the socket so the
+        // connection can return to the pool — but only for as long as one stall,
+        // because the caller is waiting for this answer, not for a body it will
+        // discard.
+        await response.stream
+            .drain<void>()
+            .timeout(kBoundedFetchStall)
+            .catchError((_) {});
+        return null;
+      }
+      final head = BytesBuilder(copy: false);
+      await for (final chunk in response.stream.timeout(
+        kBoundedFetchStall,
+        onTimeout: (sink) => sink.addError(
+          TimeoutException('stalled for $kBoundedFetchStall reading $uri'),
+        ),
+      )) {
+        if (DateTime.now().isAfter(deadline)) {
+          throw TimeoutException(
+            'head exceeded $kBoundedFetchDeadline from $uri',
+          );
+        }
+        head.add(chunk);
+        if (head.length >= maxBytes) {
+          break; // stops reading; the app holds a head, not the file
+        }
+      }
+      final bytes = head.takeBytes();
+      return bytes.length > maxBytes
+          ? Uint8List.sublistView(bytes, 0, maxBytes)
+          : bytes;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<bool> ping() async => await pingStatusCode() == 200;

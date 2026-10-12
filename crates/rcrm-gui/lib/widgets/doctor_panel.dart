@@ -17,6 +17,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/media_item.dart';
 import '../providers/server_provider.dart';
 
+/// How much of the sample file the check reads.
+///
+/// Enough to prove the decrypt → serve → fetch path end to end (the server
+/// decrypts exactly this range), small enough that the probe costs nothing even
+/// when the library's files are gigabytes.
+const int kDoctorSampleBytes = 64 * 1024;
+
 class _Check {
   final String label;
   final bool ok;
@@ -82,20 +89,31 @@ class _DoctorPanelState extends ConsumerState<DoctorPanel> {
           ),
         );
 
-        // 4. Sample read — exercises the decrypt → serve → fetch path
+        // 4. Sample read — exercises the decrypt → serve → fetch path.
+        //
+        // A HEAD of the file, never the file: the first chunk already proves the
+        // path works, and reading a whole video through the decrypting server
+        // (what this check used to do — `getFile`, whole body into Dart memory,
+        // for the length it printed) stalls the app it is supposed to be
+        // diagnosing. The detail says what was read, not what the file is.
         MediaItem? sample = files.isNotEmpty ? files.first : null;
         if (sample == null && dirs.isNotEmpty) {
           final sub = await client.listDirectory(dirs.first);
           if (sub.isNotEmpty) sample = sub.first;
         }
         if (sample != null) {
-          final bytes = await client.getFile(sample.path);
-          final ok = bytes != null && bytes.isNotEmpty;
+          final head = await client.getFileHead(
+            sample.path,
+            maxBytes: kDoctorSampleBytes,
+          );
+          final ok = head != null && head.isNotEmpty;
           checks.add(
             _Check(
               'Sample file readable',
               ok,
-              ok ? '${sample.name} (${bytes.length} bytes)' : 'read failed',
+              ok
+                  ? '${sample.name} — first ${head.length} bytes decrypted'
+                  : 'read failed',
             ),
           );
         } else {
