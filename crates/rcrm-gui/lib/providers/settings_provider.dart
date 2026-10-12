@@ -8,6 +8,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../services/media_library.dart';
+import '../services/screen_capture.dart';
 import '../services/settings_service.dart';
 import '../services/thumb_cache.dart';
 import '../services/preview_player.dart';
@@ -41,6 +42,13 @@ class SettingsState {
   final bool autoRotate;
   final bool castAutoNext;
 
+  /// Whether the system may capture the app's pixels — screenshots, screen
+  /// recording, the recent-apps preview. Mobile only, and **off by default**:
+  /// the library is decrypted media and a capture of it outlives the session.
+  /// The platform window is what enforces it, so every write here leaves Dart
+  /// (`services/screen_capture.dart`).
+  final bool allowScreenshots;
+
   /// How many previous videos the video player's jump stack keeps — the entries
   /// `Back` returns to and the Related list excludes
   /// (`providers/video_jump_stack.dart`). Persisted; the stack itself is not.
@@ -62,6 +70,7 @@ class SettingsState {
     this.castAutoNext = true,
     this.pipSize = 'normal',
     this.videoJumpHistoryLimit = kVideoJumpHistoryDefault,
+    this.allowScreenshots = false,
   });
 
   SettingsState copyWith({
@@ -81,6 +90,7 @@ class SettingsState {
     bool? castAutoNext,
     String? pipSize,
     int? videoJumpHistoryLimit,
+    bool? allowScreenshots,
   }) {
     return SettingsState(
       imageLayout: imageLayout ?? this.imageLayout,
@@ -100,6 +110,7 @@ class SettingsState {
       pipSize: pipSize ?? this.pipSize,
       videoJumpHistoryLimit:
           videoJumpHistoryLimit ?? this.videoJumpHistoryLimit,
+      allowScreenshots: allowScreenshots ?? this.allowScreenshots,
     );
   }
 }
@@ -132,6 +143,18 @@ class SettingsNotifier extends Notifier<SettingsState> {
     final autoRotate = await _service.getAutoRotate();
     final castAutoNext = await _service.getCastAutoNext();
     final videoJumpHistoryLimit = await _service.getVideoJumpHistoryLimit();
+    final allowScreenshots = await _service.getAllowScreenshots();
+    // Mirrored onto the platform, not just remembered: the window that is
+    // capturable or not belongs to the OS, and the Android half starts SECURE
+    // (`MainActivity.onCreate`, before Dart exists) — so this is what lifts it
+    // when the stored choice says capture is allowed.
+    //
+    // Deliberately NOT awaited: restoring the settings must not depend on a
+    // platform answering, and nothing here reads the result. (Awaiting a channel
+    // round-trip inside `testWidgets` also never resolves — the fake clock does
+    // not advance the engine's reply — which stalled every existing test that
+    // calls `load()` until this was unawaited.)
+    unawaited(ScreenCapture.setAllowed(allowScreenshots));
 
     // Restore video sort/grid columns from persistence. The video sort field
     // goes through `restore`, not `set`: `set` carries the re-pick rule below,
@@ -161,6 +184,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
       castAutoNext: castAutoNext,
       pipSize: pipSize,
       videoJumpHistoryLimit: videoJumpHistoryLimit,
+      allowScreenshots: allowScreenshots,
     );
   }
 
@@ -268,6 +292,17 @@ class SettingsNotifier extends Notifier<SettingsState> {
   Future<void> setCastAutoNext(bool enabled) async {
     state = state.copyWith(castAutoNext: enabled);
     await _service.setCastAutoNext(enabled);
+  }
+
+  /// The screenshots policy — Settings → Privacy, mobile only.
+  ///
+  /// The platform is told FIRST and the choice is persisted second: the switch
+  /// is the user saying "stop capturing this window now", and a write to disk
+  /// that fails afterwards must not leave the window capturable.
+  Future<void> setAllowScreenshots(bool allowed) async {
+    state = state.copyWith(allowScreenshots: allowed);
+    await ScreenCapture.setAllowed(allowed);
+    await _service.setAllowScreenshots(allowed);
   }
 
   /// The settings slider (`screens/settings_screen.dart`) committed [limit] —

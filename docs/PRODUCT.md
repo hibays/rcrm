@@ -40,7 +40,7 @@ Voice: direct, no euphemisms. Tone: smooth and confident, not brash or crude.
 
 3. **Zero friction browsing.** Fast scanning, hover previews, gesture-driven controls, instant transitions. Performance should feel like direct manipulation — not like a network app. The 200ms hover delay and 2s idle fade are intentional; latency is designed, not tolerated.
 
-4. **Privacy obsessiveness.** Encryption is the product's reason to exist. The interface conveys security through confidence — not through paranoia (no warning icons, no "encrypted!" badges). The user's media is protected, and the UI never makes them think about it.
+4. **Privacy obsessiveness.** Encryption is the product's reason to exist. The interface conveys security through confidence — not through paranoia (no warning icons, no "encrypted!" badges). The user's media is protected, and the UI never makes them think about it. The same goes for the system's own surfaces: on mobile the library is not capturable by default (screenshots, screen recording, the recent-apps preview), and the one setting that lifts that says plainly what the platform it runs on can and cannot do.
 
 ## Accessibility & Inclusion
 

@@ -266,6 +266,7 @@ Surfaces are flat at rest. Shadows appear only as a response to state — hover,
 - **Do** use `text-wrap: balance` on headings and `text-wrap: pretty` on body text (when CSS control is available).
 - **Do** use Silver (`#AAAAAA`) for secondary text. Higher contrast than the generic gray so it reads in dim light.
 - **Do** clip card content with `Clip.antiAlias` for performance — rounded corners on cards are decorative, not structural.
+- **Do** say what the platform will really do. A control whose promise differs by OS — `Allow Screenshots` can refuse a capture on Android and cannot on iOS, where the app can only cover itself — carries the wording of the platform it is shown on, and is not offered at all where it could not act (desktop). A control that quietly means something else is worse than no control.
 
 ### Don't
 

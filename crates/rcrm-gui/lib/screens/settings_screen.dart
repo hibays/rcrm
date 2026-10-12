@@ -9,6 +9,7 @@ import '../config/theme.dart';
 import '../providers/server_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/net.dart';
+import '../services/screen_capture.dart';
 import '../services/settings_service.dart';
 import '../services/thumb_cache.dart';
 import '../utils/thumb_cache_policy.dart';
@@ -601,6 +602,31 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               },
             ),
           ]),
+          // A privacy row exists only where the platform has a capture surface
+          // the app can actually close: a desktop window's pixels are the OS's
+          // business, and the switch would be a dead control there. What the
+          // switch promises differs by platform and the subtitle says which
+          // (`capturePolicyNote`) — iOS cannot refuse a still screenshot, and
+          // claiming otherwise in the UI is the one thing this row must not do.
+          if (ScreenCapture.supported) ...[
+            const Divider(),
+            _sectionHeader('Privacy'),
+            const SizedBox(height: 8),
+            _group([
+              SwitchListTile(
+                title: const Text('Allow Screenshots'),
+                subtitle: Text(
+                  capturePolicyNote(
+                    canBlockScreenshots: ScreenCapture.canBlockScreenshots,
+                  ),
+                ),
+                value: ui.allowScreenshots,
+                onChanged: (v) {
+                  ref.read(uiSettingsProvider.notifier).setAllowScreenshots(v);
+                },
+              ),
+            ]),
+          ],
           const Divider(),
           _sectionHeader('Casting'),
           const SizedBox(height: 8),

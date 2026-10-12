@@ -48,6 +48,7 @@ class SettingsService {
   static const _keyAutoRotate = 'auto_rotate'; // bool
   static const _keyCastAutoNext = 'cast_auto_next'; // bool
   static const _keyVideoJumpHistory = 'video_jump_history_limit'; // int, 1..50
+  static const _keyAllowScreenshots = 'allow_screenshots'; // bool, mobile only
 
   SharedPreferences? _prefs;
 
@@ -312,6 +313,21 @@ class SettingsService {
   Future<void> setCastAutoNext(bool enabled) async {
     final p = await prefs;
     await p.setBool(_keyCastAutoNext, enabled);
+  }
+
+  // ── Screenshot policy ─────────────────────────────────────
+  // Mobile only (`services/screen_capture.dart`). Default: NOT allowed — the
+  // library shown here is decrypted media, and a screenshot of it outlives the
+  // session, the app and the password. The platform enforces it; this is the
+  // choice it is told.
+  Future<bool> getAllowScreenshots() async {
+    final p = await prefs;
+    return p.getBool(_keyAllowScreenshots) ?? false;
+  }
+
+  Future<void> setAllowScreenshots(bool allowed) async {
+    final p = await prefs;
+    await p.setBool(_keyAllowScreenshots, allowed);
   }
 
   // ── Video jump history ────────────────────────────────────

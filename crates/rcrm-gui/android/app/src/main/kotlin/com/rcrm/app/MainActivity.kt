@@ -2,7 +2,6 @@ package com.rcrm.app
 
 import android.content.res.Configuration
 import android.os.Bundle
-import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -11,12 +10,10 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // FLAG_SECURE: block screenshots and hide the app from the
-        // recent-apps preview.
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_SECURE,
-            WindowManager.LayoutParams.FLAG_SECURE
-        )
+        // The screenshot policy, before Dart exists: the launch default is NOT
+        // capturable, and the stored choice lifts it a moment later
+        // (`ScreenCaptureChannel`, `services/screen_capture.dart`).
+        ScreenCaptureChannel.applyTo(this)
     }
 
     override fun onDestroy() {
@@ -70,5 +67,7 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        // Screenshot policy, the Dart half of the flag applied in onCreate.
+        ScreenCaptureChannel.register(flutterEngine.dartExecutor.binaryMessenger, this)
     }
 }
