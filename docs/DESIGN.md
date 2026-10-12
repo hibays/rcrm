@@ -220,6 +220,7 @@ Surfaces are flat at rest. Shadows appear only as a response to state — hover,
 - **Fixed** `BottomNavigationBarType.fixed` — no shifting on selection
 - **3 items:** Home, Videos, Images
 - **Icons:** Material defaults
+- **Back key hierarchy:** back undoes the innermost thing that is open. An open video folder or photo album is a step INSIDE its tab — back closes it to the list, on either tab by the same rule, and the shell defers to the tab that owns it — and only then does back leave the tab for Home. On Home itself, Android guards the exit with a second press. One press, one step: the header's back arrow and the system gesture are never two different answers
 
 ### Controls Overlay (Video Player)
 

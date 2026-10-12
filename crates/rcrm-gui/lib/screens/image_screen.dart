@@ -85,10 +85,17 @@ class _ImageScreenState extends ConsumerState<ImageScreen> {
 
   @override
   void dispose() {
-    // Direct call is safe now: setOpen no-ops when the provider container is
-    // already gone. (The old `Future(...)` wrapper left a pending timer in
-    // tests and could hit an unmounted ref at app exit.)
-    _albumOpen.setOpen(false);
+    // The album view goes with the screen, so the flag has to go too — the shell
+    // defers the back key to whatever this says is open.
+    //
+    // Deferred to the end of the frame because a provider cannot be written while
+    // the tree is being finalised, and that is where an unmount runs: writing it
+    // straight from here threw "Tried to modify a provider while the widget tree
+    // was building" every time the tab was left with an album open (measured).
+    // The `setOpen` guard still covers the container being gone at app exit.
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _albumOpen.setOpen(false),
+    );
     super.dispose();
   }
 

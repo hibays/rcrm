@@ -34,6 +34,26 @@ class _CloseFolderIntent extends Intent {
   const _CloseFolderIntent();
 }
 
+/// True while the video tab has a folder sub-view open. home_screen reads this
+/// instead of switching to the Home tab — the flag is what lets the system back
+/// key close the folder first, exactly as it closes an open album on the photo
+/// tab (`image_screen.dart`'s `ImageAlbumOpenNotifier` is the same thing over
+/// there).
+class VideoFolderOpenNotifier extends Notifier<bool> {
+  @override
+  bool build() => false;
+
+  /// Guarded so a late call (e.g. dispose while the provider container is
+  /// already being torn down at app exit) is a no-op instead of throwing.
+  void setOpen(bool v) {
+    if (ref.mounted) state = v;
+  }
+}
+
+final videoFolderOpenProvider = NotifierProvider<VideoFolderOpenNotifier, bool>(
+  VideoFolderOpenNotifier.new,
+);
+
 class VideoScreen extends ConsumerStatefulWidget {
   const VideoScreen({super.key});
 
@@ -50,6 +70,32 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
   /// closes the view.
   String? _openPath;
 
+  // Captured in initState so dispose() can use it without touching `ref`
+  // (Riverpod forbids `ref` access during/after unmount).
+  late final VideoFolderOpenNotifier _folderOpen;
+
+  @override
+  void initState() {
+    super.initState();
+    _folderOpen = ref.read(videoFolderOpenProvider.notifier);
+  }
+
+  @override
+  void dispose() {
+    // The screen is gone, so nothing is open any more: a flag left behind would
+    // make home_screen defer the back key to a folder view that no longer exists.
+    //
+    // Deferred to the end of the frame because a provider cannot be written while
+    // the tree is being finalised, and that is exactly where an unmount runs: a
+    // direct `state = false` here throws "Tried to modify a provider while the
+    // widget tree was building" (measured — the photo tab's own `dispose` did,
+    // whenever the tab was left with its album open).
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _folderOpen.setOpen(false),
+    );
+    super.dispose();
+  }
+
   /// The open folder, or null when the folder list (or the flat view) is shown.
   Album? _openFolder(List<Album> folders) {
     final path = _openPath;
@@ -60,10 +106,15 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
     return null;
   }
 
-  void _closeFolder() {
-    if (_openPath == null) return;
-    setState(() => _openPath = null);
+  /// ONE writer for the open folder: the state that draws the view and the flag
+  /// home_screen reads describe the same fact, and two writers is how they drift.
+  void _setOpenPath(String? path) {
+    if (_openPath == path) return;
+    setState(() => _openPath = path);
+    _folderOpen.setOpen(path != null);
   }
+
+  void _closeFolder() => _setOpenPath(null);
 
   /// The folder's videos, in the order the toolbar's sort produced: the sorted
   /// list stays the authority, so a folder never re-sorts behind the toolbar's
@@ -115,6 +166,20 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
     final effectiveColumns = columns.clamp(colMin, colMax);
     final open = _openFolder(folders);
 
+    // A re-scan can drop the folder the user is standing in (its files are gone,
+    // or they moved). `_openFolder` re-resolves the path on every build, so the
+    // view is already back at the list — but the two things that were told a
+    // folder is open (this screen's `PopScope` and home_screen's back handler)
+    // have to follow it, or the back key would be spent on a folder nobody can
+    // see. Post-frame because clearing it rebuilds the screen.
+    if (_openPath != null && open == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _openFolder(ref.read(videoFoldersProvider)) == null) {
+          _closeFolder();
+        }
+      });
+    }
+
     // The `Focus` sits INSIDE the `Shortcuts`, and that nesting is the whole of
     // it: a key event goes to the primary focus node and then bubbles UP through
     // its ancestors, so the focused node has to be a DESCENDANT of the
@@ -123,7 +188,7 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
     // tab's album view does — puts the focus node above the handler and Esc
     // reaches nothing. The map itself stays empty while there is no folder to
     // close.
-    return Shortcuts(
+    final view = Shortcuts(
       shortcuts: {
         if (open != null)
           const SingleActivator(LogicalKeyboardKey.escape):
@@ -193,6 +258,20 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
         ),
       ),
     );
+
+    // The folder view is a step INSIDE the tab, not a route, so the system back
+    // key has to undo that step before it can mean anything else — the photo
+    // tab's rule for an open album. `open`, not `_openPath`: what is on screen
+    // decides what back does. HomeScreen owns the key (tab switching, and on
+    // Android the double-back exit guard) and reads the flag above, so this
+    // handler and the shell's rule are one decision, not two.
+    return PopScope(
+      canPop: open == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && open != null) _closeFolder();
+      },
+      child: view,
+    );
   }
 
   Widget _body(
@@ -232,7 +311,7 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
     return _FolderGrid(
       folders: folders,
       columns: columns,
-      onOpen: (folder) => setState(() => _openPath = folder.path),
+      onOpen: (folder) => _setOpenPath(folder.path),
     );
   }
 

@@ -166,9 +166,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       canPop: !Platform.isAndroid && _currentIndex == 0,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
-        // When the image tab has an album open, let ImageScreen's own PopScope
-        // close it (back → album list) instead of jumping to the Home tab.
+        // Back is a step out of the tab's SUB-VIEW before it is a step out of
+        // the tab: an open photo album or video folder closes first, and the
+        // screen that opened it does the closing — this handler must not also
+        // switch tabs. Which screen that is comes from the tab, not the flag
+        // alone: each publishes its own (the tab that is showing is the one with
+        // something to close).
         if (_currentIndex == 2 && ref.read(imageAlbumOpenProvider)) return;
+        if (_currentIndex == 1 && ref.read(videoFolderOpenProvider)) return;
+
         if (_currentIndex != 0) {
           _exitGuard.reset();
           setState(() => _currentIndex = 0);

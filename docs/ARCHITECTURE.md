@@ -102,8 +102,12 @@ Video tab: two arrangements of ONE list, chosen by `videoClassification`
     `MediaLibrary.buildAlbums` the photo tab's albums use, with the video tab's
     own classification passed in — so switching arrangements costs no re-scan and
     cannot regroup the photo tab
-  → a group opens into its own videos (`video_screen.dart`), Esc or the header's
-    back returns to the group list
+  → a group opens into its own videos (`video_screen.dart`); Esc, the header's
+    back, and the system back key all return to the group list — the key is a
+    step out of the tab's SUB-VIEW before it is a step out of the tab, so
+    `home_screen` (which owns tab switching and the double-back exit guard)
+    defers to the flag the tab publishes: `videoFolderOpenProvider` here, the
+    photo tab's `imageAlbumOpenProvider` for an open album
   → the photo tab answers `none` the same way: `ImageScreen` shows every image in
     one flat grid rather than opening its old single "All Images" album
 VideoCard tap → Navigator.push(video_player_screen)
