@@ -366,22 +366,11 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     // (`_navigating`) must not: the screen replacing this one is the stack's
     // reader, and its own `Back` needs what is left in it.
     if (!_navigating) _jumpStack?.clear();
-    if (_isMobile) {
-      // When navigating to another player (_go), the new screen manages its
-      // own UI mode/orientation. Resetting here would override its immersive
-      // fullscreen with edge-to-edge (system bars reappear mid-transition).
-      if (!_navigating) {
-        SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-        SystemChrome.setPreferredOrientations(DeviceOrientation.values);
-      }
-    } else if (fullscreen && !_navigating) {
-      if (!_globalImmersive) {
-        windowManager.setFullScreen(false);
-      }
-      Future(
-        () => ref.read(windowChromeVisibleProvider.notifier).setVisible(true),
-      );
-    }
+    // The exits that come through `_handleBack`/`_goHome` have already done this
+    // — at the start of the exit, so it does not land after the transition as a
+    // second motion. This is the fallback for every other way a player route can
+    // go (a `popUntil` from elsewhere, teardown), and it is idempotent.
+    if (!_navigating) _restoreExitChrome();
     super.dispose();
   }
 
@@ -774,8 +763,12 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   ///    and re-recording it would make `Back` bounce between the same two
   ///    videos.
   ///  * the route's transition (`PosterQuietRoute.backStep`): a step back
-  ///    through the history enters from the left, so it no longer looks like
-  ///    opening a video.
+  ///    through the history enters from the left, and the page it replaces
+  ///    LEAVES to the right — that half is the framework's own announcement to
+  ///    the outgoing route, so there is nothing to pass here. Both halves
+  ///    matter: on their own, an entrance from the left over an exit to the
+  ///    left is the same two-page movement a forward push makes, so a step back
+  ///    still read as opening a video.
   void _go(MediaItem item, {bool back = false}) {
     if (_navigating || _switching || _isRoutePopping) return;
     _navigating = true;
@@ -826,9 +819,6 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// session. So it takes the ordinary "leaving the player for good" path,
   /// which is the one the screen already has:
   ///
-  ///  * `p?.stop()` first — the documented rule before any navigation away from
-  ///    the player (the route's `dispose()` disposes the player, and a player
-  ///    must not be mid-playback when it is dropped);
   ///  * `popUntil` on the landing rule in `utils/player_exit.dart`, which
   ///    unwinds the player AND the search screen a player may have been opened
   ///    from, and stops at the library;
@@ -838,10 +828,58 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   ///    a session that is over and hide those videos from the next player's
   ///    Related list), the system UI/orientation and window chrome are restored
   ///    as on any other exit.
+  ///
+  /// Deliberately NOT `p?.stop()` before the pop, which is what this used to do.
+  /// The route's own `dispose()` stops the player before disposing it — that is
+  /// the documented order, and it is what makes `Back` work — so stopping here
+  /// only moved the teardown to the far side of the transition, and the teardown
+  /// is visible: a stopped `Player` paints no frame, so the exit played as the
+  /// same step with the picture missing while `Back` played it with the video
+  /// still there. Two ways out of the player, two different animations, one of
+  /// them blank — and no safety was bought by it: the player is still never
+  /// dropped mid-playback, because `dispose()` stops it first.
   void _goHome() {
     if (_navigating || _switching || _isRoutePopping) return;
-    p?.stop();
-    Navigator.popUntil(context, isLibraryLandingRoute);
+    _restoreExitChrome();
+    final mine = ModalRoute.of(context);
+    // ONE animated step, the one `Back` plays: `leavePlayerForLibrary` takes the
+    // screen the video was opened from (the search results) out of the chain
+    // without animating it, then pops the player. `popUntil` on its own animated
+    // every route it popped, so this exit — and only this one — played as two
+    // pages sliding away at once.
+    leavePlayerForLibrary(
+      Navigator.of(context),
+      below: mine is PosterQuietRoute ? mine.previousRoute : null,
+    );
+  }
+
+  /// Puts the app back the way the library expects to find it — and does it at
+  /// the START of the exit rather than after it.
+  ///
+  /// This is what `dispose()` does when the player is left for good, and it used
+  /// to happen only there, once the pop had finished. That made leaving the
+  /// player two motions in sequence: the exit played on an app still in
+  /// immersive fullscreen landscape, and THEN the system bars came back and the
+  /// device rotated, re-laying the library out into the window it was going to
+  /// live in anyway. One gesture, a second animation nobody asked for — and only
+  /// on this exit, because a jump keeps the player's own chrome by design.
+  /// Started here, it is over by the time the library has arrived.
+  ///
+  /// `dispose()` still does it too, for the exits that never come through this
+  /// method (a `popUntil` from elsewhere, the app closing); the calls are
+  /// idempotent.
+  void _restoreExitChrome() {
+    if (_isMobile) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+    } else if (fullscreen) {
+      if (!_globalImmersive) {
+        windowManager.setFullScreen(false);
+      }
+      Future(
+        () => ref.read(windowChromeVisibleProvider.notifier).setVisible(true),
+      );
+    }
   }
 
   // Keyboard shortcuts (space/arrows/F/ESC) — the verified global-key
@@ -1314,6 +1352,12 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       _go(from, back: true);
       return;
     }
+    // The history is empty: this Back leaves the player for the library. The
+    // chrome goes back to the library's own now, at the START of the exit, so
+    // the bars/orientation/window are already the library's by the time it
+    // arrives instead of following it as a second motion — `Back` and `Home`
+    // leave the same way, so they restore it at the same moment.
+    _restoreExitChrome();
     Navigator.pop(context);
   }
 

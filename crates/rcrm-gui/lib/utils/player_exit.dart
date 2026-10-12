@@ -45,3 +45,37 @@ bool isLibraryLanding({required String? name, required bool isFirst}) =>
 /// the landing place has to be identifiable.
 bool isLibraryLandingRoute(Route<dynamic> route) =>
     isLibraryLanding(name: route.settings.name, isFirst: route.isFirst);
+
+/// Leaves the player for the library in ONE animated step — the step `Back`
+/// plays — whatever the chain between them is.
+///
+/// [below] is the route directly under the player (the player's own
+/// `didChangePrevious`, i.e. `PosterQuietRoute.previousRoute`), and anything
+/// between it and the landing place is taken out of the chain WITHOUT animation
+/// before the player pops.
+///
+/// `popUntil` alone animates every route it pops, and with a video opened from
+/// the search screen the chain is `library → search → player`: popping both
+/// played a three-page composite that matched neither `Back` (one page leaving)
+/// nor a jump, so the same user action looked different depending on which
+/// screen the video had been opened from. Taking the ones in between out is what
+/// `popUntil` would do to them anyway — this only stops the user from watching
+/// it, which is the difference between "Home" and "everything slides away at
+/// once".
+///
+/// Only the route directly below the player is known (a route is told its own
+/// neighbours), and that is enough: `search_screen` is the only screen that
+/// opens a player without being the library, so the chain is at most
+/// `library → search → player`. A deeper chain still finishes — `popUntil`
+/// unwinds the rest — it just animates the extra levels, as it always did.
+void leavePlayerForLibrary(
+  NavigatorState navigator, {
+  required Route<dynamic>? below,
+}) {
+  // `isActive` covers a route that is already gone: the announcement that put it
+  // here can be one frame older than a removal, and `removeRoute` asserts.
+  if (below != null && below.isActive && !isLibraryLandingRoute(below)) {
+    navigator.removeRoute(below);
+  }
+  navigator.popUntil(isLibraryLandingRoute);
+}

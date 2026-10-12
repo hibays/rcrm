@@ -187,4 +187,93 @@ void main() {
       expect(find.text('library'), findsOneWidget);
     });
   });
+
+  group('leavePlayerForLibrary (what the player\'s Home calls)', () {
+    /// library → search → player, the chain a video opened from the search
+    /// results really has.
+    Future<({NavigatorState nav, Route<dynamic> search, Route<dynamic> player})>
+    chain(WidgetTester tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          initialRoute: kLibraryRouteName,
+          routes: {kLibraryRouteName: (_) => const Text('library')},
+        ),
+      );
+      final nav = tester.state<NavigatorState>(find.byType(Navigator));
+      final search = MaterialPageRoute<void>(
+        settings: const RouteSettings(name: '/search'),
+        builder: (_) => const Text('search'),
+      );
+      nav.push(search);
+      await tester.pumpAndSettle();
+      await _pushPlayer(tester);
+      final player = ModalRoute.of(tester.element(find.text('player')))!;
+      return (nav: nav, search: search, player: player);
+    }
+
+    testWidgets('leaves in ONE animated step: the screen in between goes '
+        'without animating it', (tester) async {
+      final c = await chain(tester);
+
+      leavePlayerForLibrary(c.nav, below: c.search);
+      await tester.pump();
+
+      // The whole point: the page the video was opened from is gone from the
+      // FIRST frame, so only the player animates — `popUntil` on its own popped
+      // both and played a three-page composite that matched neither Back nor a
+      // jump.
+      expect(
+        find.text('search', skipOffstage: false),
+        findsNothing,
+        reason: 'taken out of the chain, not animated away',
+      );
+      expect(
+        find.text('player'),
+        findsOneWidget,
+        reason: 'the one page that animates',
+      );
+
+      await tester.pumpAndSettle();
+      expect(find.text('library'), findsOneWidget);
+      expect(c.player.isActive, isFalse);
+      expect(c.nav.canPop(), isFalse, reason: 'nothing is left above it');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a player opened straight from the library keeps the library', (
+      tester,
+    ) async {
+      // The route below IS the destination. Removing it would empty the
+      // navigator — a black screen with no way back — so the landing predicate
+      // has to be consulted before anything is taken out.
+      final c = await chain(tester);
+      final library = ModalRoute.of(
+        tester.element(find.text('library', skipOffstage: false)),
+      )!;
+
+      leavePlayerForLibrary(c.nav, below: library);
+      await tester.pumpAndSettle();
+
+      expect(find.text('library'), findsOneWidget);
+      expect(library.isActive, isTrue);
+      expect(library.isCurrent, isTrue);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a route that is already gone is skipped, not removed twice', (
+      tester,
+    ) async {
+      // What a route was told its neighbour was can be one frame older than a
+      // removal (a jump replaces the player in place), and `removeRoute` asserts
+      // on a route that is not in the history.
+      final c = await chain(tester);
+      final gone = MaterialPageRoute<void>(builder: (_) => const SizedBox());
+
+      leavePlayerForLibrary(c.nav, below: gone);
+      await tester.pumpAndSettle();
+
+      expect(find.text('library'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
 }
