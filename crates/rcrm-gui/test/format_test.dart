@@ -43,4 +43,36 @@ void main() {
       expect(formatMs(1 << 62), '1281023894007:36:28');
     });
   });
+
+  group('resolutionLabel', () {
+    test('names the class people already use, from the SHORTER side', () {
+      expect(resolutionLabel(1920, 1080), '1920 × 1080 (1080p)');
+      expect(resolutionLabel(1280, 720), '1280 × 720 (720p)');
+      expect(resolutionLabel(3840, 2160), '3840 × 2160 (4K)');
+      expect(resolutionLabel(640, 480), '640 × 480 (480p)');
+    });
+
+    test('a portrait clip is still its shorter side', () {
+      // A phone shot stores 1080x1920 and is a 1080p clip. Calling it 1920p
+      // would be the kind of number that makes a reader distrust the rest of
+      // the panel.
+      expect(resolutionLabel(1080, 1920), '1920 × 1080 (1080p)');
+      expect(resolutionLabel(720, 1280), '1280 × 720 (720p)');
+    });
+
+    test('an unrecognised size gets no invented name', () {
+      // A letterboxed 1000x640 is not a 576p clip, and a 2.40:1 crop of a 720p
+      // master is not one either — the old `>=` ladder called both "576p".
+      expect(resolutionLabel(1000, 640), '1000 × 640');
+      expect(resolutionLabel(1920, 800), '1920 × 800');
+      expect(resolutionLabel(100, 100), '100 × 100');
+    });
+
+    test('a near-miss is still its class, a different size is not', () {
+      // 1088 (anamorphic 1080) and 704x576 (PAL) are the classes they round to.
+      expect(resolutionLabel(1920, 1088), '1920 × 1088 (1080p)');
+      expect(resolutionLabel(704, 576), '704 × 576 (576p)');
+      expect(resolutionLabel(960, 540), '960 × 540 (540p)');
+    });
+  });
 }

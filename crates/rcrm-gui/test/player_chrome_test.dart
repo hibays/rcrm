@@ -5,6 +5,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:rcrm_gui/config/theme.dart';
 import 'package:rcrm_gui/widgets/player_controls.dart';
 
 const _position = Duration(minutes: 1, seconds: 23);
@@ -29,6 +30,8 @@ Future<void> _pumpBar(
   bool hasPrev = false,
   bool hasNext = true,
   bool hasEpisodes = true,
+  PlayerTimeMode timeMode = PlayerTimeMode.elapsed,
+  VoidCallback? onTimeModeChanged,
   VoidCallback? onPlayPause,
   VoidCallback? onToggleMute,
   VoidCallback? onPrev,
@@ -50,6 +53,8 @@ Future<void> _pumpBar(
         hasPrev: hasPrev,
         hasNext: hasNext,
         hasEpisodes: hasEpisodes,
+        timeMode: timeMode,
+        onTimeModeChanged: onTimeModeChanged,
         onPlayPause: onPlayPause ?? () {},
         onToggleMute: onToggleMute ?? () {},
         onVolumeChanged: onVolumeChanged,
@@ -155,9 +160,12 @@ void main() {
     testWidgets('the narrowest bar still offers play, mute and fullscreen', (
       tester,
     ) async {
+      // `volume: 40` is the quiet half of the mute button's range, so the icon
+      // is `volume_down` — the control is still the mute toggle either way,
+      // which is what this test is about.
       await _pumpBar(tester, size: const Size(120, 500), volume: 40);
       expect(find.byIcon(Icons.play_arrow), findsOneWidget);
-      expect(find.byIcon(Icons.volume_up), findsOneWidget);
+      expect(find.byIcon(Icons.volume_down), findsOneWidget);
       expect(find.byIcon(Icons.fullscreen), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
@@ -308,6 +316,30 @@ void main() {
       expect(muted, 1);
     });
 
+    testWidgets('the mute button reports how loud it is, in three states', (
+      tester,
+    ) async {
+      // Regression: `volume > 0` was the whole test, so 5% and 95% both drew a
+      // full speaker. Silence is the only state that may read as off.
+      await _pumpBar(tester, size: const Size(1280, 720), volume: 100);
+      expect(find.byIcon(Icons.volume_up), findsOneWidget);
+
+      await _pumpBar(tester, size: const Size(1280, 720), volume: 49);
+      expect(find.byIcon(Icons.volume_down), findsOneWidget);
+      expect(find.byIcon(Icons.volume_up), findsNothing);
+
+      await _pumpBar(tester, size: const Size(1280, 720), volume: 50);
+      expect(
+        find.byIcon(Icons.volume_up),
+        findsOneWidget,
+        reason: 'the boundary belongs to the loud half',
+      );
+
+      await _pumpBar(tester, size: const Size(1280, 720), volume: 0);
+      expect(find.byIcon(Icons.volume_off), findsOneWidget);
+      expect(find.byIcon(Icons.volume_down), findsNothing);
+    });
+
     testWidgets('fullscreen button reflects state', (tester) async {
       await _pumpBar(tester, size: const Size(1280, 720), fullscreen: false);
       expect(find.byIcon(Icons.fullscreen), findsOneWidget);
@@ -346,6 +378,144 @@ void main() {
       expect(find.text('1.5x'), findsOneWidget);
       await _pumpBar(tester, size: const Size(1280, 720), speed: 1.0);
       expect(find.text('1x'), findsOneWidget);
+    });
+
+    testWidgets(
+      'the same row reports the accent only while a rate is altered',
+      (tester) async {
+        // The chip is the one control that reports a STATE rather than offering
+        // an action, so it is where the accent earns its place: 1.5x should be
+        // answerable from across the room, 1x should not shout.
+        Color chipColour(String label) =>
+            tester.widget<Text>(find.text(label)).style!.color!;
+
+        await _pumpBar(tester, size: const Size(1280, 720), speed: 1.0);
+        expect(chipColour('1x'), isNot(RCrmColors.primary));
+
+        await _pumpBar(tester, size: const Size(1280, 720), speed: 1.25);
+        expect(chipColour('1.25x'), RCrmColors.primary);
+      },
+    );
+  });
+
+  group('PlayerControlBar time readout', () {
+    testWidgets('reads elapsed over total, and hands the tap back', (
+      tester,
+    ) async {
+      var swaps = 0;
+      await _pumpBar(
+        tester,
+        size: const Size(1280, 720),
+        onTimeModeChanged: () => swaps++,
+      );
+      expect(find.text('01:23'), findsOneWidget);
+      expect(find.text(' / 42:05'), findsOneWidget);
+
+      await tester.tap(find.text('01:23'));
+      expect(swaps, 1);
+      await tester.tap(find.text(' / 42:05'));
+      expect(swaps, 2, reason: 'the whole pair is the target, not one number');
+    });
+
+    testWidgets('in remaining mode the second number counts down', (
+      tester,
+    ) async {
+      await _pumpBar(
+        tester,
+        size: const Size(1280, 720),
+        timeMode: PlayerTimeMode.remaining,
+        onTimeModeChanged: () {},
+      );
+      expect(find.text('01:23'), findsOneWidget);
+      // 42:05 minus 1:23.
+      expect(find.text(' / -40:42'), findsOneWidget);
+      expect(find.text(' / 42:05'), findsNothing);
+    });
+
+    testWidgets('an unknown duration never reads as a countdown', (
+      tester,
+    ) async {
+      // There is no remaining time before there is a total, and "-00:00" would
+      // be an invention.
+      await tester.binding.setSurfaceSize(const Size(1280, 720));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        _host(
+          PlayerControlBar(
+            playing: true,
+            position: Duration.zero,
+            duration: Duration.zero,
+            buffer: Duration.zero,
+            volume: 100,
+            speed: 1.0,
+            fullscreen: false,
+            timeMode: PlayerTimeMode.remaining,
+            onTimeModeChanged: () {},
+            onSeek: (_) {},
+          ),
+        ),
+      );
+      expect(find.text(' / 00:00'), findsOneWidget);
+      expect(find.textContaining('-00:00'), findsNothing);
+    });
+
+    testWidgets('swapping the reading never re-plans the row', (tester) async {
+      // Both readings are budgeted whether or not one is on screen, so a tap
+      // cannot make a control disappear — which at a marginal width is exactly
+      // what a re-plan would do to the duration the user just asked for.
+      for (final width in [360.0, 400.0, 440.0, 520.0, 900.0]) {
+        Future<Set<String>> controlsFor(PlayerTimeMode mode) async {
+          await _pumpBar(
+            tester,
+            size: Size(width, 720),
+            timeMode: mode,
+            onTimeModeChanged: () {},
+          );
+          final icons = tester
+              .widgetList<Icon>(find.byType(Icon))
+              .map((i) => i.icon!.codePoint.toString())
+              .toSet();
+          // The two readings are different strings by design; what must not
+          // change is whether the slot is there at all.
+          final texts = tester
+              .widgetList<Text>(find.byType(Text))
+              .map((t) => t.data ?? '')
+              .map((t) => t.startsWith(' / ') ? '<duration>' : t)
+              .where((t) => t.trim().isNotEmpty)
+              .toSet();
+          return {...icons, ...texts};
+        }
+
+        final elapsed = await controlsFor(PlayerTimeMode.elapsed);
+        final remaining = await controlsFor(PlayerTimeMode.remaining);
+        expect(
+          remaining,
+          elapsed,
+          reason: 'the row changed shape at ${width}dp when the reading did',
+        );
+      }
+    });
+
+    testWidgets('with no swap on offer it is plain text', (tester) async {
+      // Icon buttons carry tooltips of their own, so the question is not
+      // whether a Tooltip exists but whether the TIME has one.
+      await _pumpBar(
+        tester,
+        size: const Size(1280, 720),
+        onTimeModeChanged: () {},
+      );
+      expect(
+        find.ancestor(of: find.text('01:23'), matching: find.byType(Tooltip)),
+        findsOneWidget,
+      );
+
+      await _pumpBar(tester, size: const Size(1280, 720));
+      expect(
+        find.ancestor(of: find.text('01:23'), matching: find.byType(Tooltip)),
+        findsNothing,
+      );
+      await tester.tap(find.text('01:23'));
+      expect(tester.takeException(), isNull);
     });
   });
 

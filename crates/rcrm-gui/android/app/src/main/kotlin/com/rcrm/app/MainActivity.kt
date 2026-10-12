@@ -69,5 +69,22 @@ class MainActivity : FlutterActivity() {
             }
         // Screenshot policy, the Dart half of the flag applied in onCreate.
         ScreenCaptureChannel.register(flutterEngine.dartExecutor.binaryMessenger, this)
+        // Storage access: the library is read by real filesystem path, so the
+        // app needs all-files access on Android 11+ and the storage grant (plus
+        // the manifest's legacy-storage flag) on Android 6-10.
+        StorageAccessChannel.register(flutterEngine.dartExecutor.binaryMessenger, this)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        // Plugins get this first (the engine's own permission plumbing).
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        // The storage dialog has been answered, which is the one fact about
+        // this permission the app cannot read back from the platform
+        // (`StorageAccessChannel`).
+        StorageAccessChannel.onRequestPermissionsResult(this, requestCode)
     }
 }

@@ -18,6 +18,7 @@ import 'package:file_picker/file_picker.dart';
 
 import '../models/server_config.dart';
 import '../providers/server_provider.dart';
+import '../services/storage_access.dart';
 import '../widgets/double_back_exit.dart';
 
 class LibrarySetupScreen extends ConsumerStatefulWidget {
@@ -45,6 +46,12 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
     // Also try to load the latest directories from SharedPreferences
     // (they may have been updated from the settings screen).
     _loadSavedDirs();
+    // Android only, and the first screen the user meets: without storage
+    // access the server has nothing to open. `watch` registers the one resume
+    // observer that re-reads the answer after the settings trip; the read here
+    // fills the card on first build.
+    StorageAccess.watch();
+    StorageAccess.refresh();
   }
 
   Future<void> _loadSavedDirs() async {
@@ -62,6 +69,80 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
   }
 
   bool get _hasFolders => _selectedDirs.isNotEmpty;
+
+  /// The one ask, in the screen's own tonal language: a surface group carrying
+  /// the platform's explanation, the consequence for the folders already
+  /// picked, and a single button that runs the flow this Android version needs.
+  ///
+  /// The wording comes from `storageAccessCopy`, which is also what the
+  /// settings row uses -- one source of truth for what each version will
+  /// really do, so the two screens cannot drift apart.
+  Widget _storageAskCard(StorageAccessCopy copy) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              // The accent means something has to happen, and this is the only
+              // thing on the screen standing between the user and a library.
+              Icon(Icons.folder_off, size: 20, color: scheme.primary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  copy.title,
+                  style: Theme.of(context).textTheme.bodyLarge,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            copy.body,
+            style: TextStyle(
+              color: scheme.onSurfaceVariant,
+              fontSize: 13,
+              height: 1.35,
+            ),
+          ),
+          // A chosen folder that cannot be read IS the failure this screen has
+          // to admit to -- a silent empty library is exactly what the user
+          // would otherwise see -- so it gets the error container's recipe.
+          if (_hasFolders) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: scheme.error.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'RCrm cannot read these folders yet -- Android is not allowing '
+                'the app to open them by path.',
+                style: TextStyle(color: scheme.error, fontSize: 13),
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerRight,
+            // No icon: the label already says which system screen this opens,
+            // and no single glyph fits all three flows.
+            child: OutlinedButton(
+              onPressed: StorageAccess.request,
+              child: Text(copy.actionLabel),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Future<void> _pickFolder() async {
     final result = await FilePicker.getDirectoryPath();
@@ -199,6 +280,29 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 32),
+
+                    // The ask, above the folder list: the app cannot read a
+                    // chosen folder without it, so this screen owes the user
+                    // the truth about that before they start picking. It is NOT
+                    // a gate on picking -- the system picker hands back a path
+                    // whether or not storage access is granted -- so the button
+                    // below stays live either way; what the card adds is what
+                    // will happen to those folders afterwards.
+                    if (StorageAccess.supported)
+                      ValueListenableBuilder<StorageAccessStatus?>(
+                        valueListenable: StorageAccess.state,
+                        builder: (context, status, _) {
+                          // No status yet means nothing is claimed, so nothing
+                          // is shown; "granted" means there is nothing to ask.
+                          if (status == null || status.granted) {
+                            return const SizedBox.shrink();
+                          }
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: _storageAskCard(storageAccessCopy(status)),
+                          );
+                        },
+                      ),
 
                     // Folder list as tonal group (no nested Card).
                     if (_selectedDirs.isNotEmpty)

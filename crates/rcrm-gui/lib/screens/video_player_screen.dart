@@ -14,6 +14,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import '../models/media_item.dart';
+import '../config/theme.dart';
 import '../services/net.dart';
 import '../services/player_factory.dart';
 import '../providers/library_provider.dart';
@@ -24,6 +25,7 @@ import '../widgets/video_card.dart';
 import '../widgets/media_player_keys.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../widgets/player_controls.dart';
+import '../widgets/player_overlays.dart';
 import '../widgets/finger_preview_listener.dart';
 import '../widgets/player_settings_panel.dart';
 import '../widgets/episode_picker_panel.dart';
@@ -71,6 +73,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   StreamSubscription? _completedSub;
   StreamSubscription? _volumeSub;
   StreamSubscription? _rateSub;
+  StreamSubscription? _bufferingSub;
   bool show2x = false;
   bool fullscreen = false;
   Duration _fadeMs = const Duration(milliseconds: 200);
@@ -78,6 +81,29 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   Timer? _hideTimer;
   Timer? _exitTimer;
   static const _idleSecs = 2;
+
+  /// How long a stall has to last before it is worth showing a spinner for.
+  ///
+  /// media_kit reports `buffering` for the handful of frames a seek spends
+  /// refilling, so without this the spinner would flash on every scrub — an
+  /// animation that means "wait" fired at something that was never a wait.
+  /// 300ms is the same grace video.js gives its own loading spinner
+  /// (`vjs-spinner-show 0s linear 0.3s forwards`); only a stall longer than
+  /// this is a stall the user is sitting through.
+  static const _bufferGrace = Duration(milliseconds: 300);
+  Timer? _bufferStall;
+
+  /// How long the up-next card waits before playing what it is offering.
+  ///
+  /// Long enough to read a title and decide, short enough that a viewer who
+  /// wants the next episode is not waiting on a formality. The card draws the
+  /// same countdown, so this number is never a claim about the ring — it IS the
+  /// ring.
+  static const _upNextSeconds = Duration(seconds: 8);
+
+  /// True once a stall has outlived [_bufferGrace]. Never a `setState`: the
+  /// spinner only repaints itself.
+  final ValueNotifier<bool> _buffering = ValueNotifier(false);
   final _videoKey = GlobalKey();
 
   /// The session's jump history, captured once so `dispose` can drop it without
@@ -122,6 +148,17 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   bool _disposed = false;
   bool _globalImmersive = false;
   double _savedRate = 1.0;
+
+  /// Which reading the bar's time display shows. Persisted with the volume, for
+  /// the same reason: it is a preference about how the user watches, not a
+  /// property of one video.
+  PlayerTimeMode _timeMode = PlayerTimeMode.elapsed;
+
+  /// The video waiting for a yes, while `loopAll` counts down to it. Null the
+  /// rest of the time — including while the countdown is running out of the
+  /// user's sight behind an open panel, where it is still the autoplay they
+  /// asked for.
+  MediaItem? _upNext;
 
   /// The Related list and the key it was computed for. The list is a pure
   /// function of (item, scan generation, jump stack's excluded paths) — see
@@ -220,6 +257,69 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     }
   }
 
+  // ── Time reading ──────────────────────────────────────────
+
+  /// Swaps elapsed/total for elapsed/remaining — the same two readings a
+  /// video.js skin offers as separate time controls, in the one line this bar
+  /// has room for. Persisted: someone who watches with a countdown wants it
+  /// next time too.
+  void _toggleTimeMode() {
+    setState(() {
+      _timeMode = _timeMode == PlayerTimeMode.remaining
+          ? PlayerTimeMode.elapsed
+          : PlayerTimeMode.remaining;
+    });
+    _volPrefs?.setString(
+      'player_time_mode',
+      _timeMode == PlayerTimeMode.remaining ? 'remaining' : 'elapsed',
+    );
+    // The user just touched the bar; the idle countdown starts over rather than
+    // expiring under the finger.
+    _resetIdle();
+  }
+
+  // ── Up next ───────────────────────────────────────────────
+
+  /// Offers the next video rather than taking it.
+  ///
+  /// `loopAll` used to call `onNext()` the instant a file ended — the one place
+  /// playback decided something on the user's behalf with no chance to
+  /// disagree, and it did it at the exact moment they were looking at the last
+  /// frame. The same list, the same next video; what changed is that it now
+  /// asks. The list is the one `onNext` reads, exclusions included, so the card
+  /// cannot promise a video the Related list refuses to show.
+  void _offerNext() {
+    final r = _relatedFor(
+      ref.read(videosListProvider),
+      ref.read(jumpExcludedPathsProvider),
+      ref.read(scanStateProvider).scanGen,
+    );
+    if (r.isEmpty) return;
+    if (!mounted) return;
+    setState(() => _upNext = r.first);
+  }
+
+  /// The card's "yes", from the button and from the ring running out alike.
+  void _playUpNext() {
+    final item = _upNext;
+    if (mounted) setState(() => _upNext = null);
+    if (item != null) _playInPlace(item, back: false);
+  }
+
+  /// The card's "not this one": the video stays where it ended, paused, and
+  /// nothing plays until the user asks for something.
+  void _dismissUpNext() {
+    setState(() => _upNext = null);
+    _poke();
+  }
+
+  /// Drops a pending offer without answering it — for every path that navigates
+  /// somewhere else while one is up, where keeping it would play a video the
+  /// user has already left.
+  void _clearUpNext() {
+    if (_upNext != null && mounted) setState(() => _upNext = null);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -231,6 +331,11 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           _volPrefs!.getDouble('player_volume') ?? 100,
           persist: false,
         );
+        setState(() {
+          _timeMode = _volPrefs!.getString('player_time_mode') == 'remaining'
+              ? PlayerTimeMode.remaining
+              : PlayerTimeMode.elapsed;
+        });
       }
     });
     _scrollCtrl = ScrollController();
@@ -296,6 +401,19 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       _volumeSub = p!.stream.volume.listen((v) {
         if (mounted && v != _volume.value) _volume.value = v;
       });
+      _bufferingSub = p!.stream.buffering.listen((buffering) {
+        if (!mounted) return;
+        _bufferStall?.cancel();
+        if (!buffering) {
+          // Recovery is immediate: a spinner that lingers after the picture is
+          // moving again is a lie about the state of the player.
+          if (_buffering.value) _buffering.value = false;
+          return;
+        }
+        _bufferStall = Timer(_bufferGrace, () {
+          if (mounted && !_disposed) _buffering.value = true;
+        });
+      });
       _rate.value = p!.state.rate;
       _rateSub = p!.stream.rate.listen((r) {
         if (mounted) _rate.value = r;
@@ -315,7 +433,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         final mode = ref.read(uiSettingsProvider).playbackMode;
         switch (mode) {
           case 'loopAll':
-            onNext();
+            _offerNext();
             break;
           case 'loopOne':
             p!.seek(Duration.zero);
@@ -344,6 +462,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _completedSub?.cancel();
     _volumeSub?.cancel();
     _rateSub?.cancel();
+    _bufferingSub?.cancel();
+    _bufferStall?.cancel();
     _videoTapTimer?.cancel();
     _gOverlayTimer?.cancel();
     _scrollCtrl?.dispose();
@@ -355,6 +475,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _playing.dispose();
     _volume.dispose();
     _rate.dispose();
+    _buffering.dispose();
     _hideTimer?.cancel();
     _exitTimer?.cancel();
     p?.stop();
@@ -659,6 +780,76 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     }
   }
 
+  /// What the player knows about the file that is playing, for the settings
+  /// panel.
+  ///
+  /// Every row is something the player actually reported: a fact it has nothing
+  /// to say about is left out rather than printed as "unknown", because an
+  /// invented absence reads like a defect in the file. An empty list is a
+  /// normal answer — it means the first frame has not been decoded yet.
+  List<PlayerMediaFact> _playbackInfo() {
+    final st = p?.state;
+    if (st == null) return const [];
+    final out = <PlayerMediaFact>[];
+    final vp = st.videoParams;
+    final ap = st.audioParams;
+
+    // The DISPLAY size, not the coded one: an anamorphic file stores 720x576
+    // and shows 1024x576, and the number the viewer can check against their
+    // screen is the one they are looking at.
+    final w = vp.dw ?? vp.w ?? st.width;
+    final h = vp.dh ?? vp.h ?? st.height;
+    if (w != null && h != null && w > 0 && h > 0) {
+      out.add(PlayerMediaFact('Resolution', resolutionLabel(w, h)));
+    }
+    if (vp.pixelformat != null && vp.pixelformat!.isNotEmpty) {
+      out.add(PlayerMediaFact('Pixel format', vp.pixelformat!));
+    }
+    // Only when the decoder really left the CPU: an empty `hwPixelformat` on a
+    // software decode is the honest silence, not "none".
+    if (vp.hwPixelformat != null && vp.hwPixelformat!.isNotEmpty) {
+      out.add(PlayerMediaFact('Hardware decode', vp.hwPixelformat!));
+    }
+    if (vp.rotate != null && vp.rotate != 0) {
+      out.add(PlayerMediaFact('Rotation', '${vp.rotate}°'));
+    }
+    final audio = _audioLine(ap.sampleRate, ap.channels, ap.channelCount);
+    if (audio != null) out.add(PlayerMediaFact('Audio', audio));
+    if (st.audioBitrate != null && st.audioBitrate! > 0) {
+      out.add(
+        PlayerMediaFact(
+          'Audio bitrate',
+          '${(st.audioBitrate! / 1000).round()} kbps',
+        ),
+      );
+    }
+    out.add(
+      PlayerMediaFact(
+        'File',
+        '${_item.extension.toUpperCase()} · ${_item.formattedSize}',
+      ),
+    );
+    return out;
+  }
+
+  /// `48 kHz · stereo`, from whatever of the three facts the decoder gave.
+  static String? _audioLine(int? sampleRate, String? channels, int? count) {
+    final parts = <String>[];
+    if (sampleRate != null && sampleRate > 0) {
+      parts.add('${(sampleRate / 1000).toStringAsFixed(1)} kHz');
+    }
+    if (count != null && count > 0) {
+      parts.add(switch (count) {
+        1 => 'mono',
+        2 => 'stereo',
+        _ => '$count ch',
+      });
+    } else if (channels != null && channels.isNotEmpty) {
+      parts.add(channels);
+    }
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+
   // ── Navigation ─────────────────────────────────────────
 
   /// The Related list for this screen, cached by its three inputs: the item,
@@ -730,6 +921,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       _go(item, back: back);
       return;
     }
+    _clearUpNext();
     _switching = true;
     try {
       if (!back) ref.read(videoJumpStackProvider.notifier).push(_item);
@@ -772,6 +964,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   void _go(MediaItem item, {bool back = false}) {
     if (_navigating || _switching || _isRoutePopping) return;
     _navigating = true;
+    _clearUpNext();
     if (!back) ref.read(videoJumpStackProvider.notifier).push(_item);
     // Stop feeding the outgoing screen, but leave its player ALIVE. This route
     // stays in the tree until the replacement has finished animating (measured
@@ -840,6 +1033,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// dropped mid-playback, because `dispose()` stops it first.
   void _goHome() {
     if (_navigating || _switching || _isRoutePopping) return;
+    _clearUpNext();
     _restoreExitChrome();
     final mine = ModalRoute.of(context);
     // ONE animated step, the one `Back` plays: `leavePlayerForLibrary` takes the
@@ -932,6 +1126,14 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           onToggleFullscreen: _isMobile
               ? null
               : () => _setFullscreen(!fullscreen),
+          onToggleMute: _toggleMute,
+          // Steps the rate the chip shows, so the bar reports what the key did.
+          // The clamp is wider than the speed menu's list on purpose: a menu is
+          // a shortlist of the usual rates, not the player's range.
+          onSpeed: (delta) {
+            final next = (_rate.value + delta).clamp(0.25, 4.0);
+            if (next != _rate.value) p?.setRate(next);
+          },
         ),
         child: child,
       ),
@@ -1019,6 +1221,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                               : const SizedBox(),
                         ),
                       ),
+                      // Above the picture, below the chrome: the spinner is
+                      // about the video, and the bars stay usable while it
+                      // shows.
+                      _bufferingLayer(),
                       // Top chrome on every platform: back on the left, title,
                       // settings on the right. It used to exist on mobile only —
                       // which is why desktop fullscreen had no way back.
@@ -1061,6 +1267,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                       if (_seeking) _seekBar(),
                       _speedBadge(top: safe.top + 52),
                       _gestureChip(),
+                      // Under the panels on purpose: the countdown is the
+                      // autoplay the user asked for, so an open sheet covers
+                      // the card without cancelling what it stands for.
+                      _upNextCard(bottom: _barClearance(safe.bottom)),
                       if (_showSettings) _settingsOverlay(),
                       if (_showEpisodes)
                         EpisodePickerPanel(
@@ -1259,6 +1469,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                     : const Center(child: CircularProgressIndicator()),
                 if (!_showControls && p != null && !_seeking)
                   Positioned(bottom: 0, left: 0, right: 0, child: _miniBar()),
+                _bufferingLayer(),
+                _upNextCard(bottom: _barClearance(0)),
               ],
             ),
           ),
@@ -1293,6 +1505,16 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                         tooltip: 'Home',
                         onPressed: _goHome,
                       ),
+                    // The gear belongs to the player, not to fullscreen: the
+                    // windowed screen has been able to SHOW this panel all
+                    // along (`_settingsOverlay` is in this Stack too) and had
+                    // no way to ask for it. The fullscreen top bar and this row
+                    // are the same chrome at two sizes.
+                    IconButton(
+                      icon: const Icon(Icons.settings, color: Colors.white70),
+                      tooltip: 'Playback settings',
+                      onPressed: _toggleSettings,
+                    ),
                   ],
                 ),
               ),
@@ -1343,6 +1565,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     // must not pop the route out from under it — nor consume a stack entry that
     // nothing would then navigate to.
     if (_navigating || _switching || _isRoutePopping) return;
+    _clearUpNext();
     final from = ref.read(videoJumpStackProvider.notifier).pop();
     if (from != null) {
       // Deliberately the ROUTE step and not the transport bar's in-place switch:
@@ -1382,6 +1605,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
               // The episode sheet only exists in fullscreen.
               hasEpisodes: fullscreen && (_relCache?.isNotEmpty ?? false),
               safe: safe,
+              timeMode: _timeMode,
+              onTimeModeChanged: _toggleTimeMode,
               onPlayPause: _togglePlayPause,
               onSeek: (d) => p?.seek(d),
               onScrubActive: _onScrubActive,
@@ -1471,25 +1696,28 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       final buf = (_miniBuf.value.inMilliseconds / d).clamp(0.0, 1.0);
       // RepaintBoundary prevents the parent from repainting when the
       // progress bar updates continuously during playback.
+      //
+      // 2px, and no blanket opacity over it: the played line is the accent at
+      // full strength and the buffered one carries its own 25%, which is what
+      // keeps a line this thin legible over a bright frame. Fading the whole
+      // thing to half of that made a readout nobody could see (measured: the
+      // old 0.5 x 0x33 buffered layer painted at 10% white).
       return RepaintBoundary(
-        child: Opacity(
-          opacity: 0.5,
-          child: Stack(
-            children: [
-              LinearProgressIndicator(
-                value: buf,
-                minHeight: 1,
-                backgroundColor: Colors.transparent,
-                valueColor: const AlwaysStoppedAnimation(Color(0x33FFFFFF)),
-              ),
-              LinearProgressIndicator(
-                value: pct,
-                minHeight: 1,
-                backgroundColor: Colors.transparent,
-                valueColor: const AlwaysStoppedAnimation(Color(0xFFFF6B00)),
-              ),
-            ],
-          ),
+        child: Stack(
+          children: [
+            LinearProgressIndicator(
+              value: buf,
+              minHeight: 2,
+              backgroundColor: Colors.transparent,
+              valueColor: const AlwaysStoppedAnimation(Color(0x40FFFFFF)),
+            ),
+            LinearProgressIndicator(
+              value: pct,
+              minHeight: 2,
+              backgroundColor: Colors.transparent,
+              valueColor: const AlwaysStoppedAnimation(RCrmColors.primary),
+            ),
+          ],
         ),
       );
     },
@@ -1718,6 +1946,50 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     ),
   );
 
+  /// The buffering spinner, in the layer the picture is in.
+  ///
+  /// Driven by its own notifier rather than a `setState`: a stall happens while
+  /// the user is watching, and rebuilding the whole screen — the Related list
+  /// included — to show a spinner would cost more than the spinner is worth.
+  Widget _bufferingLayer() => Positioned.fill(
+    child: ValueListenableBuilder<bool>(
+      valueListenable: _buffering,
+      builder: (_, buffering, _) =>
+          PlayerBufferingIndicator(visible: buffering),
+    ),
+  );
+
+  /// The up-next card, clear of the transport bar.
+  ///
+  /// The bar is not necessarily on screen when a video ends — it has usually
+  /// faded — but it is where the controls would be, and a card that jumped when
+  /// the user moved the mouse would be worse than one that sits a little high.
+  Widget _upNextCard({required double bottom}) {
+    final next = _upNext;
+    if (next == null) return const SizedBox.shrink();
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: bottom,
+      child: PlayerUpNextCard(
+        title: next.name,
+        subtitle: '${next.formattedSize} · ${next.extension.toUpperCase()}',
+        countdown: _upNextSeconds,
+        onAdvance: _playUpNext,
+        onDismiss: _dismissUpNext,
+      ),
+    );
+  }
+
+  /// Height the transport bar occupies, plus the bottom safe inset.
+  double _barClearance(double safeBottom) {
+    final m = PlayerChromeMetrics.of(
+      MediaQuery.sizeOf(context),
+      fullscreen: fullscreen,
+    );
+    return m.seekHeight + m.gap + m.tap + m.pad / 2 + safeBottom;
+  }
+
   Widget _speedBadge({required double top}) {
     return Positioned(
       top: top,
@@ -1731,8 +2003,18 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     final settings = ref.watch(uiSettingsProvider);
     return Positioned.fill(
       child: PlayerSettingsPanel(
+        facts: _playbackInfo(),
+        // Both rows are about what THIS platform can do: rotation is mobile
+        // only, the key map is desktop only, and a control that cannot act is
+        // not shown at all.
+        showAutoRotate: _isMobile,
+        showShortcuts: !_isMobile,
         mode: PlaybackMode.fromString(settings.playbackMode),
         onModeChanged: (m) {
+          // Leaving `loopAll` withdraws the offer: the card is that mode's
+          // countdown, and it would otherwise still advance a video the user
+          // has just told the player not to advance to.
+          if (m != PlaybackMode.loopAll) _clearUpNext();
           ref.read(uiSettingsProvider.notifier).setPlaybackMode(m.key);
         },
         autoRotate: settings.autoRotate,

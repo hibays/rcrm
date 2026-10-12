@@ -114,7 +114,13 @@ VideoCard tap → Navigator.push(video_player_screen)
   → Player.create() in addPostFrameCallback
   → Media(url, httpHeaders: {Authorization: ...})
   → media_kit (libmpv) plays
-  → Custom controls overlay (2s idle fade)
+  → Custom controls overlay (2s idle fade): a scrub bar with no thumb at rest that
+    grows under the pointer (and shows the time under it), a tap-to-swap
+    elapsed/remaining readout, and a settings panel carrying the mode, the facts
+    the player reported about the file, and the keyboard map
+  → a stall longer than 300ms raises a spinner over the picture (media_kit reports
+    `buffering` for the frames a seek spends refilling, so the grace is what keeps
+    it from firing at something that was never a wait)
   → Jump (the transport bar's prev/next): open the other video IN the player
     that is already playing (`_playInPlace`) — no new route, so fullscreen,
     picture-in-picture with its dragged geometry, the scroll position behind it,
@@ -127,9 +133,45 @@ VideoCard tap → Navigator.push(video_player_screen)
     different gesture from the transport's prev, which reaches the same video
     with nothing on screen moving); an empty stack leaves the player
   → Related list (utils/related_videos.dart) excludes the stack's entries
+  → end of file in `Loop All`: the next video is OFFERED (an up-next card, 8s,
+    refusable) instead of taken — the card's ring and its countdown are one
+    controller, so the time it shows is the time it waits
   → Player.stop() before Navigator.pop — a route the player REPLACES is stopped
     and disposed by its own `dispose()`, i.e. once its transition has finished,
     which is what keeps its last frame on screen instead of blanking it
+```
+
+### Storage Access (Android)
+
+```
+Every other flow here assumes the local server can OPEN the chosen folders by
+their real paths — which is a permission, and on Android it is three different
+permissions depending on the version.
+
+library_setup_screen / settings_screen → StorageAccess.watch() + refresh()
+  → MethodChannel 'rcrm/storage' → StorageAccessChannel (Kotlin, `MainActivity`)
+  → API >= 30 (11+): Environment.isExternalStorageManager(); action "settings"
+      — MANAGE_EXTERNAL_STORAGE is an APP-OP: declaring it grants nothing, there
+        is no runtime dialog, and the ask is the system settings screen
+        (ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, then the all-files screen,
+        then the app's details page — the platform documents that the first two
+        may not exist on a given device)
+  → API 23..29 (6-10): READ_EXTERNAL_STORAGE; action "dialog"
+      — Android 10 additionally needs `android:requestLegacyExternalStorage`
+        (scoped storage is the default there and all-files access does not exist
+        yet); a refusal Android will not repeat sends the user to the app's own
+        settings page instead of a dialog that would be auto-denied
+  → API < 23: granted at install. Nothing to ask, and nothing offered
+  → the answer is RE-READ ON EVERY RESUME. The settings screen belongs to another
+    app, the platform sends no result for it, so coming back to the foreground is
+    the only signal — `request` starts the flow and returns immediately rather
+    than holding a MethodChannel.Result across the trip (which would pin a dead
+    Activity)
+  → one notifier (`StorageAccess.state`) feeds both surfaces: the setup screen's
+    ask card (the app is unusable without it) and the Settings → Server row
+  → the wording is a pure function of the reported status (`storageAccessCopy`),
+    so it can only ever say what the Android version in front of the user will
+    really do; the row uses its one-line `note`, the card its full `body`
 ```
 
 ### Thumbnail Pipeline

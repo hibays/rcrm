@@ -11,6 +11,7 @@ import '../providers/settings_provider.dart';
 import '../services/net.dart';
 import '../services/screen_capture.dart';
 import '../services/settings_service.dart';
+import '../services/storage_access.dart';
 import '../services/thumb_cache.dart';
 import '../utils/thumb_cache_policy.dart';
 import '../widgets/thumb_cache_dialog.dart';
@@ -39,6 +40,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     super.initState();
     _loadCacheSize();
     _loadDeployMode();
+    // Android only: the storage row follows the same notifier the setup screen
+    // uses, so both update from the one read the resume observer makes when the
+    // user comes back from Android's settings screen.
+    StorageAccess.watch();
+    StorageAccess.refresh();
   }
 
   @override
@@ -322,6 +328,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 trailing: const Icon(Icons.chevron_right),
                 onTap: _editDirectories,
               ),
+              // Android-only, because the permission is: a desktop app reads
+              // its folders with the user's own rights. The server opens those
+              // directories by real path, so without this row's permission the
+              // library is empty and nothing here can say why.
+              if (StorageAccess.supported)
+                ValueListenableBuilder<StorageAccessStatus?>(
+                  valueListenable: StorageAccess.state,
+                  builder: (context, status, _) => _storageAccessTile(status),
+                ),
             ]),
           ] else ...[
             _group([
@@ -689,6 +704,52 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ),
           ]),
         ],
+      ),
+    );
+  }
+
+  /// The storage row: what Android currently allows, and the one way to change
+  /// it.
+  ///
+  /// State first, control second -- "allowed" is a fact about the device, not a
+  /// switch this screen owns, so the granted row states it and offers nothing.
+  /// While the status is still being read the row says so instead of
+  /// disappearing, because a row that flickers out and back is worse than one
+  /// honest sentence. The wording for each Android version comes from
+  /// `storageAccessCopy`, the same function the setup screen's card uses -- and
+  /// it is the SHORT line of it: a settings row is a row, not a card.
+  ///
+  /// ONE affordance: the button. A tappable row as well would be the same
+  /// action twice, and the button is the half that says what will happen.
+  Widget _storageAccessTile(StorageAccessStatus? status) {
+    const leading = Icon(Icons.storage);
+    if (status == null) {
+      return const ListTile(
+        leading: leading,
+        title: Text('Storage Access'),
+        subtitle: Text("Reading Android's storage permission..."),
+      );
+    }
+    if (status.granted) {
+      return const ListTile(
+        leading: leading,
+        title: Text('Storage Access'),
+        subtitle: Text(
+          'Allowed -- the local server can read the managed folders by path',
+        ),
+      );
+    }
+    final copy = storageAccessCopy(status);
+    return ListTile(
+      leading: Icon(
+        Icons.folder_off,
+        color: Theme.of(context).colorScheme.primary,
+      ),
+      title: Text(copy.title),
+      subtitle: Text(copy.note),
+      trailing: TextButton(
+        onPressed: StorageAccess.request,
+        child: Text(copy.actionLabel),
       ),
     );
   }

@@ -1,8 +1,11 @@
 // widgets/player_settings_panel.dart
-// Settings overlay for video player: playback mode, auto-rotate.
+// Settings overlay for video player: playback mode, auto-rotate, and what the
+// player can honestly say about the file it is playing.
 // Rendered as a floating panel in the video player's Stack.
 
 import 'package:flutter/material.dart';
+
+import '../config/theme.dart';
 
 /// Playback mode enum for video end-of-stream behavior.
 enum PlaybackMode {
@@ -19,6 +22,19 @@ enum PlaybackMode {
     PlaybackMode.loopAll => 'Loop All',
     PlaybackMode.loopOne => 'Loop One',
     PlaybackMode.pauseAfter => 'Pause After',
+  };
+
+  /// What the mode actually does when a file ends. Printed under the choice,
+  /// because "Loop All" and "Loop One" are one letter apart and describe
+  /// opposite behaviour — and because Loop All's next video now arrives through
+  /// a countdown the viewer can refuse, which is not something a two-word
+  /// segment can say.
+  String get note => switch (this) {
+    PlaybackMode.loopAll =>
+      'When this one ends, offer the next video in Related — eight seconds to '
+          'play it now or stay put',
+    PlaybackMode.loopOne => 'Start this video again from the beginning',
+    PlaybackMode.pauseAfter => 'Stop on the last frame and wait',
   };
 
   static PlaybackMode fromString(String s) {
@@ -39,12 +55,36 @@ enum PlaybackMode {
   };
 }
 
+/// One read-only fact about the media that is playing, as the player itself
+/// reported it. A value the player never reported is simply absent — this list
+/// is a report, not a form.
+@immutable
+class PlayerMediaFact {
+  final String label;
+  final String value;
+  const PlayerMediaFact(this.label, this.value);
+}
+
 class PlayerSettingsPanel extends StatelessWidget {
   final PlaybackMode mode;
   final ValueChanged<PlaybackMode> onModeChanged;
   final bool autoRotate;
   final ValueChanged<bool> onAutoRotateChanged;
   final VoidCallback onDismiss;
+
+  /// Whether the rotation row belongs on this screen at all.
+  ///
+  /// Rotation is a mobile concern and only mobile code acts on it, so on
+  /// desktop the switch would be a control that cannot do anything — the one
+  /// kind of control this app does not ship.
+  final bool showAutoRotate;
+
+  /// What is playing, from `PlayerState`. Empty is a normal answer: it means
+  /// the player has not reported anything yet, not that the file is unusual.
+  final List<PlayerMediaFact> facts;
+
+  /// Whether to print the keyboard map. Desktop only, for the same reason.
+  final bool showShortcuts;
 
   const PlayerSettingsPanel({
     super.key,
@@ -53,9 +93,25 @@ class PlayerSettingsPanel extends StatelessWidget {
     required this.autoRotate,
     required this.onAutoRotateChanged,
     required this.onDismiss,
+    this.showAutoRotate = false,
+    this.facts = const [],
+    this.showShortcuts = false,
   });
 
-  static const _accent = Color(0xFFFF6B00);
+  static const _accent = RCrmColors.primary;
+
+  /// The keys `widgets/media_player_keys.dart` answers to. Kept as one line of
+  /// text rather than a table: it is a reminder for someone who already knows
+  /// players, not documentation.
+  ///
+  /// Directions are spelled OUT, not drawn as `←`/`→`/`↑`/`↓`: those code
+  /// points are not in Roboto (measured — they render as tofu boxes against the
+  /// engine's own font set), so the arrow glyphs would be the one broken thing
+  /// in the panel on Android.
+  static const _shortcutLine =
+      'Space or K  play/pause  ·  J or L, Left or Right  skip 10s  ·  '
+      'Up or Down  volume  ·  M  mute  ·  comma or period  speed  ·  '
+      'F  fullscreen  ·  Esc  close or leave';
 
   @override
   Widget build(BuildContext context) {
@@ -67,159 +123,256 @@ class PlayerSettingsPanel extends StatelessWidget {
         child: Center(
           child: GestureDetector(
             onTap: () {}, // absorb taps inside the panel
-            child: Container(
-              width: 400,
-              margin: const EdgeInsets.symmetric(horizontal: 24),
-              padding: const EdgeInsets.all(28),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1A1A1A),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Header
-                  Row(
+            child: _entrance(
+              context,
+              Container(
+                width: 400,
+                margin: const EdgeInsets.symmetric(horizontal: 24),
+                padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+                decoration: BoxDecoration(
+                  color: RCrmColors.ash,
+                  borderRadius: BorderRadius.circular(RCrmRadii.md + 4),
+                ),
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Icon(
-                        Icons.settings,
-                        color: Colors.white54,
-                        size: 18,
-                      ),
-                      const SizedBox(width: 8),
-                      const Text(
-                        'Playback Settings',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const Spacer(),
-                      IconButton(
-                        icon: const Icon(
-                          Icons.close,
+                      _header(),
+                      const SizedBox(height: 20),
+                      _label('Playback Mode'),
+                      const SizedBox(height: 10),
+                      _modeSegments(),
+                      const SizedBox(height: 8),
+                      Text(
+                        mode.note,
+                        style: const TextStyle(
                           color: Colors.white38,
-                          size: 18,
-                        ),
-                        onPressed: onDismiss,
-                        visualDensity: VisualDensity.compact,
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints(),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-
-                  // ── Playback Mode ─────────────────────────
-                  const Text(
-                    'Playback Mode',
-                    style: TextStyle(
-                      color: Colors.white54,
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: SegmentedButton<PlaybackMode>(
-                      segments: PlaybackMode.values
-                          .map(
-                            (m) => ButtonSegment<PlaybackMode>(
-                              value: m,
-                              label: Text(
-                                m.label,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  color: mode == m
-                                      ? Colors.black
-                                      : Colors.white54,
-                                ),
-                              ),
-                            ),
-                          )
-                          .toList(),
-                      selected: {mode},
-                      onSelectionChanged: (sel) {
-                        if (sel.isNotEmpty) onModeChanged(sel.first);
-                      },
-                      style: ButtonStyle(
-                        backgroundColor: WidgetStateProperty.resolveWith(
-                          (states) => states.contains(WidgetState.selected)
-                              ? _accent
-                              : Colors.white.withValues(alpha: 0.06),
-                        ),
-                        foregroundColor: WidgetStateProperty.resolveWith(
-                          (states) => states.contains(WidgetState.selected)
-                              ? Colors.black
-                              : Colors.white54,
-                        ),
-                        visualDensity: VisualDensity.compact,
-                        padding: WidgetStateProperty.all(
-                          const EdgeInsets.symmetric(vertical: 8),
-                        ),
-                        shape: WidgetStateProperty.all(
-                          RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
+                          fontSize: 11,
+                          height: 1.4,
                         ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-
-                  // ── Auto-Rotate ───────────────────────────
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Auto-Rotate',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 13,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              'Ignore system rotation lock; follow device orientation',
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.35),
-                                fontSize: 11,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      SizedBox(
-                        height: 28,
-                        child: Switch(
+                      if (showAutoRotate) ...[
+                        const SizedBox(height: 20),
+                        _switchRow(
+                          title: 'Auto-Rotate',
+                          note:
+                              'Ignore system rotation lock; follow device '
+                              'orientation',
                           value: autoRotate,
                           onChanged: onAutoRotateChanged,
-                          activeThumbColor: _accent,
-                          activeTrackColor: _accent.withValues(alpha: 0.4),
-                          inactiveThumbColor: Colors.white38,
-                          inactiveTrackColor: Colors.white.withValues(
-                            alpha: 0.08,
+                        ),
+                      ],
+                      if (facts.isNotEmpty) ...[
+                        const SizedBox(height: 22),
+                        _label('This Video'),
+                        const SizedBox(height: 10),
+                        _facts(),
+                      ],
+                      if (showShortcuts) ...[
+                        const SizedBox(height: 22),
+                        _label('Keyboard'),
+                        const SizedBox(height: 8),
+                        const Text(
+                          _shortcutLine,
+                          style: TextStyle(
+                            color: Colors.white38,
+                            fontSize: 11,
+                            height: 1.6,
                           ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
         ),
       ),
+    );
+  }
+
+  Widget _header() {
+    return Row(
+      children: [
+        const Icon(Icons.settings, color: Colors.white54, size: 18),
+        const SizedBox(width: 8),
+        const Text(
+          'Playback Settings',
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const Spacer(),
+        IconButton(
+          icon: const Icon(Icons.close, color: Colors.white38, size: 18),
+          onPressed: onDismiss,
+          tooltip: 'Close',
+          visualDensity: VisualDensity.compact,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(),
+        ),
+      ],
+    );
+  }
+
+  Widget _label(String t) => Text(
+    t,
+    style: const TextStyle(
+      color: RCrmColors.silver,
+      fontSize: 12,
+      fontWeight: FontWeight.w600,
+      letterSpacing: 0.02,
+    ),
+  );
+
+  Widget _modeSegments() {
+    return SizedBox(
+      width: double.infinity,
+      child: SegmentedButton<PlaybackMode>(
+        segments: PlaybackMode.values
+            .map(
+              (m) => ButtonSegment<PlaybackMode>(
+                value: m,
+                label: Text(
+                  m.label,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: mode == m ? Colors.black : Colors.white54,
+                  ),
+                ),
+              ),
+            )
+            .toList(),
+        selected: {mode},
+        onSelectionChanged: (sel) {
+          if (sel.isNotEmpty) onModeChanged(sel.first);
+        },
+        style: ButtonStyle(
+          backgroundColor: WidgetStateProperty.resolveWith(
+            (states) => states.contains(WidgetState.selected)
+                ? _accent
+                : Colors.white.withValues(alpha: 0.06),
+          ),
+          foregroundColor: WidgetStateProperty.resolveWith(
+            (states) => states.contains(WidgetState.selected)
+                ? Colors.black
+                : Colors.white54,
+          ),
+          visualDensity: VisualDensity.compact,
+          padding: WidgetStateProperty.all(
+            const EdgeInsets.symmetric(vertical: 8),
+          ),
+          shape: WidgetStateProperty.all(
+            RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(RCrmRadii.md),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _switchRow({
+    required String title,
+    required String note,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                note,
+                style: const TextStyle(color: Colors.white38, fontSize: 11),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 12),
+        SizedBox(
+          height: 28,
+          child: Switch(
+            value: value,
+            onChanged: onChanged,
+            activeThumbColor: _accent,
+            activeTrackColor: _accent.withValues(alpha: 0.4),
+            inactiveThumbColor: Colors.white38,
+            inactiveTrackColor: Colors.white.withValues(alpha: 0.08),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Two columns of label/value pairs, separated by tone rather than rules:
+  /// the value is white and the label silver, and the rows breathe.
+  Widget _facts() {
+    return Column(
+      children: [
+        for (final f in facts)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 116,
+                  child: Text(
+                    f.label,
+                    style: const TextStyle(
+                      color: RCrmColors.silver,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: Text(
+                    f.value,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      // Numbers that do not shuffle as the row updates.
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// Grows the last few percent into place. The panel is a place the user asked
+  /// to go, so it settles rather than appearing.
+  Widget _entrance(BuildContext context, Widget child) {
+    if (MediaQuery.disableAnimationsOf(context)) return child;
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 160),
+      curve: Curves.easeOutCubic,
+      builder: (_, t, inner) => Opacity(
+        opacity: t,
+        child: Transform.scale(scale: 0.98 + 0.02 * t, child: inner),
+      ),
+      child: child,
     );
   }
 }

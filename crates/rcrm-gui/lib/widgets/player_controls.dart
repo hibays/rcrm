@@ -22,6 +22,7 @@ import 'package:flutter/material.dart';
 
 import '../config/theme.dart';
 import '../utils/format.dart';
+import 'player_scrub_bar.dart';
 
 // ── Density ─────────────────────────────────────────────────────────
 
@@ -50,7 +51,12 @@ class PlayerChromeMetrics {
   /// Height of the seek-slider row.
   final double seekHeight;
 
+  /// Track thickness at rest, and while the pointer is on the bar. The pair is
+  /// what a player's progress bar is made of: a hairline you read, which comes
+  /// up under the cursor into something you can aim.
   final double trackHeight;
+  final double trackActive;
+
   final double thumbRadius;
 
   /// Widest the volume slider may grow when there is room to spare.
@@ -64,6 +70,7 @@ class PlayerChromeMetrics {
     required this.font,
     required this.seekHeight,
     required this.trackHeight,
+    required this.trackActive,
     required this.thumbRadius,
     required this.volumeSliderMax,
   });
@@ -74,8 +81,9 @@ class PlayerChromeMetrics {
     gap: 2,
     pad: 8,
     font: 11,
-    seekHeight: 20,
+    seekHeight: 22,
     trackHeight: 3,
+    trackActive: 6,
     thumbRadius: 5,
     volumeSliderMax: 96,
   );
@@ -91,8 +99,9 @@ class PlayerChromeMetrics {
     gap: 2,
     pad: 4,
     font: 10,
-    seekHeight: 16,
+    seekHeight: 18,
     trackHeight: 3,
+    trackActive: 5,
     thumbRadius: 4,
     volumeSliderMax: 72,
   );
@@ -103,9 +112,10 @@ class PlayerChromeMetrics {
     gap: 4,
     pad: 12,
     font: 11.5,
-    seekHeight: 22,
-    trackHeight: 3,
-    thumbRadius: 5,
+    seekHeight: 24,
+    trackHeight: 3.5,
+    trackActive: 7,
+    thumbRadius: 5.5,
     volumeSliderMax: 104,
   );
 
@@ -115,8 +125,9 @@ class PlayerChromeMetrics {
     gap: 6,
     pad: 16,
     font: 12,
-    seekHeight: 24,
+    seekHeight: 28,
     trackHeight: 4,
+    trackActive: 8,
     thumbRadius: 6,
     volumeSliderMax: 112,
   );
@@ -128,8 +139,9 @@ class PlayerChromeMetrics {
     gap: 6,
     pad: 16,
     font: 12.5,
-    seekHeight: 26,
-    trackHeight: 4,
+    seekHeight: 32,
+    trackHeight: 4.5,
+    trackActive: 9,
     thumbRadius: 7,
     volumeSliderMax: 120,
   );
@@ -158,10 +170,19 @@ class PlayerChromeMetrics {
     return this;
   }
 
-  TextStyle get timeStyle => TextStyle(color: Colors.white54, fontSize: font);
+  TextStyle get timeStyle => TextStyle(
+    color: Colors.white,
+    fontSize: font,
+    // Digits of one width, so a running clock does not shuffle the row it
+    // shares with the skip buttons and the volume slider.
+    fontFeatures: const [FontFeature.tabularFigures()],
+  );
 
-  TextStyle get durationStyle =>
-      TextStyle(color: Colors.white30, fontSize: font);
+  TextStyle get durationStyle => TextStyle(
+    color: Colors.white60,
+    fontSize: font,
+    fontFeatures: const [FontFeature.tabularFigures()],
+  );
 
   /// The speed chip's label — painted AND measured with this exact style: a
   /// budget that measures a different weight than it paints is how a bar that
@@ -170,6 +191,14 @@ class PlayerChromeMetrics {
     color: Colors.white70,
     fontSize: font,
     fontWeight: FontWeight.w500,
+  );
+
+  /// The geometry both the progress control and the volume slider are built
+  /// from — so the two can never drift into different weights of the same bar.
+  ScrubBarStyle get scrub => ScrubBarStyle(
+    track: trackHeight,
+    trackActive: trackActive,
+    thumb: thumbRadius,
   );
 }
 
@@ -435,6 +464,14 @@ PlayerControlPlan planPlayerControlBar({
 
 // ── Bottom transport bar ────────────────────────────────────────────
 
+/// What the second number in the time readout means.
+///
+/// Elapsed/total answers "where am I in this?"; elapsed/remaining answers "how
+/// much longer?", which is the question someone watching a 90-minute film
+/// actually has. Both are one line of the same length, so the bar does not
+/// reflow when the user swaps them.
+enum PlayerTimeMode { elapsed, remaining }
+
 class PlayerControlBar extends StatefulWidget {
   final bool playing;
   final Duration position;
@@ -460,6 +497,14 @@ class PlayerControlBar extends StatefulWidget {
   final bool hasPrev;
   final bool hasNext;
   final bool hasEpisodes;
+
+  /// Which of the two readings the time display shows. The bar budgets for
+  /// BOTH, so a tap cannot make the duration disappear at a narrow width.
+  final PlayerTimeMode timeMode;
+
+  /// Swaps [timeMode]. Null leaves the readout as plain text — there is then no
+  /// affordance claiming otherwise.
+  final VoidCallback? onTimeModeChanged;
 
   final VoidCallback? onPlayPause;
   final ValueChanged<Duration>? onSeek;
@@ -499,6 +544,8 @@ class PlayerControlBar extends StatefulWidget {
     this.hasPrev = false,
     this.hasNext = false,
     this.hasEpisodes = false,
+    this.timeMode = PlayerTimeMode.elapsed,
+    this.onTimeModeChanged,
     this.onPlayPause,
     this.onSeek,
     this.onScrubActive,
@@ -549,22 +596,46 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
           fullscreen: widget.fullscreen,
         ).cappedTo(available);
 
-        final posText = formatMs(
-          _scrubMs?.round() ?? widget.position.inMilliseconds,
-        );
-        final durText = formatMs(widget.duration.inMilliseconds);
+        final posMs = _scrubMs ?? widget.position.inMilliseconds.toDouble();
+        final durMs = widget.duration.inMilliseconds;
+        final posText = formatMs(posMs.round());
+        final durText = formatMs(durMs);
         final speedText = formatSpeed(widget.speed);
+        final remaining = widget.timeMode == PlayerTimeMode.remaining;
+        final canSwapTime =
+            widget.onTimeModeChanged != null && widget.duration > Duration.zero;
+
+        // Both readings are measured whenever a tap could ask for either: the
+        // plan must reserve the wider, or swapping would re-plan the whole row
+        // — and at a narrow width could drop the very duration the user just
+        // asked for. With no swap on offer there is only one string that can be
+        // painted, and the file's own rule holds instead: budget what will be
+        // drawn, never what merely exists.
+        final elapsedText = ' / $durText';
+        final remainingText =
+            ' / -${formatMs((durMs - posMs).clamp(0, durMs).round())}';
+        final durationWidth = canSwapTime
+            ? math.max(
+                _measure(ctx, elapsedText, m.durationStyle),
+                _measure(ctx, remainingText, m.durationStyle),
+              )
+            : _measure(ctx, elapsedText, m.durationStyle);
+        final shownDuration = remaining && canSwapTime
+            ? remainingText
+            : elapsedText;
 
         final plan = planPlayerControlBar(
           maxWidth: available,
           m: m,
           // Budget the wider of position/duration: scrubbing must not make
-          // the bar re-plan (and re-flow) on every frame.
+          // the bar re-plan (and re-flow) on every frame. The duration's own
+          // slot is budgeted separately, because what that string carries can
+          // change with the reading (see `durationWidth`).
           positionWidth: math.max(
             _measure(ctx, posText, m.timeStyle),
             _measure(ctx, durText, m.timeStyle),
           ),
-          durationWidth: _measure(ctx, ' / $durText', m.durationStyle),
+          durationWidth: durationWidth,
           // The chip is the label plus its own horizontal padding, measured in
           // the style the chip actually paints (w500 — wider than timeStyle).
           speedWidth: _measure(ctx, speedText, m.chipStyle) + m.gap * 4 + 2,
@@ -573,10 +644,8 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
           hasEpisodes: widget.hasEpisodes,
         );
 
-        final duration = widget.duration.inMilliseconds.toDouble();
-        final played = duration > 0
-            ? (_scrubMs ?? widget.position.inMilliseconds.toDouble()) / duration
-            : 0.0;
+        final duration = durMs.toDouble();
+        final played = duration > 0 ? posMs / duration : 0.0;
 
         // Both ends of a drag are announced; a null handler means "no seek
         // available", which is also when the slider refuses the touch.
@@ -613,44 +682,39 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
             children: [
               SizedBox(
                 height: m.seekHeight,
-                child: SliderTheme(
-                  data: SliderThemeData(
-                    trackHeight: m.trackHeight,
-                    thumbShape: RoundSliderThumbShape(
-                      enabledThumbRadius: m.thumbRadius,
-                    ),
-                    overlayShape: RoundSliderOverlayShape(
-                      overlayRadius: m.thumbRadius * 2.4,
-                    ),
-                    activeTrackColor: RCrmColors.primary,
-                    inactiveTrackColor: RCrmColors.silverDim,
-                    thumbColor: RCrmColors.primary,
-                    secondaryActiveTrackColor: const Color(0x66FFFFFF),
-                  ),
-                  child: Slider(
-                    value: played.clamp(0.0, 1.0),
-                    secondaryTrackValue: buffered,
-                    // A drag on the bar is an interaction in progress, like an
-                    // open panel: the screen holds its idle timer off for its
-                    // duration and re-arms it at the end. Without this the bar
-                    // — slider under the finger included — faded out two
-                    // seconds into every scrub.
-                    onChangeStart: widget.onSeek == null || duration <= 0
-                        ? null
-                        : (_) => scrub(true),
-                    onChanged: widget.onSeek == null || duration <= 0
-                        ? null
-                        : (v) => setState(() => _scrub = v * duration),
-                    onChangeEnd: widget.onSeek == null || duration <= 0
-                        ? null
-                        : (v) {
-                            setState(() => _scrub = null);
-                            widget.onSeek!(
-                              Duration(milliseconds: (v * duration).round()),
-                            );
-                            scrub(false);
-                          },
-                  ),
+                child: PlayerScrubBar(
+                  value: played.clamp(0.0, 1.0),
+                  buffer: buffered,
+                  style: m.scrub,
+                  activeColor: RCrmColors.primary,
+                  thumbColor: RCrmColors.primary,
+                  inactiveColor: RCrmColors.silverDim,
+                  semanticsLabel: 'Playback position',
+                  // No duration, no reading: a tooltip that counts to an
+                  // unknown end would be inventing one.
+                  label: duration <= 0
+                      ? null
+                      : (f) => formatMs((f * duration).round()),
+                  // A drag on the bar is an interaction in progress, like an
+                  // open panel: the screen holds its idle timer off for its
+                  // duration and re-arms it at the end. Without this the bar
+                  // — slider under the finger included — faded out two
+                  // seconds into every scrub.
+                  onChangeStart: widget.onSeek == null || duration <= 0
+                      ? null
+                      : (_) => scrub(true),
+                  onChanged: widget.onSeek == null || duration <= 0
+                      ? null
+                      : (v) => setState(() => _scrub = v * duration),
+                  onChangeEnd: widget.onSeek == null || duration <= 0
+                      ? null
+                      : (v) {
+                          setState(() => _scrub = null);
+                          widget.onSeek!(
+                            Duration(milliseconds: (v * duration).round()),
+                          );
+                          scrub(false);
+                        },
                 ),
               ),
               SizedBox(height: m.gap),
@@ -660,8 +724,10 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                     m,
                     icon: widget.playing ? Icons.pause : Icons.play_arrow,
                     onPressed: widget.onPlayPause,
-                    color: Colors.white70,
-                    size: m.icon + 2,
+                    // The largest mark in the bar and the only control with no
+                    // alternative path: it is painted, not hinted at.
+                    color: Colors.white,
+                    size: m.icon + 5,
                     tooltip: widget.playing ? 'Pause' : 'Play',
                   ),
                   // Volume: the mute button unless the width ladder had to give
@@ -673,22 +739,10 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                     _gap(m),
                     _volumeGroup(m, plan.volumeSliderWidth),
                   ],
-                  if (plan.showPosition) ...[
+                  if (plan.showPosition || plan.showDuration) ...[
                     _gap(m),
-                    Text(
-                      posText,
-                      style: m.timeStyle,
-                      maxLines: 1,
-                      softWrap: false,
-                    ),
+                    _timeReadout(m, plan, posText, shownDuration),
                   ],
-                  if (plan.showDuration)
-                    Text(
-                      ' / ${formatMs(widget.duration.inMilliseconds)}',
-                      style: m.durationStyle,
-                      maxLines: 1,
-                      softWrap: false,
-                    ),
                   const Spacer(),
                   if (plan.showPrev)
                     _iconButton(
@@ -814,7 +868,13 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
         children: [
           _iconButton(
             m,
-            icon: _muted ? Icons.volume_off : Icons.volume_up,
+            // Three states, not two: a speaker with one wave says "quiet"
+            // before the user has to open anything, and `volume_off` stays the
+            // only state that means silence. `volume > 0` used to be the whole
+            // test, so 5% and 95% looked identical.
+            icon: _muted
+                ? Icons.volume_off
+                : (widget.volume < 50 ? Icons.volume_down : Icons.volume_up),
             onPressed: widget.onToggleMute,
             tooltip: _muted ? 'Unmute' : 'Mute',
           ),
@@ -822,35 +882,31 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
             SizedBox(
               width: sliderWidth,
               height: m.tap,
-              child: SliderTheme(
-                data: SliderThemeData(
-                  trackHeight: m.trackHeight,
-                  thumbShape: RoundSliderThumbShape(
-                    enabledThumbRadius: m.thumbRadius,
-                  ),
-                  overlayShape: RoundSliderOverlayShape(
-                    overlayRadius: m.thumbRadius * 2.4,
-                  ),
-                  activeTrackColor: Colors.white54,
-                  inactiveTrackColor: RCrmColors.silverDim,
-                  thumbColor: Colors.white,
-                ),
-                child: Slider(
-                  value: widget.volume.clamp(0.0, 100.0),
-                  max: 100,
-                  // Announced the same way as the seek bar: a two-second drag
-                  // for volume used to fade the bar — the slider under the
-                  // finger included — out from under the user. A slider with no
-                  // change handler is inert, so it announces nothing.
-                  onChangeStart: widget.onVolumeChanged == null
-                      ? null
-                      : (_) => widget.onScrubActive?.call(true),
-                  onChanged: widget.onVolumeChanged,
-                  onChangeEnd: (_) {
-                    widget.onVolumeChangeEnd?.call();
-                    widget.onScrubActive?.call(false);
-                  },
-                ),
+              child: PlayerScrubBar(
+                value: widget.volume.clamp(0.0, 100.0),
+                min: 0,
+                max: 100,
+                style: m.scrub,
+                // The accent belongs to the media's progress, not to the
+                // volume: a second orange bar two controls away would spend the
+                // Rarity Rule on a setting.
+                activeColor: Colors.white70,
+                thumbColor: Colors.white,
+                inactiveColor: RCrmColors.silverDim,
+                semanticsLabel: 'Volume',
+                label: (v) => '${v.round()}%',
+                // Announced the same way as the seek bar: a two-second drag
+                // for volume used to fade the bar — the slider under the
+                // finger included — out from under the user. A slider with no
+                // change handler is inert, so it announces nothing.
+                onChangeStart: widget.onVolumeChanged == null
+                    ? null
+                    : (_) => widget.onScrubActive?.call(true),
+                onChanged: widget.onVolumeChanged,
+                onChangeEnd: (_) {
+                  widget.onVolumeChangeEnd?.call();
+                  widget.onScrubActive?.call(false);
+                },
               ),
             ),
         ],
@@ -858,8 +914,57 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
     );
   }
 
+  /// The elapsed/total pair — and, when the caller offers it, the same pair
+  /// read the other way round: one tap swaps the second number for the time
+  /// LEFT, which is the question a 90-minute film actually raises.
+  ///
+  /// The whole pair is the target, not each number: "the times" is one thing to
+  /// point at, and a 12px-tall label is not a tap target on its own.
+  Widget _timeReadout(
+    PlayerChromeMetrics m,
+    PlayerControlPlan plan,
+    String posText,
+    String durText,
+  ) {
+    final row = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (plan.showPosition)
+          Text(posText, style: m.timeStyle, maxLines: 1, softWrap: false),
+        if (plan.showDuration)
+          Text(durText, style: m.durationStyle, maxLines: 1, softWrap: false),
+      ],
+    );
+    // Nothing to swap, or nothing to swap INTO (an unknown duration has no
+    // remaining time to show): plain text, and no affordance claiming
+    // otherwise.
+    if (widget.onTimeModeChanged == null || widget.duration <= Duration.zero) {
+      return row;
+    }
+    return Tooltip(
+      message: widget.timeMode == PlayerTimeMode.remaining
+          ? 'Show total time'
+          : 'Show time remaining',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTimeModeChanged,
+        // Vertical only: the width budget measures the two strings, so any
+        // horizontal padding here would be painted but never paid for.
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: m.gap),
+          child: row,
+        ),
+      ),
+    );
+  }
+
   Widget _speedChip(PlayerChromeMetrics m) {
     final text = formatSpeed(widget.speed);
+    // The one control in the bar that reports a STATE rather than offering an
+    // action, so it is the one that holds the accent while that state is not
+    // the default: a video running at 1.5x should be answerable at a glance,
+    // and at 1x the chip goes back to neutral. The Rarity Rule, in one control.
+    final altered = (widget.speed - 1.0).abs() > 0.001;
     return PopupMenuButton<double>(
       initialValue: widget.speed,
       onSelected: (s) {
@@ -873,19 +978,45 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
       tooltip: 'Playback speed',
       // Open upward, clear of the bar, sized to the menu it will show.
       offset: Offset(0, -(_speedItemHeight * _speeds.length + _menuPadding)),
+      // The Ash surface and a hairline of elevation, instead of Material's
+      // default menu tint — over video, a menu is a surface of THIS app.
+      color: RCrmColors.ash,
+      surfaceTintColor: Colors.transparent,
+      elevation: 8,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(RCrmRadii.md),
+      ),
       itemBuilder: (_) => _speeds
           .map(
             (s) => PopupMenuItem(
               value: s,
               height: _speedItemHeight,
-              child: Text(
-                formatSpeed(s),
-                style: TextStyle(
-                  color: widget.speed == s
-                      ? RCrmColors.primary
-                      : Colors.white70,
-                  fontSize: 13,
-                ),
+              child: Row(
+                // No flex child: the menu is an IntrinsicWidth, and the widest
+                // row is what every row gets.
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    formatSpeed(s),
+                    style: TextStyle(
+                      color: widget.speed == s
+                          ? RCrmColors.primary
+                          : Colors.white70,
+                      fontSize: 13,
+                      fontWeight: widget.speed == s
+                          ? FontWeight.w600
+                          : FontWeight.w400,
+                    ),
+                  ),
+                  if (widget.speed == s) ...[
+                    const SizedBox(width: 8),
+                    const Icon(
+                      Icons.check,
+                      size: 15,
+                      color: RCrmColors.primary,
+                    ),
+                  ],
+                ],
               ),
             ),
           )
@@ -893,10 +1024,17 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
       child: Container(
         padding: EdgeInsets.symmetric(horizontal: m.gap * 2, vertical: 3),
         decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.08),
+          color: altered
+              ? RCrmColors.primary.withValues(alpha: 0.16)
+              : Colors.white.withValues(alpha: 0.08),
           borderRadius: BorderRadius.circular(RCrmRadii.sm),
         ),
-        child: Text(text, style: m.chipStyle),
+        child: Text(
+          text,
+          style: altered
+              ? m.chipStyle.copyWith(color: RCrmColors.primary)
+              : m.chipStyle,
+        ),
       ),
     );
   }

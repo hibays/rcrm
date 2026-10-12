@@ -15,6 +15,16 @@
         tools:replace="android:maxSdkVersion"/>
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage"/>
+    <!-- android:requestLegacyExternalStorage="true" on the application element
+         below is the OLD half of the storage story, and it is still load
+         bearing: the app targets API 36, but on an Android 10 device (API 29)
+         scoped storage is the default and MANAGE_EXTERNAL_STORAGE does not
+         exist yet, so the only route to raw file paths there is that flag plus
+         the runtime read/write grant. The platform in front of us resolves it
+         (Android 10 honours the flag for apps targeting Q or above); Android
+         11+ ignores the flag and uses the all-files-access app-op instead,
+         which the app asks for by opening the system settings screen
+         (`StorageAccessChannel.kt`). -->
     <!-- Android TV support: app runs on TVs and phones; the TV side
          shows the cast receiver screen. -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -24,6 +34,7 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
+        android:requestLegacyExternalStorage="true"
         android:largeHeap="true">
         <activity
             android:name="com.rcrm.app.MainActivity"
