@@ -33,6 +33,7 @@ import '../widgets/player_settings_panel.dart';
 import '../widgets/episode_picker_panel.dart';
 import '../utils/format.dart';
 import '../utils/pan_lock.dart';
+import '../utils/player_eof.dart';
 import '../utils/player_exit.dart';
 import '../utils/player_orientation.dart';
 import '../utils/player_panels.dart';
@@ -193,6 +194,13 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// user's sight behind an open panel, where it is still the autoplay they
   /// asked for.
   MediaItem? _upNext;
+
+  /// Where this file has got to at its end — the app's own memory of the
+  /// ending, because media_kit cannot report it (see `utils/player_eof.dart`).
+  /// Every event that can change it goes through the value's own methods, so
+  /// there is exactly one rule for what a finished file is and one for what
+  /// taking it back means.
+  PlayerEof _eof = PlayerEof.idle;
 
   /// The Related list and the key it was computed for. The list is a pure
   /// function of (item, scan generation, jump stack's excluded paths) — see
@@ -582,12 +590,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         return;
       }
       if (mounted) setState(() {});
-      _posSub = p!.stream.position.listen((pos) {
-        final ms = pos.inMilliseconds;
-        if ((ms - _miniLastMs).abs() < 100) return;
-        _miniLastMs = ms;
-        if (mounted) _miniPos.value = pos;
-      });
+      _posSub = p!.stream.position.listen(_onPosition);
       _durSub = p!.stream.duration.listen((d) {
         if (mounted) _miniDur.value = d;
       });
@@ -610,6 +613,11 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           if (_buffering.value) _buffering.value = false;
           return;
         }
+        // Nothing is loading on a finished file: the picture is the last frame
+        // and the viewer is being offered what plays next. A stall reported here
+        // is not a wait this app is in, and a spinner drawn over the frame they
+        // are deliberately sitting on claims "working on it" about nothing.
+        if (_eof.finished) return;
         _bufferStall = Timer(_bufferGrace, () {
           if (mounted && !_disposed) _buffering.value = true;
         });
@@ -619,31 +627,37 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         if (mounted) _rate.value = r;
       });
       _shapeSub = p!.stream.videoParams.listen(_onVideoParams);
-      bool handlingCompletion = false;
-      _completedSub = p!.stream.completed.listen((_) {
-        if (!mounted ||
-            _disposed ||
-            handlingCompletion ||
-            _navigating ||
-            _switching) {
-          return;
-        }
+      _completedSub = p!.stream.completed.listen((completed) {
+        // The VALUE, not just the event: media_kit publishes `completed: false`
+        // every time a file STARTS (`stop()`, which `open()` calls), and running
+        // the end-of-video logic for that offers the next video over one that has
+        // only just begun. Only the race between this screen's un-awaited `open()`
+        // and `play()` kept it quiet -- `play()` publishes `playing: true`
+        // optimistically, so `hasBeenPlaying` can already be true by the time
+        // `open()`'s own `stop()` lands.
+        if (!completed) return;
+        if (!mounted || _disposed || _navigating || _switching) return;
         if (!hasBeenPlaying) return;
-        handlingCompletion = true;
-        if (!mounted) return;
+        // ONE decision per ending: mpv reports the end again after every
+        // take-back, and `loopOne` re-enters this same file immediately, so a
+        // second pass would seek a video the viewer had just dragged back to 0.
+        if (_eof.finished) return;
+        _eof = _eof.endedAt(p!.state.position.inMilliseconds);
         final mode = ref.read(uiSettingsProvider).playbackMode;
         switch (mode) {
           case 'loopAll':
             _offerNext();
             break;
           case 'loopOne':
+            // Rolling again before this returns, so the latch is dropped here --
+            // kept, it would sit over the whole loop and swallow the next ending.
+            _eof = PlayerEof.idle;
             p!.seek(Duration.zero);
             p!.play();
             break;
           case 'pauseAfter':
             break;
         }
-        handlingCompletion = false;
       });
       if (_isMobile && fullscreen) {
         Future.delayed(const Duration(milliseconds: 700), () {
@@ -831,9 +845,80 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _applyOrientation();
   }
 
+  /// A position report, and the one thing it decides.
+  ///
+  /// While the file is finished this is where "the viewer took it back" is
+  /// detected, because it is the only signal that reports it: media_kit publishes
+  /// `playing: false` at the end and never undoes it ([_eof]), and nothing else
+  /// in the player reports that the file has become live again. Without this the
+  /// transport sits on ▶ over a picture that is not moving, and the up-next
+  /// countdown keeps running over a video the viewer is watching again -- which
+  /// is also how it used to advance a video they had just decided not to leave.
+  void _onPosition(Duration pos) {
+    final ms = pos.inMilliseconds;
+    // The value answers whether anything happened, so the screen needs no second
+    // copy of the truth to compare against.
+    final next = _eof.onPosition(ms);
+    if (next != _eof) {
+      _eof = next;
+      _clearUpNext();
+      _resumeAfterTakeBack();
+    }
+    if ((ms - _miniLastMs).abs() < 100) return;
+    _miniLastMs = ms;
+    if (mounted) _miniPos.value = pos;
+  }
+
+  /// Starts a finished file running again from the frame the viewer dragged back
+  /// to.
+  ///
+  /// An UNPAUSE, and not `p.play()`. Two facts, both measured rather than
+  /// assumed: media_kit runs mpv with `--keep-open=yes`, which leaves a finished
+  /// file **paused on its last frame** — dragging the bar back moves `time-pos`
+  /// and nothing else, so the picture froze on the frame it was dragged to, and
+  /// `p.play()` is the obvious cure. But media_kit clears `state.completed` only
+  /// in `stop()` and `START_FILE`, never on a seek, so at this moment it is still
+  /// true and `play()` takes its "the playlist ended, play it again" branch
+  /// (`real.dart:373`) — it seeks to 0 first, which throws the viewer from
+  /// wherever they just dragged back to the first frame. Un-pausing and restarting
+  /// are two different things and only one of them is wanted here.
+  ///
+  /// So the property is written straight to mpv, which is also what makes the
+  /// state honest: media_kit observes `pause` (`real.dart:1507`) and publishes
+  /// `playing` from it, so the icon, this screen's `_playing` and the PiP gate
+  /// follow the player instead of this method guessing. `_playing` is still
+  /// written first, because the icon should not sit on ▶ for the few ms until
+  /// the echo arrives — and it is now a record of what was ASKED for, not an
+  /// inference from a position that may have moved without anything playing.
+  ///
+  /// The platform check is `PlayerFactory`'s, for the same reason as there: a
+  /// host without the native half simply does not get the un-pause, and the
+  /// viewer can still drag or press play.
+  void _resumeAfterTakeBack() {
+    _playing.value = true;
+    final platform = p?.platform;
+    if (platform is NativePlayer) {
+      unawaited(platform.setProperty('pause', 'no').catchError((_) {}));
+    }
+  }
+
   void _togglePlayPause() {
     if (p == null) return;
-    p!.state.playing ? p!.pause() : p!.play();
+    // The app's own belief, NOT `p.state.playing`: media_kit writes
+    // `playing: false` at the end of a file and never undoes it, so the flag and
+    // the picture can disagree — and this control has to do what its own icon
+    // says. One decision, shared by the button, the tap and Space/K.
+    if (_playing.value) {
+      p!.pause();
+      return;
+    }
+    // Pressing play on a finished file: media_kit reads that as "the playlist
+    // ended, play it again" and restarts it from 0 (`real.dart:373`), which is a
+    // coherent reading of the gesture — and the offer of the next video is
+    // withdrawn, because the viewer has just asked for THIS one.
+    _eof = PlayerEof.idle;
+    _clearUpNext();
+    p!.play();
   }
 
   // ── Show/hide ─────────────────────────────────────────────
@@ -1080,7 +1165,11 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     if (!ref.read(uiSettingsProvider).pipEnabled) return;
     final pipSize = ref.read(uiSettingsProvider).pipSize;
     final vh = (context.size?.width ?? 400) / 16 * 9;
-    final playing = p?.state.playing == true;
+    // The app's belief, not `p.state.playing`: a video the viewer took back from
+    // its last frame is rolling while that flag still says paused, and a PiP that
+    // only appears for a player the app thinks is stopped is a PiP that never
+    // appears.
+    final playing = _playing.value;
     final show = _scrollCtrl!.offset > vh * 0.7 && playing;
     if (!show) _pipDismissed = false;
     if (_pipDismissed) return;
@@ -1243,6 +1332,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       return;
     }
     _clearUpNext();
+    // A new file has not finished, whatever the last one did — and this is the
+    // one place the latch is dropped for a switch, since the card's own advance
+    // comes through here too.
+    _eof = PlayerEof.idle;
     _switching = true;
     try {
       if (!back) ref.read(videoJumpStackProvider.notifier).push(_item);
@@ -1412,15 +1505,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       autofocus: true,
       child: MediaPlayerKeys(
         actions: MediaPlayerKeyActions(
-          onTogglePlay: () {
-            if (p != null) {
-              if (p!.state.playing) {
-                p!.pause();
-              } else {
-                p!.play();
-              }
-            }
-          },
+          onTogglePlay: _togglePlayPause,
           onSeek: (delta) {
             if (p == null) return;
             final pos = p!.state.position + delta;
@@ -2294,6 +2379,17 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     final next = _upNext;
     if (next == null) return const SizedBox.shrink();
     return Positioned(
+      // A KEY, and the card needs one: it is the last child of a Stack whose
+      // siblings come and go with things that have nothing to do with it — the
+      // mini bar when the windowed chrome fades, the seek bar on a mobile swipe.
+      // Flutter reconciles a Stack's children by INDEX, and every one of these
+      // is a `Positioned`, so an unkeyed card shifted down one slot was judged
+      // "same type, update in place": the element above was rewritten as the
+      // card and the card's element was destroyed. A fresh State re-runs
+      // `initState`, so the entrance and the whole 8s countdown started again
+      // every time the controls faded. Keyed, it is matched by key wherever it
+      // sits and its State survives.
+      key: const ValueKey('up_next'),
       left: 0,
       right: 0,
       bottom: bottom,

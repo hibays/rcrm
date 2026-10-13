@@ -141,6 +141,49 @@ VideoCard tap → Navigator.push(video_player_screen)
     which is what keeps its last frame on screen instead of blanking it
 ```
 
+#### The end of a file (the app's own state, because media_kit cannot report it)
+
+Three media_kit facts, all in `media_kit-1.2.6/lib/src/player/native/player/real.dart`,
+force the app to remember the ending itself — and it is kept as ONE immutable
+value, `PlayerEof` (`utils/player_eof.dart`), not as a flag beside the screen:
+
+| what media_kit does | what it costs the app |
+|---|---|
+| `eof-reached=1` writes `playing: false, completed: true`; there is **no handler for `eof-reached` returning to 0**, `seek()` touches neither, and only `stop()` and `play()` write them otherwise | `playing: false` is written once and never undone, so the app cannot learn from the player that a file is live again — hence `_playing` (every "is it playing" decision reads it, not `state.playing`) and `_resumeAfterTakeBack`, which un-pauses. A take-back does **not** call `p.play()`: `completed` is cleared only by `stop()`/`START_FILE`, so it is still true and `play()` takes its "the playlist ended, play it again" branch (`real.dart:373`) and seeks to **0**. Un-pausing and restarting are different things, and only the first is wanted. |
+| media_kit runs mpv with **`--keep-open=yes`**, so a finished file is left **paused on its last frame** | dragging the bar back moves `time-pos` and nothing else: the picture froze on the frame it was dragged to, and the toggle could not shift it (a press went to `pause()`, the next to `play()` → seek 0). This is measured, not read: the position stream cannot distinguish a seek that resumes from one that only moves a number on a paused core, so the resume is an explicit action. |
+| `stop()` publishes `completed: **false**` (with `playing: false`, `position: 0`, `duration: 0`, an empty `VideoParams`) and **`open()` calls `stop()` internally** | the completion handler must check the VALUE. `listen((_) …)` ran the end-of-video logic for a file merely *starting*; only the race between the screen's un-awaited `open()` and `play()` kept it quiet (`play()` publishes `playing: true` optimistically, so `hasBeenPlaying` can already be true when `open()`'s `stop()` lands). |
+| `START_FILE` forces `buffering: true` **ungated**, while `playing`/`completed` on that same event are gated by `isPlayingStateChangeAllowed` | the stall timer is the one thing that is not gated, so it is suppressed on a finished file: nothing is loading there, and a spinner over the last frame claims "working on it" about nothing. |
+
+`PlayerEof` is a value class, not a set of predicates: `endedAt(positionMs)` is
+the only way in, `onPosition(ms)` is the only way the position stream can move it,
+and `onPosition` returns **the same instance** when nothing happened — so the
+screen asks `next != _eof` instead of keeping a second copy of the truth. It is
+read three times: as the completion handler's **latch** (`finished` — mpv reports
+the end again after every take-back, and `loopOne` re-enters the same file
+immediately, so a second pass used to seek a video the viewer had just dragged
+back to 0), by the stall timer, and by the **position stream** — the only signal
+in the whole player that reports a take-back, because every seek path (bar scrub,
+horizontal swipe, PiP drag, arrow keys) converges on it. The take-back rule is
+`PlayerEof.takeBackEpsilonMs` (200ms): the reported position wobbles a frame or
+two around the duration at the end of a file, and reading that as a take-back
+would withdraw the offer a frame after offering it. The baseline
+(`endPositionMs`) is fixed at the ending rather than re-tracked per report —
+the reports already sit inside the epsilon, and following them would give "did
+anything change?" two meanings. A take-back withdraws the offer (`_clearUpNext`,
+what the ✕ does) and records `_playing = true` — the position moving is the proof
+that the picture is rolling. Pressing **play** on a finished file withdraws the
+offer too, because media_kit reads that gesture as "the playlist ended, play it
+again" and restarts this one from 0; that is a coherent answer, and the card was
+the alternative the viewer was already being offered. Known limitation, pre-existing
+and not reachable only through this change: `state.completed` can never be cleared
+without unloading the file, so a **pause then play** after any ending restarts at
+0 instead of resuming. The only way past it is driving mpv's `pause` property
+through `NativePlayer.setProperty`, which is a bigger step than this change.
+
+`loopOne` drops the latch before it seeks (kept, it would sit over the whole loop
+and swallow the next ending), and
+`_playInPlace` drops it for a switch.
+
 ### Storage Access (Android)
 
 ```

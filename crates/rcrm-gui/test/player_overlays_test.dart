@@ -224,6 +224,71 @@ void main() {
       await tester.pumpAndSettle();
     });
 
+    testWidgets('a sibling appearing above it does not restart the countdown', (
+      tester,
+    ) async {
+      // The bug this pins is in the PLAYER'S TREE, not in the card: the card is
+      // the last child of a Stack whose siblings come and go with things that
+      // have nothing to do with it — the windowed mini bar, when the chrome
+      // fades, and the seek bar on a mobile swipe. Flutter reconciles a Stack's
+      // children by INDEX, and every one of them is a `Positioned`, so an unkeyed
+      // card that shifted down a slot was "same type, update in place": the
+      // element above it was rewritten as the card and the card's own element was
+      // destroyed. A fresh State re-runs `initState`, so the entrance replayed
+      // and the 8s countdown restarted from zero on every fade of the controls.
+      //
+      // Reproduced here with the same shape: the sibling, a `Positioned.fill`,
+      // and the card keyed exactly as `_upNextCard` keys it.
+      Widget tree({required bool sibling}) => _host(
+        Stack(
+          children: [
+            if (sibling)
+              const Positioned(left: 0, top: 0, child: SizedBox(width: 1, height: 1)),
+            const Positioned.fill(child: SizedBox()),
+            Positioned(
+              key: const ValueKey('up_next'),
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: PlayerUpNextCard(
+                title: title,
+                subtitle: '812 MB · MP4',
+                countdown: countdown,
+                onAdvance: () {},
+                onDismiss: () {},
+              ),
+            ),
+          ],
+        ),
+      );
+      double ring() => tester
+          .widget<CircularProgressIndicator>(
+            find.byType(CircularProgressIndicator),
+          )
+          .value!;
+
+      await tester.pumpWidget(tree(sibling: false));
+      await tester.pump(const Duration(milliseconds: 1500));
+      final before = ring();
+      expect(before, lessThan(0.9), reason: 'the countdown is half spent');
+
+      // The controls fade: the sibling appears ABOVE the card and the card's
+      // index moves. The countdown has to keep running through it.
+      await tester.pumpWidget(tree(sibling: true));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        ring(),
+        closeTo(before, 0.05),
+        reason: 'a rebuild must not re-run initState, or the 8s starts again',
+      );
+
+      await tester.pumpWidget(tree(sibling: false));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(ring(), lessThan(before), reason: 'still counting down, not reset');
+      await tester.pump(countdown);
+      await tester.pumpAndSettle();
+    });
+
     testWidgets('rises into place, and simply is there without motion', (
       tester,
     ) async {
