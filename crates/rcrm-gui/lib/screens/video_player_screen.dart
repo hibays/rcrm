@@ -180,6 +180,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
 
   bool _showSettings = false;
   bool _showEpisodes = false;
+
+  /// The sheet is playing its exit and stays mounted until it reports
+  /// `onDismiss` — see [_closeEpisodes].
+  bool _episodesClosing = false;
   bool _disposed = false;
   bool _globalImmersive = false;
   double _savedRate = 1.0;
@@ -1697,14 +1701,14 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                         EpisodePickerPanel(
                           items: related,
                           fingerPreview: _fp,
+                          // Picking navigates, so the sheet is unmounted rather
+                          // than animated: the route is the motion there.
                           onPick: (item) {
                             setState(() => _showEpisodes = false);
                             _go(item);
                           },
-                          onDismiss: () {
-                            setState(() => _showEpisodes = false);
-                            _poke();
-                          },
+                          onDismiss: _onEpisodesDismissed,
+                          closing: _episodesClosing,
                         ),
                     ],
                   ),
@@ -1968,7 +1972,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// played, and only an empty stack lets the player route itself be popped.
   void _handleBack() {
     if (_showEpisodes) {
-      setState(() => _showEpisodes = false);
+      _closeEpisodes();
       _poke();
       return;
     }
@@ -2050,8 +2054,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         );
 
   void _toggleSettings() {
+    if (_showEpisodes) _closeEpisodes();
     setState(() {
-      _showEpisodes = false;
       _showSettings = !_showSettings;
       if (_showSettings) _showControls = true;
     });
@@ -2064,17 +2068,49 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   }
 
   void _toggleEpisodes() {
+    if (_showEpisodes) {
+      _closeEpisodes();
+      _poke();
+      return;
+    }
     setState(() {
       _showSettings = false;
-      _showEpisodes = !_showEpisodes;
-      if (_showEpisodes) _showControls = true;
+      _episodesClosing = false;
+      _showEpisodes = true;
+      _showControls = true;
     });
-    if (_showEpisodes) {
-      // Keep the bar underneath the sheet from fading while browsing.
-      _hideTimer?.cancel();
-    } else {
-      _poke();
-    }
+    // Keep the bar underneath the sheet from fading while browsing.
+    _hideTimer?.cancel();
+  }
+
+  /// The one way the episode sheet closes without navigating away from it: the
+  /// ✕, the backdrop, Back and the gear all come through here.
+  ///
+  /// It only flips a flag — the sheet animates itself out and reports
+  /// `onDismiss` when it is gone ([_onEpisodesDismissed]). Unmounting it on the
+  /// tap, which is what this used to do, cannot have an exit animation at all:
+  /// a widget that is not in the tree cannot be seen leaving.
+  void _closeEpisodes() {
+    if (!_showEpisodes || _episodesClosing) return;
+    setState(() => _episodesClosing = true);
+  }
+
+  /// The sheet finished leaving. Picking an episode never gets here — that path
+  /// unmounts it and navigates, and the route is the motion.
+  void _onEpisodesDismissed() {
+    if (!mounted) return;
+    setState(() {
+      _showEpisodes = false;
+      _episodesClosing = false;
+    });
+    // Re-arm the idle countdown HERE rather than at the tap, because this is the
+    // first moment the sheet is really closed. A poke on the tap cannot do it:
+    // `_showEpisodes` is still true for the length of the exit (the sheet has to
+    // stay mounted to be seen leaving), and the panel rule in
+    // `utils/player_panels.dart` refuses to arm the timer while a panel owns the
+    // screen — so the bar would never fade again. Desktop recovers by itself on
+    // the next mouse move; mobile has no hover, so the chrome would just stay.
+    _poke();
   }
 
   // Minimal bottom progress bar shown while horizontal-seeking (no full controls).
