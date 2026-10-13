@@ -15,6 +15,7 @@ import '../services/preview_player.dart';
 import '../services/system_volume.dart';
 import 'library_provider.dart';
 import 'server_provider.dart'; // for settingsServiceProvider
+import '../utils/player_orientation.dart';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -40,7 +41,14 @@ class SettingsState {
   final bool pipEnabled;
   final String pipSize; // 'normal' or 'small'
   final String playbackMode; // 'loopAll' | 'loopOne' | 'pauseAfter'
-  final bool autoRotate;
+
+  /// How the FULLSCREEN mobile player chooses which way up it is
+  /// (`utils/player_orientation.dart`): fit the video (the default), follow the
+  /// system's own preference, follow the phone's real posture even against the
+  /// system's rotation lock, or stay in one orientation. Replaces the old
+  /// `autoRotate` boolean, whose switch promised the rotation-lock override and
+  /// could not deliver it.
+  final PlayerOrientation playerOrientation;
   final bool castAutoNext;
 
   /// Whether the system may capture the app's pixels — screenshots, screen
@@ -75,7 +83,7 @@ class SettingsState {
     this.videoClassification = 'none',
     this.pipEnabled = true,
     this.playbackMode = 'pauseAfter',
-    this.autoRotate = false,
+    this.playerOrientation = defaultOrientation,
     this.castAutoNext = true,
     this.pipSize = 'normal',
     this.videoJumpHistoryLimit = kVideoJumpHistoryDefault,
@@ -96,7 +104,7 @@ class SettingsState {
     String? videoClassification,
     bool? pipEnabled,
     String? playbackMode,
-    bool? autoRotate,
+    PlayerOrientation? playerOrientation,
     bool? castAutoNext,
     String? pipSize,
     int? videoJumpHistoryLimit,
@@ -116,7 +124,7 @@ class SettingsState {
       videoClassification: videoClassification ?? this.videoClassification,
       playbackMode: playbackMode ?? this.playbackMode,
       pipEnabled: pipEnabled ?? this.pipEnabled,
-      autoRotate: autoRotate ?? this.autoRotate,
+      playerOrientation: playerOrientation ?? this.playerOrientation,
       castAutoNext: castAutoNext ?? this.castAutoNext,
       pipSize: pipSize ?? this.pipSize,
       videoJumpHistoryLimit:
@@ -152,7 +160,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
     final pipEnabled = await _service.getPipEnabled();
     final pipSize = await _service.getPipSize();
     final playbackMode = await _service.getPlaybackMode();
-    final autoRotate = await _service.getAutoRotate();
+    final playerOrientation = await _service.getPlayerOrientation();
     final castAutoNext = await _service.getCastAutoNext();
     final videoJumpHistoryLimit = await _service.getVideoJumpHistoryLimit();
     final allowScreenshots = await _service.getAllowScreenshots();
@@ -202,7 +210,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
       videoClassification: videoClassification,
       pipEnabled: pipEnabled,
       playbackMode: playbackMode,
-      autoRotate: autoRotate,
+      playerOrientation: playerOrientation,
       castAutoNext: castAutoNext,
       pipSize: pipSize,
       videoJumpHistoryLimit: videoJumpHistoryLimit,
@@ -307,9 +315,15 @@ class SettingsNotifier extends Notifier<SettingsState> {
     await _service.setPlaybackMode(mode);
   }
 
-  Future<void> setAutoRotate(bool enabled) async {
-    state = state.copyWith(autoRotate: enabled);
-    await _service.setAutoRotate(enabled);
+  /// The fullscreen orientation strategy — the player's settings panel, mobile
+  /// only.
+  ///
+  /// The player applies it immediately (it is watching the panel), so this only
+  /// remembers the choice; the screen's `_applyOrientation` is what the platform
+  /// hears.
+  Future<void> setPlayerOrientation(PlayerOrientation mode) async {
+    state = state.copyWith(playerOrientation: mode);
+    await _service.setPlayerOrientation(mode);
   }
 
   Future<void> setCastAutoNext(bool enabled) async {

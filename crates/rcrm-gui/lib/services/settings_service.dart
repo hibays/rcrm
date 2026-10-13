@@ -10,6 +10,7 @@ import 'dart:io' show Platform;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/server_config.dart';
+import '../utils/player_orientation.dart';
 
 /// Bounds and default of the video jump-history limit — how many previous
 /// videos `Back` can return to (`providers/video_jump_stack.dart`) and how many
@@ -56,7 +57,8 @@ class SettingsService {
   static const _keyPipSize = 'pip_size'; // 'normal' or 'small'
   static const _keyPlaybackMode =
       'playback_mode'; // 'loopAll' | 'loopOne' | 'pauseAfter'
-  static const _keyAutoRotate = 'auto_rotate'; // bool
+  static const _keyAutoRotate = 'auto_rotate'; // bool, legacy -- read once, never written
+  static const _keyPlayerOrientation = 'player_orientation'; // PlayerOrientation.key
   static const _keyCastAutoNext = 'cast_auto_next'; // bool
   static const _keyVideoJumpHistory = 'video_jump_history_limit'; // int, 1..50
   static const _keyAllowScreenshots = 'allow_screenshots'; // bool, mobile only
@@ -302,18 +304,6 @@ class SettingsService {
     await p.setString(_keyPlaybackMode, mode);
   }
 
-  // ── Auto-rotate ───────────────────────────────────────────
-  // Default: false (respect system rotation lock).
-  Future<bool> getAutoRotate() async {
-    final p = await prefs;
-    return p.getBool(_keyAutoRotate) ?? false;
-  }
-
-  Future<void> setAutoRotate(bool enabled) async {
-    final p = await prefs;
-    await p.setBool(_keyAutoRotate, enabled);
-  }
-
   // ── Cast auto-next ────────────────────────────────────────
   // Default: true — when the TV is unresponsive (video ended, or a picked
   // video never started) for 5s, the phone plays the next one by itself.
@@ -360,6 +350,34 @@ class SettingsService {
   Future<void> setUseSystemVolume(bool enabled) async {
     final p = await prefs;
     await p.setBool(_keyUseSystemVolume, enabled);
+  }
+
+  // ── Fullscreen orientation ────────────────────────────────
+  // Mobile only, and only while the player is fullscreen
+  // (`utils/player_orientation.dart`).
+  //
+  // `player_orientation` replaced an `auto_rotate` boolean: the switch said
+  // "ignore the system rotation lock; follow device orientation", and the request
+  // it made was `FULL_USER`, which the platform documents as respecting that very
+  // lock -- so the one thing it existed for was the one thing it could not do.
+  //
+  // The old key is still READ here, once, so a choice made before the upgrade
+  // keeps its meaning (`true` was asking for `device`, `false` was the
+  // fit-the-video default). Nothing writes it any more: the accessors the old
+  // boolean had are gone with the switch, which is what makes this really
+  // read-only rather than read-mostly.
+  Future<PlayerOrientation> getPlayerOrientation() async {
+    final p = await prefs;
+    final stored = p.getString(_keyPlayerOrientation);
+    if (stored != null) return PlayerOrientation.fromKey(stored);
+    final legacy = p.getBool(_keyAutoRotate);
+    if (legacy != null) return orientationFromLegacyAutoRotate(legacy);
+    return defaultOrientation;
+  }
+
+  Future<void> setPlayerOrientation(PlayerOrientation mode) async {
+    final p = await prefs;
+    await p.setString(_keyPlayerOrientation, mode.key);
   }
 
   // ── Video jump history ────────────────────────────────────

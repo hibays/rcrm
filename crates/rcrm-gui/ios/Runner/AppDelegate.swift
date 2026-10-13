@@ -11,6 +11,10 @@ import UIKit
   /// (`SystemVolumeChannel.swift`).
   private var systemVolume: SystemVolumeChannel?
 
+  /// Held for the app's lifetime: it owns the device-orientation observers
+  /// (`OrientationChannel.swift`).
+  private var orientation: OrientationChannel?
+
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -28,5 +32,9 @@ import UIKit
     // moves on mobile.
     systemVolume = SystemVolumeChannel.register(
       with: engineBridge.pluginRegistry.registrar(forPlugin: "RcrmSystemVolume"))
+    // The fullscreen player's "follow how the phone is held" strategy, which on
+    // iOS needs the hardware posture and an explicit geometry request.
+    orientation = OrientationChannel.register(
+      with: engineBridge.pluginRegistry.registrar(forPlugin: "RcrmOrientation"))
   }
 }

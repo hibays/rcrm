@@ -260,6 +260,53 @@ and not offered on desktop — `useSystemVolumeDefault`)
     video that has not started yet has no session of its own)
 ```
 
+### Fullscreen Orientation (mobile)
+
+```
+A strategy, not a switch (`utils/player_orientation.dart`, five values, four
+policies in the panel), applied to the fullscreen player only.
+
+settings panel → settings_provider.playerOrientation → video_player_screen
+  ._applyOrientation(), called when fullscreen changes, when the strategy
+  changes, when the video's own shape ARRIVES (stream.videoParams), and on the
+  way out of the player (`_releaseOrientation`, which is not the same call --
+  the exit restores the chrome while `fullscreen` is still true)
+
+  fit      → [landscapeLeft, landscapeRight] / [portraitUp, portraitDown]
+             (Android: USER_LANDSCAPE / USER_PORTRAIT -- the axis is locked,
+             the sensor still picks which way up it is). Unknown shape forces
+             NOTHING: the old code guessed landscape here and never re-applied
+             it, which is how a portrait video stayed locked landscape
+  system   → all four (Android: FULL_USER, "Respect the user's sensor-based
+             rotation preference")
+  device   → the mask above AND MethodChannel 'rcrm/orientation' → "follow",
+             which is the one request no list of DeviceOrientation can make, on
+             either platform:
+               Android: Activity.requestedOrientation =
+                 SCREEN_ORIENTATION_FULL_SENSOR ("Ignores user's setting to turn
+                 off sensor-based rotation"); the embedding's table maps all four
+                 to FULL_USER, the lock-RESPECTING one, which is why the channel
+                 exists at all
+               iOS: UIDevice.orientationDidChangeNotification (the HARDWARE
+                 posture, unaffected by the rotation lock) → an explicit geometry
+                 request: requestGeometryUpdate on iOS 16+, the
+                 setValue(_:forKey:"orientation") + attemptRotationToDeviceOrientation
+                 pair before that. landscapeLeft/Right are INVERTED here, as every
+                 iOS app reading this sensor has to
+             ORDER: the mask is sent first (iOS only honours a geometry request its
+             supported mask allows; on Android both write the same activity
+             property, so the channel call must be the last word), and "release"
+             stops the iOS observers on every other strategy and on the way out —
+             a sensor that kept forcing a geometry would fight the mask
+  portrait → [portraitUp, portraitDown]      (USER_PORTRAIT)
+  landscape→ [landscapeLeft, landscapeRight] (USER_LANDSCAPE)
+  (not fullscreen) → all four: the app's own default, and what the library
+             lives in again after the player is left
+
+The old `auto_rotate` boolean is still READ once (`getPlayerOrientation`): `true`
+meant `device` (and silently got `system`), `false` meant `fit`.
+```
+
 ### Thumbnail Pipeline
 
 > The on-disk `ThumbCache` (mobile by default) is **managed, not evicted**:

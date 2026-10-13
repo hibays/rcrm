@@ -17,6 +17,7 @@ import '../models/media_item.dart';
 import '../config/theme.dart';
 import '../services/net.dart';
 import '../services/player_factory.dart';
+import '../services/screen_orientation.dart';
 import '../services/system_volume.dart';
 import '../providers/library_provider.dart';
 import '../providers/settings_provider.dart';
@@ -33,6 +34,7 @@ import '../widgets/episode_picker_panel.dart';
 import '../utils/format.dart';
 import '../utils/pan_lock.dart';
 import '../utils/player_exit.dart';
+import '../utils/player_orientation.dart';
 import '../utils/player_panels.dart';
 import '../utils/player_volume.dart';
 import '../utils/poster_quiet_route.dart';
@@ -76,7 +78,15 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   StreamSubscription? _completedSub;
   StreamSubscription? _volumeSub;
   StreamSubscription? _rateSub;
+  /// The video's shape as of the last time the parameters stream was REACTED to,
+  /// so that stream's repeated reports (mpv sends them per property change) only
+  /// cost an orientation re-apply when the shape really changed. Written only by
+  /// `_onVideoParams`; `_applyOrientation` reads the live shape from the player
+  /// instead.
+  bool? _lastLandscape;
+
   StreamSubscription? _bufferingSub;
+  StreamSubscription? _shapeSub;
   bool show2x = false;
   bool fullscreen = false;
   Duration _fadeMs = const Duration(milliseconds: 200);
@@ -583,6 +593,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       _rateSub = p!.stream.rate.listen((r) {
         if (mounted) _rate.value = r;
       });
+      _shapeSub = p!.stream.videoParams.listen(_onVideoParams);
       bool handlingCompletion = false;
       _completedSub = p!.stream.completed.listen((_) {
         if (!mounted ||
@@ -628,6 +639,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _volumeSub?.cancel();
     _rateSub?.cancel();
     _bufferingSub?.cancel();
+    _shapeSub?.cancel();
     _bufferStall?.cancel();
     _videoTapTimer?.cancel();
     _gOverlayTimer?.cancel();
@@ -682,34 +694,82 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     ref.read(windowChromeVisibleProvider.notifier).setVisible(!on);
   }
 
-  // Mobile fullscreen: lock orientation to the video's aspect (landscape for
-  // wide videos, portrait for tall); free rotation again when not fullscreen
-  // or when auto-rotate is enabled.
+  // Mobile fullscreen: apply the viewer's orientation strategy
+  // (`utils/player_orientation.dart`), outside fullscreen hand the app back to
+  // the system's own preference.
+  //
+  // Called on every event that can change the answer: entering or leaving
+  // fullscreen, the strategy changing in the panel, the video's own aspect
+  // arriving (see `_onVideoParams`), and leaving the player.
   void _applyOrientation() {
     if (!_isMobile) return;
-    if (!fullscreen) {
-      SystemChrome.setPreferredOrientations(DeviceOrientation.values);
-      return;
-    }
-    final autoRotate = ref.read(uiSettingsProvider).autoRotate;
-    if (autoRotate) {
-      SystemChrome.setPreferredOrientations(DeviceOrientation.values);
-      return;
-    }
+    final request = orientationRequestFor(
+      mode: ref.read(uiSettingsProvider).playerOrientation,
+      fullscreen: fullscreen,
+      landscapeVideo: _landscapeVideo(),
+    );
+    // The ORDER lives in `applyOrientationRequest` with a test: the mask first,
+    // the sensor request second (see that function).
+    unawaited(
+      applyOrientationRequest(
+        request,
+        writeMask: SystemChrome.setPreferredOrientations,
+        writeFollow: ScreenOrientation.followDevice,
+      ),
+    );
+  }
+
+  /// The video's own aspect: true for a wide picture, false for a tall one, and
+  /// null while the player has not reported one (which `fill` refuses to guess
+  /// at).
+  ///
+  /// `state.width`/`height` and not the coded size: media_kit builds them from
+  /// mpv's `dw`/`dh` and SWAPS them for a 90/270 rotation tag, so a portrait
+  /// video recorded as a landscape frame is portrait here -- which is the whole
+  /// question this asks.
+  bool? _landscapeVideo() {
     final w = p?.state.width ?? 0;
     final h = p?.state.height ?? 0;
-    final landscape = w == 0 || w >= h; // default landscape if unknown
-    SystemChrome.setPreferredOrientations(
-      landscape
-          ? const [
-              DeviceOrientation.landscapeLeft,
-              DeviceOrientation.landscapeRight,
-            ]
-          : const [
-              DeviceOrientation.portraitUp,
-              DeviceOrientation.portraitDown,
-            ],
+    if (w <= 0 || h <= 0) return null;
+    return w >= h;
+  }
+
+  /// Hands the app back to the system's own preference, whatever the strategy
+  /// says -- the direction the library lives in.
+  ///
+  /// Deliberately not `_applyOrientation()`: the exit restores the chrome BEFORE
+  /// the route pops, so `fullscreen` is still true at that moment and the
+  /// strategy would be applied to a screen that is already leaving.
+  void _releaseOrientation() {
+    if (!_isMobile) return;
+    // The way out has its own order (`releaseOrientationRequest`): the sensor
+    // stops first, then the mask goes back to the app's default.
+    unawaited(
+      releaseOrientationRequest(
+        writeMask: SystemChrome.setPreferredOrientations,
+        writeFollow: ScreenOrientation.followDevice,
+        mask: orientationRequestFor(
+          mode: ref.read(uiSettingsProvider).playerOrientation,
+          fullscreen: false,
+          landscapeVideo: null,
+        ).orientations,
+      ),
     );
+  }
+
+  /// The player has (re)reported the video's parameters.
+  ///
+  /// This is the event the old code was missing: it decided the orientation when
+  /// fullscreen was toggled, when the size was often not known yet, and then
+  /// never asked again -- so a portrait video locked landscape (the unknown-size
+  /// default) stayed that way, and swapping to a different-shaped video in place
+  /// kept the previous one's lock. Only a change of SHAPE costs anything here.
+  void _onVideoParams(_) {
+    if (!_isMobile) return;
+    final landscape = _landscapeVideo();
+    if (landscape == _lastLandscape) return;
+    _lastLandscape = landscape;
+    _applyOrientation();
   }
 
   void _togglePlayPause() {
@@ -1185,6 +1245,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _completedSub?.cancel();
     _volumeSub?.cancel();
     _rateSub?.cancel();
+    // Including the shape: the outgoing screen's player stays alive for the whole
+    // transition, and a `video-params` report from it would re-apply ITS
+    // orientation strategy on top of the incoming screen's.
+    _shapeSub?.cancel();
     _scrollCtrl?.removeListener(_onScroll);
     p?.setVolume(0);
     if (mounted) setState(() {});
@@ -1267,7 +1331,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   void _restoreExitChrome() {
     if (_isMobile) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-      SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+      _releaseOrientation();
     } else if (fullscreen) {
       if (!_globalImmersive) {
         windowManager.setFullScreen(false);
@@ -2206,10 +2270,11 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     return Positioned.fill(
       child: PlayerSettingsPanel(
         facts: _playbackInfo(),
-        // Both rows are about what THIS platform can do: rotation is mobile
-        // only, the key map is desktop only, and a control that cannot act is
-        // not shown at all.
-        showAutoRotate: _isMobile,
+        // Both rows are about what THIS platform can do: orientation is mobile
+        // only (both mobile platforms, each with its own way of following the
+        // phone — see `services/screen_orientation.dart`), the key map is desktop
+        // only, and a control that cannot act is not shown at all.
+        showOrientation: _isMobile,
         showShortcuts: !_isMobile,
         mode: PlaybackMode.fromString(settings.playbackMode),
         onModeChanged: (m) {
@@ -2219,10 +2284,11 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           if (m != PlaybackMode.loopAll) _clearUpNext();
           ref.read(uiSettingsProvider.notifier).setPlaybackMode(m.key);
         },
-        autoRotate: settings.autoRotate,
-        onAutoRotateChanged: (v) {
-          ref.read(uiSettingsProvider.notifier).setAutoRotate(v);
-          // Re-apply orientation immediately when toggled.
+        orientation: settings.playerOrientation,
+        onOrientationChanged: (o) {
+          ref.read(uiSettingsProvider.notifier).setPlayerOrientation(o);
+          // The strategy is a property of the screen the viewer is looking at,
+          // so it applies now rather than at the next fullscreen.
           _applyOrientation();
         },
         onDismiss: () {

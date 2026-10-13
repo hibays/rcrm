@@ -80,6 +80,10 @@ class MainActivity : FlutterActivity() {
         // The device's media volume, which is what the player's volume control
         // moves on mobile (`SystemVolumeChannel.kt`).
         SystemVolumeChannel.attach(this, flutterEngine.dartExecutor.binaryMessenger)
+        // The one orientation the framework's own channel cannot request:
+        // Android's `fullSensor`, which follows the phone even when the user has
+        // turned sensor rotation off (`OrientationChannel.kt`).
+        OrientationChannel.register(flutterEngine.dartExecutor.binaryMessenger, this)
     }
 
     override fun onRequestPermissionsResult(

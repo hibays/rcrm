@@ -6,6 +6,7 @@
 import 'package:flutter/material.dart';
 
 import '../config/theme.dart';
+import '../utils/player_orientation.dart';
 
 /// Playback mode enum for video end-of-stream behavior.
 enum PlaybackMode {
@@ -68,16 +69,20 @@ class PlayerMediaFact {
 class PlayerSettingsPanel extends StatelessWidget {
   final PlaybackMode mode;
   final ValueChanged<PlaybackMode> onModeChanged;
-  final bool autoRotate;
-  final ValueChanged<bool> onAutoRotateChanged;
+
+  /// How the fullscreen player chooses which way up it is
+  /// (`utils/player_orientation.dart`).
+  final PlayerOrientation orientation;
+  final ValueChanged<PlayerOrientation> onOrientationChanged;
+
   final VoidCallback onDismiss;
 
-  /// Whether the rotation row belongs on this screen at all.
+  /// Whether the orientation row belongs on this screen at all.
   ///
   /// Rotation is a mobile concern and only mobile code acts on it, so on
-  /// desktop the switch would be a control that cannot do anything — the one
+  /// desktop the row would be a control that cannot do anything — the one
   /// kind of control this app does not ship.
-  final bool showAutoRotate;
+  final bool showOrientation;
 
   /// What is playing, from `PlayerState`. Empty is a normal answer: it means
   /// the player has not reported anything yet, not that the file is unusual.
@@ -90,10 +95,10 @@ class PlayerSettingsPanel extends StatelessWidget {
     super.key,
     required this.mode,
     required this.onModeChanged,
-    required this.autoRotate,
-    required this.onAutoRotateChanged,
+    required this.orientation,
+    required this.onOrientationChanged,
     required this.onDismiss,
-    this.showAutoRotate = false,
+    this.showOrientation = false,
     this.facts = const [],
     this.showShortcuts = false,
   });
@@ -142,7 +147,7 @@ class PlayerSettingsPanel extends StatelessWidget {
                       const SizedBox(height: 20),
                       _label('Playback Mode'),
                       const SizedBox(height: 10),
-                      _modeSegments(),
+                      _modeSegments(context),
                       const SizedBox(height: 8),
                       Text(
                         mode.note,
@@ -152,16 +157,24 @@ class PlayerSettingsPanel extends StatelessWidget {
                           height: 1.4,
                         ),
                       ),
-                      if (showAutoRotate) ...[
+                      if (showOrientation) ...[
                         const SizedBox(height: 20),
-                        _switchRow(
-                          title: 'Auto-Rotate',
-                          note:
-                              'Ignore system rotation lock; follow device '
-                              'orientation',
-                          value: autoRotate,
-                          onChanged: onAutoRotateChanged,
+                        _label('Fullscreen Orientation'),
+                        const SizedBox(height: 10),
+                        _orientationSegments(context),
+                        const SizedBox(height: 8),
+                        Text(
+                          orientationNote(orientation.policy),
+                          style: const TextStyle(
+                            color: Colors.white38,
+                            fontSize: 11,
+                            height: 1.4,
+                          ),
                         ),
+                        if (orientation.isLock) ...[
+                          const SizedBox(height: 10),
+                          _lockSegments(context),
+                        ],
                       ],
                       if (facts.isNotEmpty) ...[
                         const SizedBox(height: 22),
@@ -229,7 +242,7 @@ class PlayerSettingsPanel extends StatelessWidget {
     ),
   );
 
-  Widget _modeSegments() {
+  Widget _modeSegments(BuildContext context) {
     return SizedBox(
       width: double.infinity,
       child: SegmentedButton<PlaybackMode>(
@@ -237,89 +250,117 @@ class PlayerSettingsPanel extends StatelessWidget {
             .map(
               (m) => ButtonSegment<PlaybackMode>(
                 value: m,
-                label: Text(
-                  m.label,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: mode == m ? Colors.black : Colors.white54,
-                  ),
-                ),
+                label: Text(m.label),
               ),
             )
             .toList(),
         selected: {mode},
+        // No check on the chosen segment, here or on the orientation rows: the
+        // accent fill already says which one it is, and the icon is what made
+        // this row wrap onto three lines ("Loo / p / All") on a 320dp phone —
+        // measured at 320x640, where the three labels plus the icon need more
+        // than the panel can give.
+        showSelectedIcon: false,
         onSelectionChanged: (sel) {
           if (sel.isNotEmpty) onModeChanged(sel.first);
         },
-        style: ButtonStyle(
-          backgroundColor: WidgetStateProperty.resolveWith(
-            (states) => states.contains(WidgetState.selected)
-                ? _accent
-                : Colors.white.withValues(alpha: 0.06),
-          ),
-          foregroundColor: WidgetStateProperty.resolveWith(
-            (states) => states.contains(WidgetState.selected)
-                ? Colors.black
-                : Colors.white54,
-          ),
-          visualDensity: VisualDensity.compact,
-          padding: WidgetStateProperty.all(
-            const EdgeInsets.symmetric(vertical: 8),
-          ),
-          shape: WidgetStateProperty.all(
-            RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(RCrmRadii.md),
-            ),
-          ),
-        ),
+        style: _segmentStyle(context),
       ),
     );
   }
 
-  Widget _switchRow({
-    required String title,
-    required String note,
-    required bool value,
-    required ValueChanged<bool> onChanged,
-  }) {
-    return Row(
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                ),
+  Widget _orientationSegments(BuildContext context) {
+    final policies = orientationPolicies();
+    return SizedBox(
+      width: double.infinity,
+      child: SegmentedButton<OrientationPolicy>(
+        segments: policies
+            .map(
+              (p) => ButtonSegment<OrientationPolicy>(
+                value: p,
+                label: Text(p.label),
               ),
-              const SizedBox(height: 2),
-              Text(
-                note,
-                style: const TextStyle(color: Colors.white38, fontSize: 11),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 12),
-        SizedBox(
-          height: 28,
-          child: Switch(
-            value: value,
-            onChanged: onChanged,
-            activeThumbColor: _accent,
-            activeTrackColor: _accent.withValues(alpha: 0.4),
-            inactiveThumbColor: Colors.white38,
-            inactiveTrackColor: Colors.white.withValues(alpha: 0.08),
-          ),
-        ),
-      ],
+            )
+            .toList(),
+        selected: {orientation.policy},
+        // See `_modeSegments`: the fill says which one is chosen, and four
+        // segments plus a check icon do not fit a narrow phone.
+        showSelectedIcon: false,
+        onSelectionChanged: (sel) {
+          if (sel.isEmpty) return;
+          // No "already selected" case to handle: the framework does not call
+          // back for the segment that is already chosen, so re-tapping the
+          // locked policy leaves the direction the viewer picked exactly where it
+          // was, and picking a lock that is NOT in force enters it at its own
+          // default -- landscape, because this is a video player.
+          onOrientationChanged(sel.first.entry);
+        },
+        style: _segmentStyle(context),
+      ),
     );
   }
+
+  /// The direction the lock means, shown only while the lock is the policy.
+  Widget _lockSegments(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      child: SegmentedButton<PlayerOrientation>(
+        segments: <ButtonSegment<PlayerOrientation>>[
+          for (final o in <PlayerOrientation>[
+            PlayerOrientation.portrait,
+            PlayerOrientation.landscape,
+          ])
+            ButtonSegment<PlayerOrientation>(
+              value: o,
+              label: Text(
+                o == PlayerOrientation.portrait ? 'Portrait' : 'Landscape',
+              ),
+            ),
+        ],
+        selected: {orientation},
+        showSelectedIcon: false,
+        onSelectionChanged: (sel) {
+          if (sel.isNotEmpty) onOrientationChanged(sel.first);
+        },
+        style: _segmentStyle(context),
+      ),
+    );
+  }
+
+  /// The one style all three segmented rows share (playback mode, the
+  /// orientation policy, and the lock's direction).
+  ///
+  /// The label's colour comes from `foregroundColor` rather than from each
+  /// `Text`, so the selected segment cannot end up with two colours fighting.
+  /// The `textStyle` is built FROM the theme's own label style, and that is not
+  /// cosmetic: a `ButtonStyle.textStyle` is what the labels are rendered with,
+  /// so a bare `TextStyle` here replaces the inherited one and takes the font
+  /// family with it — the panel then drew its segment labels in the engine's
+  /// fallback face instead of the app's.
+  ButtonStyle _segmentStyle(BuildContext context) => ButtonStyle(
+    backgroundColor: WidgetStateProperty.resolveWith(
+      (states) => states.contains(WidgetState.selected)
+          ? _accent
+          : Colors.white.withValues(alpha: 0.06),
+    ),
+    foregroundColor: WidgetStateProperty.resolveWith(
+      (states) => states.contains(WidgetState.selected)
+          ? Colors.black
+          : Colors.white54,
+    ),
+    textStyle: WidgetStateProperty.all(
+      (Theme.of(context).textTheme.labelLarge ??
+              const TextStyle())
+          .copyWith(fontSize: 12, fontWeight: FontWeight.w600),
+    ),
+    visualDensity: VisualDensity.compact,
+    padding: WidgetStateProperty.all(const EdgeInsets.symmetric(vertical: 8)),
+    shape: WidgetStateProperty.all(
+      RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(RCrmRadii.md),
+      ),
+    ),
+  );
 
   /// Two columns of label/value pairs, separated by tone rather than rules:
   /// the value is white and the label silver, and the rows breathe.
