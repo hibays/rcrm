@@ -1,23 +1,27 @@
 // utils/player_eof.dart
-// Where a finished file is, and the one question the position stream asks while
-// the player is sitting there.
+// Where a finished file is, and what a seek does to that.
 //
 // This is a VALUE, not a set of loose predicates, and it is the only place the
 // app is allowed to keep the ending. It has to: media_kit reports
 // `playing: false` when `eof-reached` goes to 1 and NOTHING ever undoes it. There
 // is no handler for `eof-reached` returning to 0, `seek` does not touch `playing`,
-// and the only other writers are `stop()` and `play()`. So after the viewer drags
-// the bar back from the last frame the SCREEN still believes the file is paused,
-// whatever mpv is doing -- and the offer to play the next video counts down over a
-// video the viewer is watching again. The position is the only signal in the
-// whole player that can report any of it, and reading it is arithmetic.
+// and the only other writers are `stop()` and `play()`. So the app cannot learn
+// from the player that a file has become live again, and cannot learn from it
+// that one is still the finished file it was.
 //
-// (What the picture is doing afterwards is NOT this file's business and used to
-// be assumed wrongly: media_kit runs mpv with `--keep-open=yes`, so a finished
-// file is left PAUSED on its last frame and dragging the bar back moves
-// `time-pos` without waking anything up. `video_player_screen._resumeAfterTakeBack`
-// is what actually starts it, because `p.play()` would restart the file at 0
-// instead — see there.)
+// WHY THE SEEK, AND NOT THE POSITION STREAM — this is the second version of this
+// rule and the first one shipped frozen. The first inferred a take-back from the
+// position reports, reasoning that the position was "the only signal that can
+// report it". It is not: the four seeks this screen issues (bar scrub, the mobile
+// horizontal swipe, the PiP drag, the arrow keys) are OUR calls, so the
+// direction is known exactly instead of reconstructed. mpv's position reports
+// cannot be trusted to mean "the viewer went back", because seeking PAST the end
+// — which is exactly what holding the right arrow key does, since the cached
+// `state.position` is stale once the file is paused at its last frame — clamps,
+// and the clamped result reads as a backwards move. That cost two bugs at once:
+// the up-next offer was withdrawn by a forward gesture, and an un-pause was
+// issued on a file that immediately reached eof again, so the picture froze with
+// the transport claiming "playing".
 //
 // Immutable on purpose, like every other value this screen reduces over: each
 // event answers with the next value, a test asserts on the pairs without a
@@ -34,8 +38,7 @@ class PlayerEof {
   /// file starts, or `loopOne` restarts this one in place.
   ///
   /// The app's own memory of the ending, because media_kit cannot report it as a
-  /// fact that comes and goes (see the file header). Three things read it, and
-  /// each was wrong without it:
+  /// fact that comes and goes (see the file header). Two things read it:
   ///
   ///  * the completion handler, as a LATCH -- one end-of-playback decision per
   ///    ending. mpv reports the end again after every take-back, and `loopOne`
@@ -43,66 +46,55 @@ class PlayerEof {
   ///    the viewer had just dragged back to 0.
   ///  * the stall timer: nothing is loading on a finished file, so a spinner over
   ///    the last frame claims "working on it" about nothing.
-  ///  * the position stream, which is the only thing that reports a take-back.
+  ///
+  /// The position stream is deliberately NOT a reader: see the header.
   final bool finished;
 
-  /// Where the position stood when the file finished, in milliseconds. Meaningful
-  /// only while [finished]; the baseline [onPosition] measures against.
-  ///
-  /// Fixed rather than re-tracked on every report: the reports wobble a frame or
-  /// two around the duration at the end of a file, and a wobble is already inside
-  /// [takeBackEpsilonMs], so following it would buy nothing and would make "did
-  /// anything change?" mean two different things.
-  final int endPositionMs;
+  const PlayerEof({this.finished = false});
 
-  const PlayerEof({this.finished = false, this.endPositionMs = 0});
-
-  /// How far the position must move BACKWARDS before it counts as the viewer
-  /// taking the video back, rather than the last frame being reported.
+  /// How far a seek must go BACKWARDS before it counts as the viewer taking the
+  /// video back, rather than a nudge inside the frame they are already on.
   ///
-  /// Not zero, because at the end of a file the reported position sits within a
-  /// frame or two of the duration and wobbles there -- a dropped frame, a
-  /// container whose last timestamp rounds down, `demuxer-cache-time` settling.
-  /// A viewer dragging backwards moves hundreds of milliseconds at a time (a
-  /// full-width bar for a ten-minute video is ~0.6ms per pixel), so anything
-  /// inside this window is noise and anything outside it is a deliberate move.
-  static const int takeBackEpsilonMs = 200;
+  /// Not zero, because the scrub bar re-seeks continuously while a pointer or
+  /// finger is down, and a target that sits a few milliseconds behind the
+  /// reported position is a hand settling rather than a decision. A deliberate
+  /// move is orders of magnitude larger: the arrow keys jump 10s, and a
+  /// full-width bar on a ten-minute video is ~0.6ms per pixel.
+  static const Duration takeBackEpsilon = Duration(milliseconds: 200);
 
   /// The state of a file that has not finished: a new one, a restarted one, or
   /// one the viewer took back.
   static const PlayerEof idle = PlayerEof();
 
-  /// The file has ended, having stopped at [positionMs].
-  ///
-  /// The baseline is the position at that instant, which is what the next
-  /// position report is measured against. `completed: true` is the only way in:
-  /// media_kit also publishes `completed: false` every time a file STARTS
-  /// (`stop()`, which `open()` calls internally), and treating that as an ending
-  /// offers the next video over one that has only just begun.
-  PlayerEof endedAt(int positionMs) =>
-      PlayerEof(finished: true, endPositionMs: positionMs);
+  /// The file has ended. `completed: true` is the only way in: media_kit also
+  /// publishes `completed: false` every time a file STARTS (`stop()`, which
+  /// `open()` calls internally), and treating that as an ending would offer the
+  /// next video over one that has only just begun.
+  PlayerEof ended() => const PlayerEof(finished: true);
 
-  /// A position report, which is either this state or the evidence that the
-  /// viewer has taken the video back.
+  /// The state after a seek to [target] from [current].
   ///
-  /// Backwards only, and by more than [takeBackEpsilonMs]: a finished file has
-  /// nothing ahead of where it stopped, so a forward report is not a take-back,
-  /// and a millimetre of jitter is not an intent. Returns `this` unchanged when
-  /// nothing happened, so the caller can ask `next != _eof` and be right.
-  PlayerEof onPosition(int positionMs) =>
-      finished && positionMs < endPositionMs - takeBackEpsilonMs ? idle : this;
+  /// Backwards by more than [takeBackEpsilon], and only while the file is
+  /// finished: that is the viewer taking it back, and the caller withdraws the
+  /// offer and un-pauses (mpv leaves a finished file paused on its last frame, so
+  /// the seek alone moves `time-pos` and wakes nothing).
+  ///
+  /// Forwards, or by less than the epsilon, this state comes back unchanged --
+  /// including a forward seek past the end, which is what holding the right
+  /// arrow key does and which must stay a forward seek.
+  PlayerEof seeked({
+    required Duration target,
+    required Duration current,
+  }) => finished && target < current - takeBackEpsilon ? idle : this;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is PlayerEof &&
-          other.finished == finished &&
-          other.endPositionMs == endPositionMs;
+      other is PlayerEof && other.finished == finished;
 
   @override
-  int get hashCode => Object.hash(finished, endPositionMs);
+  int get hashCode => finished.hashCode;
 
   @override
-  String toString() =>
-      'PlayerEof(finished: $finished, at: ${endPositionMs}ms)';
+  String toString() => 'PlayerEof(finished: $finished)';
 }

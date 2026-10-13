@@ -642,7 +642,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         // take-back, and `loopOne` re-enters this same file immediately, so a
         // second pass would seek a video the viewer had just dragged back to 0.
         if (_eof.finished) return;
-        _eof = _eof.endedAt(p!.state.position.inMilliseconds);
+        _eof = _eof.ended();
         final mode = ref.read(uiSettingsProvider).playbackMode;
         switch (mode) {
           case 'loopAll':
@@ -845,55 +845,65 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _applyOrientation();
   }
 
-  /// A position report, and the one thing it decides.
+  /// A position report, throttled for the mini bar.
   ///
-  /// While the file is finished this is where "the viewer took it back" is
-  /// detected, because it is the only signal that reports it: media_kit publishes
-  /// `playing: false` at the end and never undoes it ([_eof]), and nothing else
-  /// in the player reports that the file has become live again. Without this the
-  /// transport sits on ▶ over a picture that is not moving, and the up-next
-  /// countdown keeps running over a video the viewer is watching again -- which
-  /// is also how it used to advance a video they had just decided not to leave.
+  /// Deliberately NOT where a take-back is detected: it used to be, and the
+  /// position stream cannot answer that question (see `utils/player_eof.dart`).
   void _onPosition(Duration pos) {
     final ms = pos.inMilliseconds;
-    // The value answers whether anything happened, so the screen needs no second
-    // copy of the truth to compare against.
-    final next = _eof.onPosition(ms);
-    if (next != _eof) {
-      _eof = next;
-      _clearUpNext();
-      _resumeAfterTakeBack();
-    }
     if ((ms - _miniLastMs).abs() < 100) return;
     _miniLastMs = ms;
     if (mounted) _miniPos.value = pos;
   }
 
-  /// Starts a finished file running again from the frame the viewer dragged back
+  /// The ONE way this screen seeks, because a seek is also how a finished file is
+  /// taken back.
+  ///
+  /// The direction is decided HERE, from the target the viewer asked for, rather
+  /// than reconstructed from the position reports afterwards. Every seek this
+  /// screen issues is its own -- the bar scrub, the mobile horizontal swipe, the
+  /// PiP drag, the arrow keys -- so "did they go back" is a question about our
+  /// own call, and the answer is exact. Asking mpv instead cost two bugs: a
+  /// forward seek past the end (holding the right arrow key, where the cached
+  /// `state.position` is stale because the file is paused at its last frame)
+  /// clamps and reads as a backwards move, which withdrew the up-next offer and
+  /// un-paused a file that immediately reached eof again.
+  void _seekTo(Duration target) {
+    final player = p;
+    if (player == null) return;
+    // Read BEFORE the seek: this is where the file is now, which is what the
+    // target is compared against.
+    final next = _eof.seeked(target: target, current: player.state.position);
+    player.seek(target);
+    if (next == _eof) return;
+    _eof = next;
+    _clearUpNext();
+    _resumeAfterTakeBack();
+  }
+
+  /// Starts a finished file running again from the frame the viewer seeked back
   /// to.
   ///
   /// An UNPAUSE, and not `p.play()`. Two facts, both measured rather than
   /// assumed: media_kit runs mpv with `--keep-open=yes`, which leaves a finished
-  /// file **paused on its last frame** — dragging the bar back moves `time-pos`
-  /// and nothing else, so the picture froze on the frame it was dragged to, and
-  /// `p.play()` is the obvious cure. But media_kit clears `state.completed` only
-  /// in `stop()` and `START_FILE`, never on a seek, so at this moment it is still
-  /// true and `play()` takes its "the playlist ended, play it again" branch
+  /// file **paused on its last frame** — a seek back moves `time-pos` and nothing
+  /// else, so the picture froze on the frame it was dragged to, and `p.play()` is
+  /// the obvious cure. But media_kit clears `state.completed` only in `stop()`
+  /// and `START_FILE`, never on a seek, so at this moment it is still true and
+  /// `play()` takes its "the playlist ended, play it again" branch
   /// (`real.dart:373`) — it seeks to 0 first, which throws the viewer from
-  /// wherever they just dragged back to the first frame. Un-pausing and restarting
-  /// are two different things and only one of them is wanted here.
+  /// wherever they just seeked back to the first frame. Un-pausing and
+  /// restarting are two different things and only one of them is wanted here.
   ///
   /// So the property is written straight to mpv, which is also what makes the
   /// state honest: media_kit observes `pause` (`real.dart:1507`) and publishes
   /// `playing` from it, so the icon, this screen's `_playing` and the PiP gate
-  /// follow the player instead of this method guessing. `_playing` is still
-  /// written first, because the icon should not sit on ▶ for the few ms until
-  /// the echo arrives — and it is now a record of what was ASKED for, not an
-  /// inference from a position that may have moved without anything playing.
+  /// follow the player instead of this method guessing. `_playing` is written
+  /// first so the icon does not sit on ▶ for the few ms until the echo arrives.
   ///
   /// The platform check is `PlayerFactory`'s, for the same reason as there: a
   /// host without the native half simply does not get the un-pause, and the
-  /// viewer can still drag or press play.
+  /// viewer can still seek or press play.
   void _resumeAfterTakeBack() {
     _playing.value = true;
     final platform = p?.platform;
@@ -1109,7 +1119,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         previewMs: _seekPreviewMs,
         duration: p!.state.duration,
       );
-      if (target != null) p!.seek(target);
+      if (target != null) _seekTo(target);
     }
     _gMode = 0;
     if (mode == 3) {
@@ -1509,7 +1519,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           onSeek: (delta) {
             if (p == null) return;
             final pos = p!.state.position + delta;
-            p!.seek(Duration(seconds: pos.inSeconds.clamp(0, 999999)));
+            _seekTo(Duration(seconds: pos.inSeconds.clamp(0, 999999)));
           },
           onVolume: (delta) {
             _setVolume(_volume.value + delta * 100);
@@ -2019,7 +2029,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
               timeMode: _timeMode,
               onTimeModeChanged: _toggleTimeMode,
               onPlayPause: _togglePlayPause,
-              onSeek: (d) => p?.seek(d),
+              onSeek: _seekTo,
               onScrubActive: _onScrubActive,
               onVolumeChanged: (v) => _setVolume(v, persist: false),
               onVolumeChangeEnd: _queueVolSave,
@@ -2193,7 +2203,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       previewMs: _pipSeekMs,
       duration: p?.state.duration ?? Duration.zero,
     );
-    if (target != null) p?.seek(target);
+    if (target != null) _seekTo(target);
     setState(() => _pipSeeking = false);
   }
 

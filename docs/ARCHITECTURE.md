@@ -154,26 +154,29 @@ value, `PlayerEof` (`utils/player_eof.dart`), not as a flag beside the screen:
 | `stop()` publishes `completed: **false**` (with `playing: false`, `position: 0`, `duration: 0`, an empty `VideoParams`) and **`open()` calls `stop()` internally** | the completion handler must check the VALUE. `listen((_) …)` ran the end-of-video logic for a file merely *starting*; only the race between the screen's un-awaited `open()` and `play()` kept it quiet (`play()` publishes `playing: true` optimistically, so `hasBeenPlaying` can already be true when `open()`'s `stop()` lands). |
 | `START_FILE` forces `buffering: true` **ungated**, while `playing`/`completed` on that same event are gated by `isPlayingStateChangeAllowed` | the stall timer is the one thing that is not gated, so it is suppressed on a finished file: nothing is loading there, and a spinner over the last frame claims "working on it" about nothing. |
 
-`PlayerEof` is a value class, not a set of predicates: `endedAt(positionMs)` is
-the only way in, `onPosition(ms)` is the only way the position stream can move it,
-and `onPosition` returns **the same instance** when nothing happened — so the
-screen asks `next != _eof` instead of keeping a second copy of the truth. It is
-read three times: as the completion handler's **latch** (`finished` — mpv reports
-the end again after every take-back, and `loopOne` re-enters the same file
-immediately, so a second pass used to seek a video the viewer had just dragged
-back to 0), by the stall timer, and by the **position stream** — the only signal
-in the whole player that reports a take-back, because every seek path (bar scrub,
-horizontal swipe, PiP drag, arrow keys) converges on it. The take-back rule is
-`PlayerEof.takeBackEpsilonMs` (200ms): the reported position wobbles a frame or
-two around the duration at the end of a file, and reading that as a take-back
-would withdraw the offer a frame after offering it. The baseline
-(`endPositionMs`) is fixed at the ending rather than re-tracked per report —
-the reports already sit inside the epsilon, and following them would give "did
-anything change?" two meanings. A take-back withdraws the offer (`_clearUpNext`,
-what the ✕ does) and records `_playing = true` — the position moving is the proof
-that the picture is rolling. Pressing **play** on a finished file withdraws the
-offer too, because media_kit reads that gesture as "the playlist ended, play it
-again" and restarts this one from 0; that is a coherent answer, and the card was
+`PlayerEof` is a value class, not a set of predicates: `ended()` is the only way
+in, `seeked(target:, current:)` the only way a seek can move it, and a seek that
+changes nothing returns **the same instance** — so the screen asks `next == _eof`
+instead of keeping a second copy of the truth. It is read twice: as the completion
+handler's **latch** (`finished` — mpv reports the end again after every take-back,
+and `loopOne` re-enters the same file immediately, so a second pass used to seek a
+video the viewer had just dragged back to 0) and by the stall timer. A take-back
+is decided by the **seek this screen issued**, never reconstructed from the
+position reports — that was the first version, and it shipped two bugs: holding
+the right arrow key seeks PAST the end (the cached `state.position` is stale,
+because the file is paused at its last frame), mpv clamps the result, and a clamp
+reads as a backwards move, which withdrew the up-next offer and un-paused a file
+that immediately reached eof again — a frozen picture with the transport claiming
+"playing". All four seek paths (bar scrub, horizontal swipe, PiP drag, arrow keys)
+go through `_seekTo` for the same reason the keyboard toggle shares
+`_togglePlayPause`: one entry point, so the direction is known exactly.
+`PlayerEof.takeBackEpsilon` (200ms) keeps a settling hand from counting — the
+scrub bar re-seeks continuously, and a target a few milliseconds behind the
+reported position is not a decision. A take-back withdraws the offer
+(`_clearUpNext`, what the ✕ does) and un-pauses. Pressing **play** on a finished
+file withdraws the offer too, because media_kit reads that gesture as "the
+playlist ended, play it again" and restarts this one from 0; that is a coherent
+answer, and the card was
 the alternative the viewer was already being offered. Known limitation, pre-existing
 and not reachable only through this change: `state.completed` can never be cleared
 without unloading the file, so a **pause then play** after any ending restarts at
