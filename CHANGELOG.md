@@ -152,3 +152,73 @@ Update report:
 		④ 低优先项收尾：媒体元数据模型去掉裸 as(错类型字段不再让整份文档退化为 none)；播放器文本测量加缓存(按 文本+样式+缩放 记忆，上限 128)；控制栏在最窄宽度下继续降级(先让全屏、再让静音，播放键恒在)并修掉无条件 gap 导致的 2px 溢出，像素扫描下界从 120dp 降到 40dp；Rust 元数据导出的违约分支区分 no buffer/empty input/bad capacity 并按声明容量接管释放(不再两侧都不释放)；同步的缩略图导出加 catch_unwind(解码器 panic 不再跨 FFI abort)；鉴权头读取全部改为缺键即降级(5 处)；NativeFetch.retryWithCopy 真正被生产代码使用——分块响应(无法精确分配)回退到通用取字节路径，此前会直接丢掉缩略图；查看器下拉关闭改为只在 1x(fit) 生效——放大状态下拖拽只做平移，不再能从顶边把整屏拽掉(原先的 top-edge 判定已删除，连同只服务于它的 atTopEdge 通道与 ViewerZoom.atTopEdge)
 		⑤ Windows 自绘标题栏拖动改为**鼠标发起**的移动：`rcrm/window` 通道 startWindowDrag → runner ReleaseCapture(); PostMessage(WM_NCLBUTTONDOWN, HTCAPTION, 0)（Electron/Tauri 同款）。原因：startDragging() 的 WM_SYSCOMMAND+SC_MOVE 被系统当作键盘移动，**Win11 会吸附、Win10 完全不吸附**；新做法两者都能吸附。fullscreen 时不拖（Dart isFullScreen() + runner WS_THICKFRAME 兜底）。曾试的子窗口 WM_NCHITTEST/HTTRANSPARENT 委托已放弃（与 fullscreen 冲突、会出现残影）。最大化时的客户区几何归 window_manager 的插件代理（TitleBarStyle.hidden 下它接管每个 WM_NCCALCSIZE），runner 里那个 case 已确认是死代码并删除
 		⑥ open-code-review 只读审查后的修复：缩略图 worker 的输入缓冲改为**主 isolate 单一所有者**（worker 不再释放），按 isolate 归属登记、只在该 isolate 退出时或其回复到达时回收，`NativeBytes.reclaim()` 幂等——原来的两处会 use-after-free / double free；同批修掉被换代请求的缓冲泄漏、exit 事件不标记 worker 死亡（后续请求白等 15s）、spawn 失败泄漏 isolate 与两个 ReceivePort；AVIF 解码失败不再泄漏 dav1d context（RAII 必关）、`alloc_buf` 检查空指针、rav1d 的 frame_size_limit 从 0 改为接上限（容器 ispe 可伪造，此前是唯一闸门），AVIF 上限参数化并**删除 `#[cfg(test)] u64::MAX` 逃逸**（回归测试改为：生产入口必须接受 39MP 夹具、而低于文件体量的 ceiling 必须拒绝它），并把三个软件解码器的上限**统一为 64MP**（AVIF 原为 8.3MP，会拒掉所有 12MP 手机照片；JXL 与 HEIC 已是 64MP，另加 65536 边长与画布像素的 sanity 上限），三个 decode 导出与 metadata 同形改用 `Builder::spawn` + `catch_unwind`（线程创建失败不再 abort 进程、解码 panic 不再让 Dart 空等并占 gate 名额）；`window_drag` 通道不可用时仍回落到 startDragging（此前"回落前 return"会让旧 runner 只能拖一次）；AVIF 未处理 irot/imir 一事写成显式限制说明；文档修正：README 快速开始补 `--http`（原来起的是明文 FTP）、CHANGELOG 修复一个吃掉 `r` 的孤立 CR、DESIGN 补控制降级阶梯、ARCHITECTURE 修正 ⓘ 不在 AppBar、rust_bridge 所有权注释改为"取得所有权"
+
+4. 2026.10.13.1.11.PM.Tuesday
+	*本批为 2026.10.10–10.13 的改动汇总(共 27 个提交)*
+
+	1) 播放器全屏方向改为策略，且两端都真正做得到
+		① 五个值 `fill | system | device | portrait | landscape`，面板给四个策略(两个锁定合成一个，选中后下面出现方向行)：Fit(跟随视频，宽视频锁横屏)、System(只按系统允许的来，旋转锁有效)、Follow(按手机实际机位，**无视旋转锁**)、Lock(定住某一方向)
+		② 重建的原因：旧的 Auto-Rotate 开关写着"Ignore system rotation lock; follow device orientation"，而它唯一的调用 `setPreferredOrientations`(四向)在 Android embedding 里被解码成 `FULL_USER`，平台文档原文是 "Respect the user's sensor-based rotation preference"——锁开着的手机上，它开与不开完全一样。真正无视锁的是 `FULL_SENSOR`("Ignores user's setting to turn off sensor-based rotation")，任何 `DeviceOrientation` 列表都表达不了它，所以 App 为此有了自己的通道 `rcrm/orientation`
+		③ iOS 用自己的方式到达同一处：`UIDevice.current.orientation` 是**硬件机位**(不受旋转锁影响)，再把界面显式搬过去——iOS 16+ 用公开的 `requestGeometryUpdate`，13–15 用长期沿用的 `setValue(_:forKey:"orientation")` + `attemptRotationToDeviceOrientation`。注意 `UIDeviceOrientation.landscapeLeft` 对应界面的 `landscapeRight`，读这个传感器的 App 都必须反转
+		④ 另一处坏在同一件事的两半：旧代码只判断一次，读的还是播放器常常尚未上报的尺寸(未知就当横屏)，之后再不重算——竖视频会整场锁在横屏。现在 进/出全屏、换策略、`videoParams` 尺寸到达、离开播放器 都会重算；`fit` 在尺寸未知时**什么都不强制**(对谁都不知道的形状，任何猜测都会锁住画面，而锁定还会顺带阻止用户转动手机去看宽视频)
+		⑤ 顺序有讲究，且被抽成带测试的纯函数(`applyOrientationRequest` / `releaseOrientationRequest`)：进是"先 mask 后 sensor"(iOS 只在自己 mask 允许时才执行几何请求；Android 上两者写同一个 Activity 属性，所以 sensor 必须最后)，出是"先停 sensor 再改 mask"(iOS 停止跟随之前会一直强制几何，与新 mask 打架)
+		⑥ 审查抓到一条 high：我为 sensor 请求加的 latch 使**第二次** `_applyOrientation` 只写 mask(=`FULL_USER`)而跳过 sensor，Follow 静默退化成 System——而且走的是常规路径(尺寸到达、跳转新播放器、700ms 重施)。两个原生半边本就幂等，latch 删除，sensor 在每次 mask 之后重发
+		⑦ 未验证：没有安卓真机也没有 macOS，Swift 编不了，各策略的真实旋转一次都没跑过；**iOS 在旋转锁打开时是否真的执行那个几何请求**未知——若不执行，诚实的收尾是把 iOS 的 Follow 撤掉，而不是留着平台不肯兑现的承诺。iOS 16 以下那条是未公开 API，作为显式接受的风险写进代码与文档(替代方案：抬到 16，或 16 以下不提供 Follow)
+
+	2) 移动端音量绑定系统媒体流
+		① `use_system_volume`(Settings→Display，移动端默认开、桌面端不提供)：音量控件驱动**设备**的媒体流，播放器自身钉在 unity(同时写会叠两次衰减)，开屏以手机当前音量为准，绑定期间不写回 `player_volume`(那个数字属于手机)
+		② 算术只在 Dart(`services/system_volume.dart`)：平台只回原始流数字(`index`/`min`/`max`/`muted`/`lastAudible`/`fixed`)并接受 index，于是百分比、量化(15 档手机没有 43%，只有 40%)、取消静音回退都是纯函数并单测
+		③ 原生半边：Kotlin 走 `STREAM_MUSIC`、flags 0(系统的音量面板绝不盖住视频)，两条变更源——过滤过的 `@hide VOLUME_CHANGED_ACTION` 广播 **加** 只看音量键的 `Settings.System` ContentObserver(亮度滑动每帧都在写 SCREEN_BRIGHTNESS，不过滤会狂响)；iOS 用 `MPVolumeView` 自己的 slider 同时读写(`outputVolume` 只在活跃 session 上有意义，而本 App 不该去抢那个 session)
+		④ 两轮只读审查共 22 条、其中 6 条是真 bug，都写进了测试：可听记忆必须从 0 开始(否则静音开局第一次 unmute 直冲满格)、量化回声没人收到(`ValueNotifier` 对相等值不通知，所以设备的落点要显式应用回条)、会话中途变 `fixed`(插上 HDMI/USB 声卡)、第二次 seed 只确认不重新采纳、写到被静音流上的那次写入不能被"已经在这一档"跳过(那次写入正是解除静音的动作)、非有限值必须在入口拒绝(`clamp` 放过 NaN 而 `round()` 会抛，从 unawaited 写入里抛就是不处理的异步错误)
+
+	3) 两个竖向手势共用一套算术，步幅缩短
+		① 音量那半边原先每帧回读进度条，而绑定之后条上放的是**设备落到的档位**：15 档手机 6.7%/档，慢滑什么都不动、1px 抖动跨档还会逆着手指往回走。现在两半共用一个只属于手指的累加器(`utils/swipe_value.dart`)，滑行中不采纳设备的答案，抬手时采纳
+		② 步幅从"一整屏高"改为 `kVerticalSwipeSpanRatio` = 0.6 屏高(约 1.67 倍)：竖屏全屏下 9px/% → 5.3px/%。"一整屏"从来不是为手指选的，它是除出来的结果，而行程变诚实之后才显出慢
+		③ 两端 clamp 不环绕、1px 抖动只动 1px、没有高度的那一帧不动值；测试把这个选择的两端钉住(必须短于整屏，又不能短到 1% 不到一个像素)
+
+	4) 视频标签的第二种排布 + 未分组图片平铺
+		① 视频标签可在工具栏 Organize 切换"按文件夹/按格式"(记住 `video_classification`，默认 `none` 就是原来的平铺)，带 2×2 海报预览与钻入视图；分组复用 `MediaLibrary.buildAlbums`(分类从写死改为参数，枚举改名 `MediaClassification`)，视频侧的组是**派生**的所以切换不重扫；两个标签各传自己的分类，谁也不能把对方重新分组
+		② 图片标签的 'None' 名不副实：它建了一个叫 "All Images" 的相册，等于"要打开的分组"，正是这个设置说不做的事。现在 `none` 不产生任何相册、平铺显示(与视频标签同词，改名 'Ungrouped')；首页只认相册，所以给它一个平铺相册入口，否则那些照片从首页够不到；分类判断收敛到一处(原先两处写法已经漂移)
+		③ 图标树摇的坑(本批踩到两次)：`Icon(groupingIcon(key))` 这种运行时查表对 release 的图标 tree-shaker 不可见，字形会变成**空的**(实测 Organize 与 By format 空、而硬编码的 `Icons.folder` 正常)；改成在使用点写 `const Icon(...)`，树摇后的字体 11,464 → 11,684 字节(缩略图对话框那处 11,464 → 12,084)。关掉树摇能"修好"，代价是 1.6MB
+
+	5) 播放器的跳跃历史，与"离开播放器只有一种退场"
+		① `providers/video_jump_stack.dart`：会话级跳跃栈，上限由设置 `video_jump_history_limit`(1..50，默认 10)控制；前进跳转记录**被离开的**那个视频，Back 弹出并播放它。一个 `back: true` 标志同时决定"是否记录"与"播哪个转场"，两者不可能不一致
+		② Back 的转场就是平台自己"揭开下一页"的那一套(Android 逐值复刻 `FadeForwardsPageTransitionsBuilder`，450ms 不动；其它平台直接做框架给被揭示页面的那次调用)。手写一套滑入对所有平台都是错的：iOS/macOS 从 -1/3 走 Cupertino 曲线，Windows/Linux 的 zoom 根本不横向位移
+		③ 传输栏的上一首/下一首改为在**同一个播放器里**换片(`_playInPlace`)：全屏、PiP(连同拖到的位置与滚动位置)、倍速、音量、亮度、chrome 可见性全部"由构造保证"存活，屏幕上没有任何东西移动；Back 仍走路由步并带平台的返回方向转场——"离开这个视频"和"换一个播"是两件事
+		④ 一个视频怎么离开播放器，只由它在做什么决定：Back(历史空/历史走完)与 Home 都走同一 pop。Home 原先在 `popUntil` 前 `p?.stop()`，而停掉的 `Player` 不画帧——同一步少了画面；改为由路由自己的 `dispose()` 停。`leavePlayerForLibrary` 用 `PosterQuietRoute.previousRoute` 先把中间那一屏**无动画**摘掉，否则从搜索结果打开的播放器会一次滑走两屏
+		⑤ 退场的 chrome 在**退出开始**时恢复，而不是结束时：全屏横屏视频以前先 pop、再恢复系统栏并旋转，于是库以横屏到位然后又重排
+		⑥ `_go` 不再停/销毁旧播放器：被替换的路由在整个转场期间仍在树上(实测 300ms 里 0/100/200ms 在、settled 后消失)，提前拆会把画面黑掉整段——那片黑是纹理被销毁的，不是路由缺席；改为静音，并由该屏幕自己的 `dispose()` 收尾
+		⑦ 不能动作的 chrome 不再画：上一首/下一首按可用性出现(没有历史就没有 Previous，Related 空就没有 Next)，Home 只在它与 Back 是**不同**动作时出现(栈空时 Back 自己就离开了)。灰掉的占位被否掉：它会在每个宽度都为音量滑条占着空间
+
+	6) 缩略图缓存可管理：评分分档、逐档删除、自动精简
+		① 评分是纯函数(`utils/thumb_cache_policy.dart`)：上次使用(权重 3)、生成时间(1)、体积(-2)，各自按**本缓存的 MEDIAN** 归一化，所以不从外部断言任何事——三年前生成、昨天打开过的缩略图排在"上周生成、从没人打开"的前面。分档切在评分序的**两个最大间隔**处，且只有相对本缓存的中位间隔显著时才切；没有形状的缓存退化为等三分
+		② 访问记录**另立文件**，因为文件的 mtime 就是生成时间：读取绝不能重写它(`setLastModified` 会毁掉整个评分所依赖的那条轴，而 `stat().accessed` 在我们发布的平台上都不可靠)。命中写 `_thumbs_used`，放在条目**旁边**而不是中间(否则每个列表器都要学会跳过它)，节流并按现存条目剪枝
+		③ 对话框是唯一入口：每个档位行删自己那一档(整档，预算没有否决权)、`Auto trim` 按最冷优先裁到就地可切的目标、`Delete all` 用错误色并在缓存为空时一并置灰(活着的控件不能动作就是死控件缺陷)。年龄写成年龄("generated 2 months ago")，不写日期
+		④ 顺带两次重构：对话框的三个互斥意图从"四字段 record + 调用方猜"改成 `sealed class ThumbCacheIntent`(没意义的组合造不出来)；访问日志从 `ThumbCache`(390→297 行)抽成 `thumb_cache_access_log.dart`(98 行)，公开 API 不变所以九个缓存测试文件一行没改
+
+	7) 截图策略成为移动端设置，默认不允许
+		① Settings→Privacy→Allow Screenshots，移动端专有，**默认关**：库是解密后的媒体，一张截图比会话、App 和密码活得久。策略由平台执行，走自己的通道 `rcrm/screen`(Android 一个 window flag，iOS 没有等价物可买)，推送是刻意 fire-and-forget，恢复设置绝不等待平台答复
+		② Android 原先在 `onCreate` 里无条件 `FLAG_SECURE`；这一个 flag 独自承载整条策略(截图空白、录屏干净、recent 预览隐藏)，现在独立成 `ScreenCaptureChannel.kt`，仍在 Dart 存在**之前**应用(启动那一刻的答案绝不是"可截")，并按进程记住选择，这样窗口重建后回来的是用户的选择而不是启动默认值
+		③ iOS 根本无法拒绝一张静态截图(系统只在事后告知)，但它能告知"屏幕正在被录制/镜像"和"App 不再前台"(系统正为 app switcher 拍照)——iOS 半边覆盖这两种情形，注册即武装(fail closed)，允许截图后解除。行的文案说平台自己的真相(`capturePolicyNote` 是"这个平台能否拦下静态截图"的纯函数)：一个在某个 OS 上悄悄换了含义的开关，比没有开关更糟
+		④ 路上量到一个陷阱：在 `load()` 里 await 那次通道调用会让**每一个**调用 `load()` 的既有测试卡死(`testWidgets` 的假时钟下真实通道往返永不完成，两个测试各烧满 10 分钟超时)。于是两道闸：启动推送不 await，没有截图面的平台根本不问
+
+	8) 存储访问层：Android 的全文件访问终于有人去要
+		① 清单里一直声明着 `MANAGE_EXTERNAL_STORAGE` 与读写对，却从来没有人请求过。库是由本地服务器按**真实路径**打开的，所以 SAF 的单目录授权覆盖不了它，`READ_MEDIA_*`(API 33+，MediaStore 媒体类型授权)也覆盖不了
+		② 通道 `rcrm/storage` 报**三个字段**而不是一个布尔：`sdk`、`granted`、由哪条流程授予(`none`/`dialog`/`settings`)+ `canAsk`。API≥30 全文件访问是 **app-op**：声明不授予任何东西、`requestPermissions` 对它无效、`Environment.isExternalStorageManager()` 是唯一诚实的答案，去 `ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION` → `ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION` → 应用详情(前两个在设备上可能不存在)；API 23–29 是普通运行时权限(Android 10 另需 `android:requestLegacyExternalStorage="true"`)；API<23 安装即授予，无需求
+		③ 三个陷阱：`request` 绝不持有 `MethodChannel.Result`(两条流程都会离开 Activity，改由 Dart 在每次 `resumed` 重读状态——那是用户从别的 App 设置页回来的唯一信号)；`shouldShowRequestPermissionRationale` **不是**"是否问过"的记录(它对从未请求过的权限也答 false，会让全新安装在 6–10 上被告知"安卓不会再问")，原生半边自己记一笔、写在**结果**回调而不是发起时(对话框期间什么都还没决定)；文案是报告状态的纯函数
+		④ 要权限不阻断选目录(系统选择器两种情况下都会给路径)，但一旦有目录，设置页就明说"现在还读不了"——正是它消除了那个静默的空库。设置行只给**一个**可操作入口：行的点击加上同动作按钮就是同一件事做两遍
+
+	9) 其余修复与依赖
+		① ffmpeg≥9 默认校验 TLS 对端，桌面海报全部失败：海报命令传 `-hide_banner`(全局，放最前)与 `-tls_verify 0`(**输入**选项，必须在 `-i` 之前，放后面会被静默忽略)，放宽只限这一个子进程(Dart 客户端仍然钉证书)。接着发现上一个提交把**所有**桌面海报清空了：`-tls_verify` 是 `tls` 协议的输入选项，ffmpeg 在选定协议之后按名字解析、该协议没有这个名字就整条命令中止，而本 App 自己的服务器是 `http://127.0.0.1:<port>`，于是 "Option tls_verify not found."、每个视频零输出。现在只对 `https` 追加该标志(实测 9.0.2：file/http + 标志 = 失败；http 无标志 = 15851 字节 JPEG；https + 标志 = 成功；https 无标志 = 证书校验失败)
+		② 诊断面板的"样本文件可读"为了打印长度拉了**整个**视频(`getFile` 就是 `resp.stream.toBytes()`)：改为 `getFileHead(path, maxBytes:)`，上限被两侧执行(请求带 `Range: bytes=0-N-1`，读满 N 就 break 并取消订阅)，面板报告"读到了什么"而不是"文件多大"。测试统计真正进入 Dart 的字节数——删掉那个 break 会报 4,194,304 字节对 256KiB 上限
+		③ 查看器：下拉阈值 +30%(`min(172, max(94, h*0.156))`)、翻页冷却 200ms(-33%)、状态栏随 chrome 隐藏与恢复(resume 时按真实的 `edgeToEdge`↔`immersiveSticky` 变化重施，因为平台只对**变化**动作)、角标移出被下拉/缩放的那一层(随 chrome 淡出而不是跟着手指走)、直播照片用与横向拖拽同一道闸阻断下拉
+		④ 播放器：方向锁引入 dominance ratio(只看 12px slop 会把 30px/29px 的近对角手势判成 seek，从而藏掉整个控制栏)、拖动进度时控件保持可见、Esc 让位给倍速菜单
+		⑤ 媒体：Rust 的拒绝不再是终局(回落引擎解码)、Dart 取字节有上限、播放器路由期间暂停海报池、缓存键带库身份、图片排序方向持久化
+		⑥ `build_android.sh` 补上与 `.ps1` 同样的 jniLibs 陈旧合并重置：桥刚重建而 Gradle 仍留着合并状态快照时，`mergeReleaseJniLibFolders` 会哈希失败(构建直接死)，更糟的是 `packageRelease` 对陈旧合并保持 UP-TO-DATE 而 APK 里没有 `libapp.so`/`librcrm_flutter_bridge.so`，构建却报 SUCCESS
+		⑦ 依赖：`file_picker` 13.1.0(11.0 起 API 静态化，`FilePicker.platform` 是删除而非弃用，两处调用改用 `FilePicker.getDirectoryPath()`；12.0 拆成按平台包并连带强制升级 win32 5.15→6.4、package_info_plus 9→10、wakelock_plus 1.5.2→1.8.1、dbus 0.7.15→0.8；其 Android 模块自己按 `builtInKotlin=false` 应用 KGP，于是 12 个插件里再没有声明 KGP 的，Flutter 的 "future versions will fail to build" 警告从 Android 构建里消失)；`camera` 0.12.1(CameraX 1.5.3→1.6.2，对我们这条路径唯一的行为变化是 `initialize()` 与错误处理里新增的 `_isDisposed` 守卫——正是扫描页销毁一个仍在初始化的 controller 时可能撞上的崩溃)；`mimalloc` 0.1.52(`libmimalloc-sys` 0.1.49 起不加 `v2` feature 就编 v3 树，旧的 `features = ["v3"]` 是唯一挡着升级的东西；实测 v3 线路不变，mimalloc 3.1.5→3.3.2)；`archive` 4.5.1；`Cargo.lock` 若干传递依赖刷新
+
+	10) 文档、审查与门禁
+		① 单测文件里承诺的运行命令 `dart test test/rcrm_gui_test.dart` 从来没成功过(Dart VM 载不动：`webdav_client.dart` 一路链到 `dart:ui`)，改为 `flutter test`(实测 23 个测试)
+		② 缓存文档(AGENTS/ARCHITECTURE)追上代码：分档不再是评分三分位、"勾选档位"的选择模型已删、每个档位行删自己
+		③ 审查：本批经过 open-code-review 只读审查数轮(音量两轮共 22 条、方向一笔 18 条)，其中 high 一条(方向 latch 让 Follow 退化成 System)是被三个文件分组各自独立报出的同一条。两条明确**未改**并写明理由：iOS 16 以下的未公开 API(作为显式风险接受，替代方案留给产品决定)；`fit` 在视频尺寸未知时发出的请求与 `system` 相同(理由见第 1 条 ④，因此保留不改)
+		④ 门禁：`flutter analyze lib test` 零告警；`flutter test` 649 全绿(本批起点 485)；`gradlew :app:compileDebugKotlin :app:processDebugManifest` BUILD SUCCESSFUL；`cargo build --locked` 与 `cargo test -- --skip compare_` 通过
