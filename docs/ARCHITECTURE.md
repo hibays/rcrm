@@ -268,9 +268,10 @@ policies in the panel), applied to the fullscreen player only.
 
 settings panel → settings_provider.playerOrientation → video_player_screen
   ._applyOrientation(), called when fullscreen changes, when the strategy
-  changes, when the video's own shape ARRIVES (stream.videoParams), and on the
-  way out of the player (`_releaseOrientation`, which is not the same call --
-  the exit restores the chrome while `fullscreen` is still true)
+  changes, when the video's own shape ARRIVES (stream.videoParams — a shape that
+  is still unknown is not news, see below), and on the way out of the player
+  (`_releaseOrientation`, which is not the same call -- the exit restores the
+  chrome while `fullscreen` is still true)
 
   fit      → [landscapeLeft, landscapeRight] / [portraitUp, portraitDown]
              (Android: USER_LANDSCAPE / USER_PORTRAIT -- the axis is locked,
@@ -302,6 +303,34 @@ settings panel → settings_provider.playerOrientation → video_player_screen
   landscape→ [landscapeLeft, landscapeRight] (USER_LANDSCAPE)
   (not fullscreen) → all four: the app's own default, and what the library
              lives in again after the player is left
+
+ONE ROTATION PER VIDEO CHANGE, not two. A switch (the transport bar, the Related
+list, auto-advance — all `_playInPlace`) is a moment with no size: mpv has the new
+file loading and no track open yet, so the player reports 0x0. That report used to
+count as news, and the "ask for everything" answer released the fitted lock — off
+the axis the screen was on, to wherever the system's own preference points — for
+the request that then took it back when the real shape landed. So every video
+change rotated twice, and between two same-shaped videos the two rotations
+cancelled out and still cost the viewer a jump.
+
+The fix is one record and one rule. `OrientationRequest.fittedShape` is the shape
+a request locks the axis to, and null for every request that locks nothing (out of
+fullscreen, the three strategies that do not read the video, a shape nobody knows
+yet). The screen keeps the last request's `fittedShape` as `_lockedShape`, written
+in `_applyOrientation` — the single writer, so the record cannot drift from the
+mask the platform holds — and `orientationRequestFor` HOLDS it while the shape is
+unknown: the answer to "which way up" a moment before the player could say is the
+way up it is already at. Only the shape that actually arrives changes the mask, so
+a switch now costs one rotation (different shape) or none (same shape). Entering
+fullscreen with nothing locked yet still forces nothing, which is the case the
+original "unknown = landscape" guess broke. A route step to another video
+(`_go`) hands the lock over as `startLockedShape`, because the outgoing screen
+deliberately does not release the mask on its way out — so the platform is still
+holding it when the replacement mounts. `_releaseOrientation` deliberately leaves
+the record alone: it runs at the START of an exit, while `fullscreen` is still true
+and `stream.videoParams` is still subscribed for the whole pop (only `_go` cancels
+it), so clearing it there would let the next report re-apply the fitted axis on top
+of the release and rotate the library on the way out.
 
 The old `auto_rotate` boolean is still READ once (`getPlayerOrientation`): `true`
 meant `device` (and silently got `system`), `false` meant `fit`.

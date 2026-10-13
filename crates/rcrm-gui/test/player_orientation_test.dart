@@ -39,10 +39,12 @@ OrientationRequest requestFor(
   PlayerOrientation mode, {
   bool fullscreen = true,
   bool? landscapeVideo = true,
+  bool? lockedShape,
 }) => orientationRequestFor(
   mode: mode,
   fullscreen: fullscreen,
   landscapeVideo: landscapeVideo,
+  lockedShape: lockedShape,
 );
 
 void main() {
@@ -50,11 +52,11 @@ void main() {
     test('fit follows the VIDEO, both ways round', () {
       expect(
         requestFor(PlayerOrientation.fill),
-        const OrientationRequest.allow(_landscape),
+        const OrientationRequest.allow(_landscape, fittedShape: true),
       );
       expect(
         requestFor(PlayerOrientation.fill, landscapeVideo: false),
-        const OrientationRequest.allow(_portrait),
+        const OrientationRequest.allow(_portrait, fittedShape: false),
       );
     });
 
@@ -70,10 +72,71 @@ void main() {
       // phone in — and a LOCK also stops them turning it to see a wide video.
       // "Allow what the system allows" leaves that door open, and `fill` locks
       // the moment the player answers.
+      //
+      // Nothing is locked in this state — that is the entering-fullscreen case,
+      // the one the guess above was made for — so there is nothing to hold and
+      // the request reports no fitted shape.
       expect(
         requestFor(PlayerOrientation.fill, landscapeVideo: null),
         requestFor(PlayerOrientation.system),
       );
+      expect(
+        requestFor(PlayerOrientation.fill, landscapeVideo: null).fittedShape,
+        isNull,
+        reason: 'nothing is locked yet, so nothing can be held',
+      );
+    });
+
+    test('fit HOLDS the lock it has while the next shape is unknown', () {
+      // A video skip is a moment with no size: mpv has the new file loading and
+      // no track open yet. Treating that as news released the fitted lock — "ask
+      // for everything", i.e. the system's own preference — and then took it
+      // back when the real size arrived, which is two rotations for every video
+      // change and, between two same-shaped videos, two rotations that cancel out
+      // and still take the viewer's eyes with them.
+      //
+      // The way up is not the same shape, it is the way the screen is ALREADY
+      // at: the answer to "which way up" a moment before the player could say.
+      expect(
+        requestFor(
+          PlayerOrientation.fill,
+          landscapeVideo: null,
+          lockedShape: true,
+        ),
+        const OrientationRequest.allow(_landscape, fittedShape: true),
+      );
+      expect(
+        requestFor(
+          PlayerOrientation.fill,
+          landscapeVideo: null,
+          lockedShape: false,
+        ),
+        const OrientationRequest.allow(_portrait, fittedShape: false),
+      );
+      // And the held lock is only ever a placeholder for the real answer: the
+      // new shape, when it lands, is what the mask becomes.
+      expect(
+        requestFor(
+          PlayerOrientation.fill,
+          landscapeVideo: false,
+          lockedShape: true,
+        ),
+        const OrientationRequest.allow(_portrait, fittedShape: false),
+        reason: 'the shape that arrives wins, whichever axis was held',
+      );
+    });
+
+    test('only fit fits a shape, so only fit holds one', () {
+      // The other four do not read the video, so there is nothing for them to
+      // hold or to hold on to — including the two explicit locks, whose axis
+      // comes from the viewer and not from a frame.
+      for (final m in PlayerOrientation.values) {
+        expect(
+          requestFor(m).fittedShape,
+          m == PlayerOrientation.fill ? isNotNull : isNull,
+          reason: m.key,
+        );
+      }
     });
 
     test('system asks for everything, which is what respects the lock', () {
@@ -121,10 +184,22 @@ void main() {
       // direction again the moment the player is not fullscreen — including on
       // the way out of the player, where the chrome is restored before the route
       // pops and `fullscreen` is still true.
+      //
+      // `lockedShape` is passed in deliberately, because a lock still in force is
+      // exactly the state the exit releases from, and holding one here would put
+      // the axis back on a screen that is already leaving. The record therefore
+      // has to come back null: that is what lets the screen recognise the next
+      // parameters report as the shape it already knows (see `_releaseOrientation`,
+      // which leaves the record alone for that reason and writes the hand-back).
       for (final m in PlayerOrientation.values) {
         expect(
-          requestFor(m, fullscreen: false),
+          requestFor(m, fullscreen: false, lockedShape: true),
           const OrientationRequest.allow(_any),
+          reason: m.key,
+        );
+        expect(
+          requestFor(m, fullscreen: false, lockedShape: true).fittedShape,
+          isNull,
           reason: m.key,
         );
       }
@@ -148,6 +223,14 @@ void main() {
       expect(
         const OrientationRequest.followPhone().hashCode,
         const OrientationRequest.followPhone().hashCode,
+      );
+      // The same mask asking a different thing of the NEXT request is not the
+      // same request: holding the landscape lock and holding nothing differ in
+      // what happens when the player has no shape to give, which is the whole
+      // reason the record travels with the request.
+      expect(
+        const OrientationRequest.allow(_landscape),
+        isNot(const OrientationRequest.allow(_landscape, fittedShape: true)),
       );
     });
   });

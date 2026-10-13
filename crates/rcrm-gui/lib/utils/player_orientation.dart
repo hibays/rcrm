@@ -141,9 +141,12 @@ List<OrientationPolicy> orientationPolicies() => OrientationPolicy.values;
 
 /// What the player asks the platform for.
 ///
-/// Two parts, and the caller must send them in this order: [orientations] is the
-/// mask `SystemChrome.setPreferredOrientations` takes, and [followDevice] asks
-/// the app's own channel to follow the phone's real posture, lock or no lock.
+/// Two parts GO to the platform, and the caller must send them in this order:
+/// [orientations] is the mask `SystemChrome.setPreferredOrientations` takes, and
+/// [followDevice] asks the app's own channel to follow the phone's real posture,
+/// lock or no lock. [fittedShape] is the third field and is not sent at all: it
+/// is the shape that mask locks to, kept so the NEXT request knows what is in
+/// force (see the field).
 ///
 /// The mask comes FIRST because iOS only honours a geometry request its
 /// supported mask already allows, and it must also be sent when
@@ -151,12 +154,14 @@ List<OrientationPolicy> orientationPolicies() => OrientationPolicy.values;
 /// the channel call has to be the last word, and on iOS the mask is what opens
 /// the door for it.
 class OrientationRequest {
-  const OrientationRequest.allow(this.orientations) : followDevice = false;
+  const OrientationRequest.allow(this.orientations, {this.fittedShape})
+    : followDevice = false;
 
   /// Asks for every orientation AND for the sensor to decide between them.
   const OrientationRequest.followPhone()
     : orientations = DeviceOrientation.values,
-      followDevice = true;
+      followDevice = true,
+      fittedShape = null;
 
   final List<DeviceOrientation> orientations;
 
@@ -164,20 +169,38 @@ class OrientationRequest {
   /// (`ScreenOrientation.followDevice(true)`), after the mask above.
   final bool followDevice;
 
+  /// Which video shape this request's axis is locked to, and null when it locks
+  /// the screen to no shape at all (outside fullscreen, a strategy that does not
+  /// consult the video, or a shape nobody knows yet).
+  ///
+  /// It is bookkeeping the platform never sees, and it exists because "which
+  /// lock is in force right now" is the one fact the next request needs: while a
+  /// file loads and the player reports no size, this is what is held rather than
+  /// released (see [orientationRequestFor]). The caller keeps one record of it,
+  /// written from the request it sends — so the mask and the record cannot
+  /// disagree.
+  final bool? fittedShape;
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is OrientationRequest &&
           other.followDevice == followDevice &&
+          other.fittedShape == fittedShape &&
           _sameOrientations(other.orientations, orientations);
 
   @override
-  int get hashCode => Object.hash(followDevice, Object.hashAll(orientations));
+  int get hashCode => Object.hash(
+    followDevice,
+    fittedShape,
+    Object.hashAll(orientations),
+  );
 
   @override
   String toString() => followDevice
       ? 'OrientationRequest.followPhone()'
-      : 'OrientationRequest.allow(${orientations.map((o) => o.name).join(', ')})';
+      : 'OrientationRequest.allow(${orientations.map((o) => o.name).join(', ')}'
+            '${fittedShape == null ? '' : ', fit: ${fittedShape! ? 'landscape' : 'portrait'}'})';
 
   static bool _sameOrientations(
     List<DeviceOrientation> a,
@@ -251,25 +274,45 @@ Future<void> releaseOrientationRequest({
 /// out").
 ///
 /// [landscapeVideo] is the video's own aspect, and `null` while the player has
-/// not reported one. [PlayerOrientation.fill] refuses to guess with it: the
+/// not reported one. [PlayerOrientation.fill] refuses to GUESS with it: the
 /// guess this code used to make (unknown = landscape) locked a portrait video
-/// into landscape, and nothing re-applied it when the real size arrived. Asking
-/// for everything until the answer is in forces nothing, and the caller applies
-/// the real request the moment the size lands (`video_player_screen`).
+/// into landscape, and nothing re-applied it when the real size arrived.
+///
+/// What it does instead depends on whether a lock is already in force, which is
+/// what [lockedShape] carries (the [OrientationRequest.fittedShape] of the last
+/// request that went out — see `video_player_screen`, the one place that keeps
+/// that record):
+///
+///  * nothing locked yet (fullscreen entered before the player has reported a
+///    size): ask for everything, which forces nothing, and lock the moment the
+///    size lands.
+///  * a lock IS in force (a video was skipped to while one is held, and mpv
+///    reports no size for the file it is loading): HOLD it. Releasing it here is
+///    what made every video change cost two rotations — off the fitted axis to
+///    wherever the system's own preference points, then back onto the new video's
+///    axis a moment later — and for two same-shaped videos, two rotations that
+///    cancelled out and still took the viewer's eyes with them. The answer to
+///    "which way up" a moment before the player could say is the way up it is
+///    already at; only the new shape, when it arrives, changes anything.
 OrientationRequest orientationRequestFor({
   required PlayerOrientation mode,
   required bool fullscreen,
   required bool? landscapeVideo,
+  bool? lockedShape,
 }) {
   if (!fullscreen) {
     return const OrientationRequest.allow(DeviceOrientation.values);
   }
   switch (mode) {
     case PlayerOrientation.fill:
-      if (landscapeVideo == null) {
+      final shape = landscapeVideo ?? lockedShape;
+      if (shape == null) {
         return const OrientationRequest.allow(DeviceOrientation.values);
       }
-      return OrientationRequest.allow(landscapeVideo ? _landscape : _portrait);
+      return OrientationRequest.allow(
+        shape ? _landscape : _portrait,
+        fittedShape: shape,
+      );
     case PlayerOrientation.system:
       return const OrientationRequest.allow(DeviceOrientation.values);
     case PlayerOrientation.device:
