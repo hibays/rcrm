@@ -1815,7 +1815,7 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 [[package]]
 name = "rav1d"
 version = "1.1.0"
-source = "git+https://github.com/memorysafety/rav1d?rev=9f00b03bc58d94f14e157b0d365a26cf8d3b1b77#9f00b03bc58d94f14e157b0d365a26cf8d3b1b77"
+source = "git+https://github.com/memorysafety/rav1d?rev=0c851fa046d6a36430570459283e5886fbdd8a66#0c851fa046d6a36430570459283e5886fbdd8a66"
 dependencies = [
  "assert_matches",
  "atomig",
