@@ -1,0 +1,131 @@
+// test/swipe_value_test.dart
+// The vertical swipe's arithmetic, shared by the brightness and volume halves of
+// the mobile player.
+//
+// Regression these pin: the volume half used to feed itself from `_volume.value`,
+// which while bound is the STEP the device landed on. A 15-step phone answers in
+// 6.7% jumps, so re-reading it every frame threw the finger's travel away — a
+// slow swipe moved nothing at all, and a wobble across a step boundary walked the
+// volume backwards. The brightness half never had the bug because nothing
+// quantises a screen's brightness, which is exactly why the two now share this.
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:rcrm_gui/utils/swipe_value.dart';
+
+void main() {
+  // A phone in portrait, fullscreen: the gesture area the player lays out.
+  const height = 600.0;
+
+  test('up is more, on both scales the player uses', () {
+    // A finger moving up reports a NEGATIVE delta.
+    final louder = advanceVerticalValue(
+      current: 50,
+      deltaDy: -60,
+      height: height,
+    );
+    expect(louder, greaterThan(50));
+
+    final brighter = advanceVerticalValue(
+      current: 0.5,
+      deltaDy: -60,
+      height: height,
+      max: 1,
+    );
+    expect(brighter, greaterThan(0.5));
+  });
+
+  test('one screen height of travel is one full range', () {
+    // Which is the whole point of the accumulator: how far the finger goes is
+    // what the value does, whatever the device does with the number.
+    expect(
+      advanceVerticalValue(current: 0, deltaDy: -height, height: height),
+      100,
+    );
+    expect(
+      advanceVerticalValue(current: 100, deltaDy: height, height: height),
+      0,
+    );
+    expect(
+      advanceVerticalValue(current: 0, deltaDy: -height, height: height, max: 1),
+      1,
+    );
+  });
+
+  test('a slow swipe still moves, in proportion', () {
+    // Four pixels on a 600px area is 0.67% -- below the step a phone can even
+    // reach -- and the accumulator is what keeps that travel instead of losing it
+    // to the device's quantisation.
+    final v = advanceVerticalValue(
+      current: 50,
+      deltaDy: -4,
+      height: height,
+    );
+    expect(v, closeTo(50.67, 0.01));
+  });
+
+  test('the finger\'s NET travel is what the value does', () {
+    // Five frames up, one pixel of wobble down, five more up: the deltas sum to
+    // -31px, and the value must end exactly 31/600 of the range above where it
+    // started -- nothing lost, nothing rounded. Reading the bar back instead
+    // (what the volume half used to do) lost whatever did not add up to a step
+    // the device has: 31px is 5.2% of a 600px screen, i.e. LESS THAN ONE STEP of
+    // a 15-step phone, so that whole swipe used to change nothing at all.
+    double v = 40;
+    for (final dy in <double>[-8, -8, 1, -8, -8]) {
+      v = advanceVerticalValue(current: v, deltaDy: dy, height: height);
+    }
+    expect(v, closeTo(40 + 31 / height * 100, 0.0001));
+  });
+
+  test('a one-pixel wobble moves it one pixel, not one step', () {
+    // The direction fight the volume half had: with a quantised value read back,
+    // a wobble across a step boundary walked the volume by 6.7% (a 15-step
+    // phone) or did nothing -- never by the 1px the finger actually moved.
+    final wobbled = advanceVerticalValue(
+      current: 40,
+      deltaDy: 1,
+      height: height,
+    );
+    expect(40 - wobbled, closeTo(1 / height * 100, 0.0001));
+    expect(40 - wobbled, lessThan(1));
+  });
+
+  test('the ends clamp instead of wrapping', () {
+    expect(
+      advanceVerticalValue(current: 99, deltaDy: -height, height: height),
+      100,
+    );
+    expect(
+      advanceVerticalValue(current: 1, deltaDy: height, height: height),
+      0,
+    );
+    // A scale that does not start at zero (the brightness half's 0..1 does, but
+    // nothing here assumes it).
+    expect(
+      advanceVerticalValue(
+        current: 5,
+        deltaDy: height,
+        height: height,
+        min: 5,
+        max: 15,
+      ),
+      5,
+    );
+  });
+
+  test('an area with no height yet leaves the value where it was', () {
+    // Before the first layout the divisor is zero, and NaN cannot be clamped:
+    // it would reach the player and the platform.
+    for (final h in <double>[0, -1, double.nan, double.infinity]) {
+      expect(
+        advanceVerticalValue(current: 42, deltaDy: 20, height: h),
+        42,
+        reason: 'height $h',
+      );
+    }
+    expect(
+      advanceVerticalValue(current: 42, deltaDy: double.nan, height: height),
+      42,
+    );
+  });
+}

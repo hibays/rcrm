@@ -24,6 +24,17 @@ const int kVideoJumpHistoryMin = 1;
 const int kVideoJumpHistoryMax = 50;
 const int kVideoJumpHistoryDefault = 10;
 
+/// The default of the mobile volume binding (`use_system_volume`).
+///
+/// A pure function of the platform family rather than a read of `Platform`, so
+/// both branches are assertable on any host — the tests run the desktop VM,
+/// where the mobile answer is unreachable. On a phone the hardware keys and
+/// every other media app move the same media stream, so the player follows it
+/// unless told otherwise; a desktop's mixer is the user's own business, and its
+/// own slider is the behaviour expected there (where the row is not offered at
+/// all — see `SystemVolume.supported`).
+bool useSystemVolumeDefault({required bool isDesktop}) => !isDesktop;
+
 class SettingsService {
   static const _keyServerConfig = 'server_config';
   static const _keyVideoLayout = 'video_layout'; // 'grid' or 'list'
@@ -49,6 +60,7 @@ class SettingsService {
   static const _keyCastAutoNext = 'cast_auto_next'; // bool
   static const _keyVideoJumpHistory = 'video_jump_history_limit'; // int, 1..50
   static const _keyAllowScreenshots = 'allow_screenshots'; // bool, mobile only
+  static const _keyUseSystemVolume = 'use_system_volume'; // bool, mobile only
 
   SharedPreferences? _prefs;
 
@@ -328,6 +340,26 @@ class SettingsService {
   Future<void> setAllowScreenshots(bool allowed) async {
     final p = await prefs;
     await p.setBool(_keyAllowScreenshots, allowed);
+  }
+
+  // ── System volume binding ─────────────────────────────────
+  // Mobile only (`services/system_volume.dart`). Default: ON for mobile, OFF for
+  // desktop -- on a phone the hardware keys and every other media app move the
+  // same media stream, so an app-local volume stacked on top of it is the odd
+  // one out; a desktop's mixer is the user's own business and the app's slider
+  // is the behaviour expected there (where the row is not offered at all). The
+  // binding itself needs more than this flag (`shouldBindSystemVolume`).
+  Future<bool> getUseSystemVolume() async {
+    final p = await prefs;
+    final isDesktop =
+        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+    return p.getBool(_keyUseSystemVolume) ??
+        useSystemVolumeDefault(isDesktop: isDesktop);
+  }
+
+  Future<void> setUseSystemVolume(bool enabled) async {
+    final p = await prefs;
+    await p.setBool(_keyUseSystemVolume, enabled);
   }
 
   // ── Video jump history ────────────────────────────────────

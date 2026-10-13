@@ -17,6 +17,7 @@ import '../models/media_item.dart';
 import '../config/theme.dart';
 import '../services/net.dart';
 import '../services/player_factory.dart';
+import '../services/system_volume.dart';
 import '../providers/library_provider.dart';
 import '../providers/settings_provider.dart';
 import '../providers/video_jump_stack.dart';
@@ -33,9 +34,11 @@ import '../utils/format.dart';
 import '../utils/pan_lock.dart';
 import '../utils/player_exit.dart';
 import '../utils/player_panels.dart';
+import '../utils/player_volume.dart';
 import '../utils/poster_quiet_route.dart';
 import '../utils/related_videos.dart';
 import '../utils/seek_preview.dart';
+import '../utils/swipe_value.dart';
 import '../utils/wheel_guard.dart';
 
 class VideoPlayerScreen extends ConsumerStatefulWidget {
@@ -189,7 +192,6 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   ]);
 
   /// Last non-zero volume, so unmute never lands on silence.
-  double _prevVolume = 100;
   Timer? _volSaveTimer;
 
   /// True while the speed menu is open — it is a panel, so the chrome must not
@@ -220,20 +222,174 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   int _gOverlayValue = 0;
   double _brightness = 1.0;
 
+  /// The level a volume swipe is asking for, 0..100 — the gesture's own
+  /// accumulator, exactly like [_brightness] for the other half of the screen.
+  ///
+  /// It is re-seeded from the bar when a swipe commits and belongs to the finger
+  /// until it lifts; the value the DEVICE landed on is adopted at the end of the
+  /// gesture (`_onPanEnd`). Reading the bar back every frame instead — which is
+  /// what this used to do — hands the finger the quantised step it just came
+  /// from, so travel is thrown away (see `utils/swipe_value.dart`).
+  double _gVolume = 100;
+
   static Future<void> _initVolPrefs() async {
     _volPrefs ??= await SharedPreferences.getInstance();
   }
 
   // ── Volume ────────────────────────────────────────────────
-  // One entry point for every volume path (slider, wheel, arrow keys, swipe),
-  // so the bar, the player and the persisted value can never disagree.
+  // One entry point for every volume path (slider, wheel, arrow keys, swipe,
+  // mute) and ONE owner of the state behind it: `_vol`
+  // (`utils/player_volume.dart`), which decides whether that control drives the
+  // DEVICE's media stream or libmpv's own gain. On mobile the device is the
+  // default (`use_system_volume`, Settings → Display); the player's own gain is
+  // what every platform falls back to.
+  //
+  // The screen itself decides nothing here -- it adopts a value and does what
+  // that value says. It cannot be mounted in a test (its first frame builds a
+  // real media_kit `Player`), so the transitions that have bitten live in the
+  // util instead.
+
+  /// The session's volume. `_volume` (the notifier the chrome listens to) is a
+  /// mirror of `level`, written only by [_adoptVolume].
+  PlayerVolume _vol = PlayerVolume.initial;
+
+  /// True while [SystemVolume.state] is being followed. A notifier would take the
+  /// same listener twice, and the seeding path can run twice (a reading already
+  /// held first, the fresh one after it).
+  bool _followingSystem = false;
+
+  /// The gain handed to the player itself — unity while the device owns the
+  /// level, the level itself otherwise (`PlayerVolume.playerGain`).
+  double get _playerGain => _vol.playerGain;
+
+  /// THE place the session's volume changes: the bar and the player's own gain
+  /// follow [next], and the device subscription is attached, kept or dropped to
+  /// match — which is how a binding decided from a stale reading can still be
+  /// dropped when the fresh one reports a fixed output.
+  ///
+  /// [applyGain] is false for a level that came FROM the player's own gain
+  /// stream: telling the player what it has just said is an echo, not an update.
+  void _adoptVolume(
+    PlayerVolume next, {
+    bool persist = true,
+    bool applyGain = true,
+  }) {
+    final PlayerVolume before = _vol;
+    _vol = next;
+    if (next.bound && !_followingSystem) {
+      _followingSystem = true;
+      SystemVolume.state.addListener(_onSystemVolume);
+    } else if (!next.bound && _followingSystem) {
+      _followingSystem = false;
+      SystemVolume.state.removeListener(_onSystemVolume);
+    }
+    if (next.level != _volume.value) _volume.value = next.level;
+    // The player hears about it when the app's own volume IS the level, and when
+    // the level just changed owner; while bound its gain stays at unity.
+    if (applyGain && (!next.bound || next.bound != before.bound)) {
+      p?.setVolume(next.playerGain);
+    }
+    if (persist) _queueVolSave();
+  }
+
+  /// Picks the volume this screen starts at, and where it comes from.
+  ///
+  /// Unbound: the level this app remembers (`player_volume`), as it always has.
+  /// Bound: the DEVICE's media volume — the setting means "the phone's volume
+  /// IS the volume", so opening a video must not move it, and what the bar shows
+  /// is what the phone is at now rather than what this app last played at.
+  ///
+  /// The read is a platform round trip and can fail; when it does, or when the
+  /// output cannot be set at all (a fixed-volume sink), the binding is dropped
+  /// and the player's own volume is used rather than a bar starting from a
+  /// number nobody read.
+  Future<void> _seedVolume() async {
+    final want =
+        SystemVolume.supported && ref.read(uiSettingsProvider).useSystemVolume;
+    final stored = _volPrefs?.getDouble('player_volume') ?? 100;
+    SystemVolumeReading? reading;
+    if (want) {
+      SystemVolume.watch();
+      // A reading is already here more often than not (the app takes one at
+      // startup), and it is applied BEFORE the round trip below: the bar opens
+      // on the level the phone is at, not on 100 for a frame while the platform
+      // answers.
+      reading = SystemVolume.state.value;
+      if (reading != null) _seedFrom(reading, want, stored);
+      reading = await SystemVolume.read() ?? reading;
+      if (!mounted) return;
+      // The second pass CONFIRMS the decision; it does not re-adopt the level.
+      // Its reading was already in flight when anything that happened in between
+      // did, and a volume-key press in the first moments of a video is exactly
+      // that -- it arrives as a push and must not be undone by a stale answer.
+      _adoptVolume(
+        _vol.reconfirmed(
+          supported: SystemVolume.supported,
+          setting: want,
+          reading: reading,
+          fallbackLevel: stored,
+        ),
+        persist: false,
+      );
+      return;
+    }
+    _seedFrom(reading, want, stored);
+  }
+
+  void _seedFrom(SystemVolumeReading? reading, bool want, double stored) {
+    _adoptVolume(
+      _vol.seeded(
+        supported: SystemVolume.supported,
+        setting: want,
+        reading: reading,
+        fallbackLevel: stored,
+      ),
+      persist: false,
+    );
+  }
+
+  /// A volume change made anywhere but here — the hardware keys, another app,
+  /// the system's own panel. The bar follows it, because the phone's volume is
+  /// the number the bar is showing.
+  void _onSystemVolume() => _adoptDevice(SystemVolume.state.value);
+
+  /// What the DEVICE says the level is: the push after somebody moved it, and
+  /// the answer to this app's own write.
+  ///
+  /// The second one is applied HERE and not only through `state`, because a
+  /// quantised request can come back equal to the reading the notifier already
+  /// holds — and an unchanged `ValueNotifier` notifies nobody, which would leave
+  /// the bar showing the 41% the finger asked for while the phone sits at 40%.
+  void _adoptDevice(SystemVolumeReading? reading) {
+    if (_disposed) return;
+    // Mid-swipe the FINGER owns the level, and an answer that arrives while it
+    // is down would move the bar under it — on a coarse stream, backwards. What
+    // the device said is still in `SystemVolume.state`, and the end of the
+    // gesture adopts it (`_onPanEnd`).
+    if (_gMode == 3) return;
+    _adoptVolume(_vol.reported(reading), persist: false);
+  }
+
+  /// The player's own gain stream: the truth for the app's volume when the app
+  /// owns it (a fresh `open` resets it). Never while bound — that stream then
+  /// carries only the unity gain this screen set, and mirroring it would stomp
+  /// the level the user is looking at.
+  void _onPlayerGain(double v) {
+    if (_vol.bound) return;
+    _adoptVolume(_vol.withLevel(v), persist: false, applyGain: false);
+  }
 
   void _setVolume(double v, {bool persist = true}) {
-    final nv = v.clamp(0.0, 100.0);
-    if (nv > 0) _prevVolume = nv;
-    _volume.value = nv;
-    p?.setVolume(nv);
-    if (persist) _queueVolSave();
+    // A level that is not a number is refused by `withLevel`, at the one place
+    // every volume path goes through: a gesture area with no height yet produces
+    // one, and `clamp` is transparent to NaN (on a bound session its `round()`
+    // would throw from inside an unawaited write).
+    if (!v.isFinite) return;
+    _adoptVolume(_vol.withLevel(v), persist: persist);
+    if (!_vol.bound) return;
+    // The device is asked for what the user asked for, and answers with the step
+    // it really landed on.
+    unawaited(SystemVolume.setPercent(_vol.level).then(_adoptDevice));
   }
 
   /// Debounced: a slider drag must not fire a platform write per frame, and
@@ -246,15 +402,27 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   void _flushVolSave() {
     _volSaveTimer?.cancel();
     _volSaveTimer = null;
-    _volPrefs?.setDouble('player_volume', _volume.value);
+    // Bound to the device, the number belongs to the phone and not to this app:
+    // remembering it would override the system volume at the next launch and
+    // feed a stale level to an unbound player.
+    if (!_vol.remembersAppVolume) return;
+    _volPrefs?.setDouble('player_volume', _vol.level);
   }
 
   void _toggleMute() {
-    if (_volume.value > 0) {
+    if (_vol.level > 0) {
       _setVolume(0);
-    } else {
-      _setVolume(_prevVolume > 0 ? _prevVolume : 100);
+      return;
     }
+    // Bound to the device, the level to come back to may not be one this app
+    // ever saw — a session can start with the phone already silent, and then
+    // nothing has been seen at all — so the device's own last audible level
+    // answers (`PlayerVolume.unmuteTo`, which is why `lastAudible` starts at 0).
+    _setVolume(
+      _vol.bound
+          ? _vol.unmuteTo(SystemVolume.state.value)
+          : (_vol.lastAudible > 0 ? _vol.lastAudible : 100),
+    );
   }
 
   // ── Time reading ──────────────────────────────────────────
@@ -327,15 +495,14 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _jumpStack = ref.read(videoJumpStackProvider.notifier);
     _initVolPrefs().then((_) {
       if (_volPrefs != null && mounted) {
-        _setVolume(
-          _volPrefs!.getDouble('player_volume') ?? 100,
-          persist: false,
-        );
         setState(() {
           _timeMode = _volPrefs!.getString('player_time_mode') == 'remaining'
               ? PlayerTimeMode.remaining
               : PlayerTimeMode.elapsed;
         });
+        // Which volume the bar means, and the level it starts at
+        // (`_seedVolume`): the device's stream, or this app's own.
+        _seedVolume();
       }
     });
     _scrollCtrl = ScrollController();
@@ -371,7 +538,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       vc = VideoController(p!);
       p!.open(Media(_item.url, httpHeaders: sharedAuthHeader));
       p!.play();
-      p!.setVolume(_volume.value);
+      p!.setVolume(_playerGain);
       if (_disposed && p != null) {
         // Disposed before the player finished initializing — tear down now.
         p!.dispose();
@@ -398,9 +565,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         if (isPlaying) hasBeenPlaying = true;
         if (mounted) _playing.value = isPlaying;
       });
-      _volumeSub = p!.stream.volume.listen((v) {
-        if (mounted && v != _volume.value) _volume.value = v;
-      });
+      _volumeSub = p!.stream.volume.listen(_onPlayerGain);
       _bufferingSub = p!.stream.buffering.listen((buffering) {
         if (!mounted) return;
         _bufferStall?.cancel();
@@ -469,6 +634,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _scrollCtrl?.dispose();
     // Persist the live volume before the notifiers go away.
     _flushVolSave();
+    // The device's stream outlives this screen; stop following it.
+    SystemVolume.state.removeListener(_onSystemVolume);
     _miniPos.dispose();
     _miniDur.dispose();
     _miniBuf.dispose();
@@ -662,9 +829,13 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       } else {
         // Brightness or volume — the one part of the decision the function
         // cannot make, because it does not know where the drag started.
-        _gMode = (_gStart.dx < size.width / 2)
-            ? 2
-            : 3; // left=brightness, right=volume
+        final onLeft = _gStart.dx < size.width / 2;
+        _gMode = onLeft ? 2 : 3; // left=brightness, right=volume
+        if (!onLeft) {
+          // The volume swipe takes over from the level that is on screen right
+          // now, and owns it until the finger lifts (`_gVolume`).
+          _gVolume = _volume.value;
+        }
       }
     }
     if (_gMode == 1) {
@@ -683,7 +854,15 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         setState(() {});
       }
     } else if (_gMode == 2) {
-      _brightness = (_brightness - d.delta.dy / size.height).clamp(0.0, 1.0);
+      // The arithmetic lives in `utils/swipe_value.dart`, where it is
+      // unit-tested, and it is the SAME arithmetic the volume half below uses:
+      // one private number the finger owns, pushed out to whoever applies it.
+      _brightness = advanceVerticalValue(
+        current: _brightness,
+        deltaDy: d.delta.dy,
+        height: size.height,
+        max: 1,
+      );
       try {
         ScreenBrightness().setApplicationScreenBrightness(_brightness);
       } catch (_) {}
@@ -694,13 +873,24 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     } else if (_gMode == 3) {
       // The swipe feeds the shared volume setter, so the bar's slider and the
       // persisted value follow the gesture; only the write is deferred.
-      _setVolume(
-        _volume.value - (d.delta.dy / size.height) * 100,
-        persist: false,
+      //
+      // It starts from `_gVolume` and NOT from `_volume.value`, which is the
+      // difference between this and a value the finger can actually aim: while
+      // bound, `_volume` holds the STEP the device landed on, so re-reading it
+      // every frame throws the finger's travel away (a 15-step phone answers in
+      // 6.7% jumps, i.e. one step per ~40px of a 600px screen) -- a slow swipe
+      // would move nothing at all, and a wobble across a step boundary would
+      // walk it backwards. The device is asked for the accumulator's value and
+      // answers at the end of the gesture (`_onPanEnd`).
+      _gVolume = advanceVerticalValue(
+        current: _gVolume,
+        deltaDy: d.delta.dy,
+        height: size.height,
       );
+      _setVolume(_gVolume, persist: false);
       setState(() {
         _gOverlayType = _OverlayType.volume;
-        _gOverlayValue = _volume.value.round();
+        _gOverlayValue = _gVolume.round();
       });
     }
   }
@@ -718,7 +908,14 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       if (target != null) p!.seek(target);
     }
     _gMode = 0;
-    if (mode == 3) _queueVolSave();
+    if (mode == 3) {
+      _queueVolSave();
+      // The finger is up, so the device's answer is the level again: what it
+      // landed on is coarser than the accumulator asked for, and the bar goes
+      // back to showing the truth (which the swipe was deliberately allowed to
+      // outrun while it lasted).
+      _adoptDevice(SystemVolume.state.value);
+    }
     setState(() {
       _seeking = false;
       _gOverlayType = null;
@@ -746,7 +943,12 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// volume write.
   void _onPanCancel() {
     if (!_isMobile) return;
+    final mode = _gMode;
     _gMode = 0;
+    // A cancelled volume swipe wrote real levels on the way (each frame applies
+    // one), so the device's answer is adopted here too — the bookkeeping is the
+    // same as the end of a drag, minus the seek and the deferred save.
+    if (mode == 3) _adoptDevice(SystemVolume.state.value);
     setState(() {
       _seeking = false;
       _gOverlayType = null;
@@ -936,7 +1138,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       // A fresh load resets what the user set on the player, so the two facts
       // mpv does not carry across are re-applied from this screen's own state —
       // which is the state they were watching in.
-      player.setVolume(_volume.value);
+      player.setVolume(_playerGain);
       player.setRate(_rate.value);
       player.play();
     } finally {

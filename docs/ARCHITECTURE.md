@@ -174,6 +174,92 @@ library_setup_screen / settings_screen → StorageAccess.watch() + refresh()
     really do; the row uses its one-line `note`, the card its full `body`
 ```
 
+### System Volume (mobile)
+
+```
+The player has always scaled its own gain (`Player.setVolume`), which is what a
+desktop app does: the OS mixer is the user's business and the app's slider is a
+second, app-local volume stacked on top of it. A PHONE is the other way round —
+its hardware keys, its volume panel and every other media app move ONE stream —
+so on mobile the player's volume control moves the device's instead, and the
+player itself is pinned wide open. There is only one number, so the two cannot
+disagree.
+
+Settings → Display → System Volume (mobile only; ON by default on mobile, OFF
+and not offered on desktop — `useSystemVolumeDefault`)
+  → video_player_screen._seedVolume (at player open):
+      read the stream → the bar STARTS at the phone's current level, never at a
+      remembered app volume (that is what "bound to the system" means), and the
+      read is taken again before binding so the level is the one NOW
+  → the whole decision is one value: `utils/player_volume.dart` (`PlayerVolume`)
+    holds which volume the screen drives, the level the bar shows and the last
+    level the device was AUDIBLE at, and every transition is pure — the screen
+    cannot be mounted in a test (its first frame builds a real media_kit
+    `Player`), and the two defects review found in its routing were both in
+    exactly that state:
+      · the audible memory starts at 0 — and the level a session is SEEDED with
+        counts as audible — so an unmute on a session that opened with the phone
+        already silent (or on the app's own stored level) reaches the device's
+        own last level instead of jumping to full scale
+      · the seed path runs twice (what was already known, then the platform's
+        answer) and the second pass only CONFIRMS the decision: its reading was
+        already in flight when a volume-key press in the opening moments arrived
+        as a push, and re-adopting its level would rewind the bar to a level the
+        phone is no longer at
+      · the device's answer is applied to the bar EXPLICITLY, not only through
+        `SystemVolume.state`: a quantised reply can equal the reading the
+        notifier already holds, and an unchanged `ValueNotifier` notifies nobody
+      · a reading that says the output has become FIXED (an HDMI/USB sink
+        appearing mid-session) hands the volume back to the app at the level on
+        screen — the same refusal the seed makes, on the runtime path
+  → every volume path (slider, wheel, arrow keys, swipe, gesture chip, mute)
+    goes through the screen's one `_setVolume`:
+      bound   → SystemVolume.setPercent → MethodChannel 'rcrm/volume'
+                → Android: AudioManager.setStreamVolume(STREAM_MUSIC, index, 0)
+                  (no FLAG_SHOW_UI: the app's own bar is the readout)
+                → iOS: the UISlider inside an offscreen MPVolumeView
+                → the reply is where the stream LANDED, and it is what the bar
+                  shows: a 15-step phone cannot be at 43%, only at 6/15 = 40%
+                → a request for a step the app has ALREADY asked for (or the
+                  device has confirmed) is not sent: a drag repeats it on most
+                  frames, and the confirmation is a round trip away — while a
+                  MUTED stream is always written, because the write is what
+                  clears the mute
+                → a level that is not a number is refused at the entry point:
+                  a gesture area with no height yet produces one, and `clamp`
+                  passes NaN through while `round()` throws on it
+      unbound → Player.setVolume (the app's own gain, persisted as before)
+  → a change made ANYWHERE ELSE reaches the bar too: the platform pushes
+    `onChanged` on the same channel
+      (Android: TWO mechanisms, because neither is promised — a runtime
+       receiver for the @hide broadcast android.media.VOLUME_CHANGED_ACTION,
+       filtered to STREAM_MUSIC, AND a ContentObserver on Settings.System
+       filtered to volume keys, since the app writes SCREEN_BRIGHTNESS per
+       frame during a brightness swipe; both collapse into one push. iOS: KVO
+       on AVAudioSession.outputVolume)
+  → the arithmetic lives in ONE place, `services/system_volume.dart`, as pure
+    functions the platform never sees: the platform answers with raw stream
+    numbers (`index`, `min`, `max`) and applies an index, so the percentage
+    both directions agree on — including the quantisation — is unit-tested
+    rather than re-implemented per platform
+  → binding needs four things at once (`shouldBindSystemVolume`): a mobile
+    platform, the setting, a reading, and an output that is not fixed-volume
+    (`isVolumeFixed` on Android; on iOS there is no such call, so the app reports
+    "fixed" when its own `MPVolumeView` yields no slider — a route with no volume
+    control, where the failure is asymmetric: a wrong "fixed" costs the binding,
+    a wrong "settable" would cost the user every volume control there is).
+    Without all four the player keeps its own volume rather than showing a
+    slider that cannot act — and the Settings row's subtitle is a pure function
+    of the switch, whether a reading exists and that `fixed` flag, so it says
+    which of the three it is looking at rather than promising device control the
+    player will not perform
+  → iOS reads through the SAME control it writes through (the volume view's
+    slider, falling back to `AVAudioSession.outputVolume` only when there is no
+    slider): `outputVolume` is only meaningful on an ACTIVE session, and this app
+    must not force one (activating it interrupts whatever else is playing, and a
+    video that has not started yet has no session of its own)
+```
+
 ### Thumbnail Pipeline
 
 > The on-disk `ThumbCache` (mobile by default) is **managed, not evicted**:

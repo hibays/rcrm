@@ -12,6 +12,7 @@ import '../services/net.dart';
 import '../services/screen_capture.dart';
 import '../services/settings_service.dart';
 import '../services/storage_access.dart';
+import '../services/system_volume.dart';
 import '../services/thumb_cache.dart';
 import '../utils/thumb_cache_policy.dart';
 import '../widgets/thumb_cache_dialog.dart';
@@ -45,6 +46,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     // user comes back from Android's settings screen.
     StorageAccess.watch();
     StorageAccess.refresh();
+    // Mobile only: the volume row's wording depends on what the device's
+    // output can do (a fixed-volume sink cannot be bound, and the row says so),
+    // so the reading is taken here and followed while this screen is up.
+    if (SystemVolume.supported) {
+      SystemVolume.watch();
+      SystemVolume.read();
+    }
   }
 
   @override
@@ -616,6 +624,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     .setVideoJumpHistoryLimit(v);
               },
             ),
+            // A volume row exists only where the app may set the device's media
+            // stream: on a phone that stream is what the hardware keys and every
+            // other media app move, while a desktop's mixer is the user's own
+            // business and its app-local slider is the expected behaviour. The
+            // switch is read when a player opens (`video_player_screen.dart`), so
+            // this row states a preference rather than poking a playing video.
+            if (SystemVolume.supported) ...[
+              const Divider(height: 1),
+              _systemVolumeTile(ui.useSystemVolume),
+            ],
           ]),
           // A privacy row exists only where the platform has a capture surface
           // the app can actually close: a desktop window's pixels are the OS's
@@ -704,6 +722,34 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ),
           ]),
         ],
+      ),
+    );
+  }
+
+  /// The volume binding row — Settings → Display, mobile only.
+  ///
+  /// The subtitle follows the READING as well as the switch, because there are
+  /// two ways this switch cannot keep its promise and both have to be said: an
+  /// output whose volume is fixed (some TV boxes, car head units, HDMI sinks)
+  /// cannot be set at all, and a device that never reported a reading is one the
+  /// player will not bind to either — it keeps its own volume in both cases
+  /// (`systemVolumeBindingNote`).
+  Widget _systemVolumeTile(bool bound) {
+    return ValueListenableBuilder<SystemVolumeReading?>(
+      valueListenable: SystemVolume.state,
+      builder: (_, reading, _) => SwitchListTile(
+        title: const Text('System Volume'),
+        subtitle: Text(
+          systemVolumeBindingNote(
+            bound: bound,
+            readable: reading != null,
+            fixedOutput: reading?.fixed ?? false,
+          ),
+        ),
+        value: bound,
+        onChanged: (v) {
+          ref.read(uiSettingsProvider.notifier).setUseSystemVolume(v);
+        },
       ),
     );
   }

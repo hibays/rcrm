@@ -18,6 +18,10 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // The volume receiver is registered against the application context,
+        // which outlives this Activity, so it is dropped here rather than left
+        // following a device this process is done with.
+        SystemVolumeChannel.detach()
         // Android frequently keeps the process cached after the Activity dies.
         // That surviving process carries secrets (page-locked keys, accepted
         // keys) and native state (Rust server threads, libmpv contexts) into
@@ -73,6 +77,9 @@ class MainActivity : FlutterActivity() {
         // app needs all-files access on Android 11+ and the storage grant (plus
         // the manifest's legacy-storage flag) on Android 6-10.
         StorageAccessChannel.register(flutterEngine.dartExecutor.binaryMessenger, this)
+        // The device's media volume, which is what the player's volume control
+        // moves on mobile (`SystemVolumeChannel.kt`).
+        SystemVolumeChannel.attach(this, flutterEngine.dartExecutor.binaryMessenger)
     }
 
     override fun onRequestPermissionsResult(

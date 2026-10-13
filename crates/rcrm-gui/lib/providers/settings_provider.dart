@@ -12,6 +12,7 @@ import '../services/screen_capture.dart';
 import '../services/settings_service.dart';
 import '../services/thumb_cache.dart';
 import '../services/preview_player.dart';
+import '../services/system_volume.dart';
 import 'library_provider.dart';
 import 'server_provider.dart'; // for settingsServiceProvider
 
@@ -49,6 +50,14 @@ class SettingsState {
   /// (`services/screen_capture.dart`).
   final bool allowScreenshots;
 
+  /// Whether the player's volume control moves the DEVICE's media volume
+  /// instead of the player's own gain. Mobile only, **on by default there**:
+  /// the phone's hardware keys and every other media app move that one stream,
+  /// so a video holding a private volume above it disagrees with the phone.
+  /// The platform is not told — the player reads this when it opens, and only
+  /// binds when the device can really be set (`shouldBindSystemVolume`).
+  final bool useSystemVolume;
+
   /// How many previous videos the video player's jump stack keeps — the entries
   /// `Back` returns to and the Related list excludes
   /// (`providers/video_jump_stack.dart`). Persisted; the stack itself is not.
@@ -71,6 +80,7 @@ class SettingsState {
     this.pipSize = 'normal',
     this.videoJumpHistoryLimit = kVideoJumpHistoryDefault,
     this.allowScreenshots = false,
+    this.useSystemVolume = true,
   });
 
   SettingsState copyWith({
@@ -91,6 +101,7 @@ class SettingsState {
     String? pipSize,
     int? videoJumpHistoryLimit,
     bool? allowScreenshots,
+    bool? useSystemVolume,
   }) {
     return SettingsState(
       imageLayout: imageLayout ?? this.imageLayout,
@@ -111,6 +122,7 @@ class SettingsState {
       videoJumpHistoryLimit:
           videoJumpHistoryLimit ?? this.videoJumpHistoryLimit,
       allowScreenshots: allowScreenshots ?? this.allowScreenshots,
+      useSystemVolume: useSystemVolume ?? this.useSystemVolume,
     );
   }
 }
@@ -144,6 +156,16 @@ class SettingsNotifier extends Notifier<SettingsState> {
     final castAutoNext = await _service.getCastAutoNext();
     final videoJumpHistoryLimit = await _service.getVideoJumpHistoryLimit();
     final allowScreenshots = await _service.getAllowScreenshots();
+    final useSystemVolume = await _service.getUseSystemVolume();
+    // The one reading taken at APP start, for the volume binding: a player
+    // opened later seeds its bar from this before it asks again, so the bar
+    // never opens on 100 while a platform round trip is in flight. Unawaited
+    // for the same reason the capture policy below is: restoring the settings
+    // must not depend on a platform answering.
+    if (SystemVolume.supported) {
+      SystemVolume.watch();
+      unawaited(SystemVolume.read());
+    }
     // Mirrored onto the platform, not just remembered: the window that is
     // capturable or not belongs to the OS, and the Android half starts SECURE
     // (`MainActivity.onCreate`, before Dart exists) — so this is what lifts it
@@ -185,6 +207,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
       pipSize: pipSize,
       videoJumpHistoryLimit: videoJumpHistoryLimit,
       allowScreenshots: allowScreenshots,
+      useSystemVolume: useSystemVolume,
     );
   }
 
@@ -303,6 +326,17 @@ class SettingsNotifier extends Notifier<SettingsState> {
     state = state.copyWith(allowScreenshots: allowed);
     await ScreenCapture.setAllowed(allowed);
     await _service.setAllowScreenshots(allowed);
+  }
+
+  /// The volume binding — Settings → Display, mobile only.
+  ///
+  /// Nothing is pushed to the platform: the choice is read when a player opens,
+  /// and the player is the only thing that acts on it. A player that is already
+  /// open keeps the choice it started with, which is the same rule the rest of
+  /// the player's own settings follow.
+  Future<void> setUseSystemVolume(bool enabled) async {
+    state = state.copyWith(useSystemVolume: enabled);
+    await _service.setUseSystemVolume(enabled);
   }
 
   /// The settings slider (`screens/settings_screen.dart`) committed [limit] —
