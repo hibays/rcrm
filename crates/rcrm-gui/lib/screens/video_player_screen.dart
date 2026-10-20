@@ -186,6 +186,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   bool _episodesClosing = false;
   bool _disposed = false;
   bool _globalImmersive = false;
+
+  /// The rate to go back to when a hold-to-2x ends — the app's own memory of
+  /// the last rate the viewer chose, held only for the duration of the hold.
   double _savedRate = 1.0;
 
   /// Which reading the bar's time display shows. Persisted with the volume, for
@@ -722,6 +725,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     // The episode sheet only exists in fullscreen — drop it on the way out so
     // re-entering fullscreen does not resurrect a stale sheet.
     if (!on) _showEpisodes = false;
+    // Both trees swap the picture widget, so a hold on it dies with the surface
+    // that owned it and never reports its end. End it here, where every
+    // fullscreen change already passes.
+    _longPress2xEnd();
     setState(() => fullscreen = on);
     _globalImmersive = ref.read(immersiveModeProvider);
     if (_isMobile) {
@@ -1199,6 +1206,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           _pipH = _pipW * 9 / 16;
           _pipX = 0;
         }
+      } else {
+        // Scrolling back past the video takes the window out of the tree under
+        // whatever the finger is holding on it — see [_longPress2xEnd].
+        _longPress2xEnd();
       }
       setState(() => _pip = show);
     }
@@ -1818,6 +1829,44 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     );
   }
 
+  /// Long press runs the file at 2x for as long as the finger is down — video.js's
+  /// own "hold to speed through", and the only way to skim a file without opening
+  /// the speed menu.
+  ///
+  /// ONE entry point per half, because three surfaces now offer it (the video
+  /// surface on each platform, and the floating window) and the two halves must not
+  /// be able to disagree about what the rate was before the hold.
+  ///
+  /// The pairing is Flutter's, not this method's, and it is worth knowing because
+  /// the floating window also drags: once `onLongPressStart` has fired, lifting the
+  /// finger always fires `onLongPressEnd`, and a move in between does NOT cancel it
+  /// (`LongPressGestureRecognizer.handlePrimaryPointer` — a move while accepted
+  /// only reports `onLongPressMoveUpdate`). So while the surface that took the hold
+  /// is still in the tree, a hold cannot turn into a drag of the window and cannot
+  /// strand the rate: the long press has already won the arena by the time the
+  /// finger moves, and the held finger can then do nothing but lift.
+  ///
+  /// The catch is that the pair is only ever delivered BY that surface. Unmount it
+  /// mid-hold and the recogniser goes with it, invoking nothing
+  /// (`resolve(rejected)` after acceptance resets without a callback) — which is
+  /// what [_longPress2xEnd]'s guard and its callers are for: whoever tears a
+  /// surface down ends the hold itself. Reachable on desktop with one hand, in
+  /// fact: hold the floating window and turn the wheel, and the window leaves the
+  /// tree under the finger.
+  void _longPress2xStart() {
+    _savedRate = p?.state.rate ?? 1.0;
+    p?.setRate(2.0);
+    if (mounted) setState(() => show2x = true);
+  }
+
+  /// Ends whatever hold is in flight, and is safe to call when none is — which is
+  /// what lets the teardown paths call it without asking first.
+  void _longPress2xEnd() {
+    if (!show2x) return;
+    p?.setRate(_savedRate);
+    if (mounted) setState(() => show2x = false);
+  }
+
   Widget _wrapPointer(Widget child) {
     if (_isMobile) {
       return LayoutBuilder(
@@ -1830,15 +1879,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
             onPanUpdate: (d) => _onPanUpdate(d, sz),
             onPanEnd: _onPanEnd,
             onPanCancel: _onPanCancel,
-            onLongPressStart: (_) {
-              _savedRate = p?.state.rate ?? 1.0;
-              p?.setRate(2.0);
-              setState(() => show2x = true);
-            },
-            onLongPressEnd: (_) {
-              p?.setRate(_savedRate);
-              setState(() => show2x = false);
-            },
+            onLongPressStart: (_) => _longPress2xStart(),
+            onLongPressEnd: (_) => _longPress2xEnd(),
             child: child,
           );
         },
@@ -1859,15 +1901,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           _setFullscreen(!fullscreen);
         }
       },
-      onLongPressStart: (_) {
-        _savedRate = p?.state.rate ?? 1.0;
-        p?.setRate(2.0);
-        setState(() => show2x = true);
-      },
-      onLongPressEnd: (_) {
-        p?.setRate(_savedRate);
-        setState(() => show2x = false);
-      },
+      onLongPressStart: (_) => _longPress2xStart(),
+      onLongPressEnd: (_) => _longPress2xEnd(),
       child: child,
     );
   }
@@ -2287,6 +2322,13 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         onPanStart: _onPipDragStart,
         onPanUpdate: _onPipPanUpdate,
         onPanEnd: _onPipDragEnd,
+        // The same hold-to-2x the video surface has, on the same terms: the long
+        // press wins the arena 500ms in, so a hold speeds the file up, a drag
+        // moves the window, and lifting the finger puts the rate back either way
+        // (see [_longPress2xStart]). It works in both sizes — the small window
+        // only gives up the seek drag, which needs a track to scrub along.
+        onLongPressStart: (_) => _longPress2xStart(),
+        onLongPressEnd: (_) => _longPress2xEnd(),
         child: Container(
           width: _pipW,
           height: _pipH,
@@ -2353,28 +2395,14 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                   ),
                 ),
               ),
-              // Home (leave the player chain for the library). The PiP is what
-              // the windowed chrome collapses to once the page is scrolled, and
-              // the video's own Back/Home cluster is not in the tree then — so
-              // the way out has to live here too.
-              Positioned(
-                top: 4,
-                right: 76,
-                child: GestureDetector(
-                  onTap: _goHome,
-                  child: Container(
-                    decoration: const BoxDecoration(
-                      color: Colors.black54,
-                      shape: BoxShape.circle,
-                    ),
-                    padding: const EdgeInsets.all(6),
-                    child: const Icon(
-                      Icons.home,
-                      size: 18,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
+              // The 2x chip rides on the window the finger is on: with the PiP up
+              // there is no video surface on the page to carry it — the page's own
+              // slot collapses to the PiP's size and takes nothing with it.
+              // Always mounted (like the one in the video surface) so the chip's
+              // own fade in and out can finish; it is `IgnorePointer`, so it never
+              // takes the gesture that put it there.
+              Positioned.fill(
+                child: Center(child: PlayerSpeedBadge(visible: show2x)),
               ),
               // Seek preview overlay
               if (_pipSeeking)
