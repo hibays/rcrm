@@ -37,3 +37,6 @@ crates/rcrm-flutter-bridge/tests/testdata
 
 # Local cargo mirror config (machine-specific)
 .cargo/config.toml
+
+# workbuddy 记忆
+.workbuddy/memory/

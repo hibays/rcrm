@@ -51,6 +51,8 @@ crates/
 │       ├── decode.rs   DecodeBuf + shared downscaling
 │       ├── webp.rs     WebP encoding (zenwebp)
 │       ├── metadata.rs EXIF / track parsing (nom-exif)
+│       ├── qr_gen.rs   QR encode (zxing-cpp) → WebP
+│       ├── qr_scan.rs  QR decode (zxing-cpp)
 │       └── server.rs   Server lifecycle for the app
 └── rcrm-gui/           Flutter application
     ├── lib/

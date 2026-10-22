@@ -5,11 +5,11 @@
 // to the TV. On success it navigates to the remote control screen.
 //
 // Scanning is self-built: on Android/iOS the `camera` package's live frame
-// stream (yuv420 — the Y plane is luma, fed straight to rxing, zero
+// stream (yuv420 — the Y plane is luma, fed straight to zxing-cpp, zero
 // conversion) provides continuous decoding like mobile_scanner did. Windows
 // has no frame stream in camera_windows, so it polls takePicture JPEG stills
 // at 100 ms at maximum resolution. All decoding runs in the Rust bridge
-// (zune-jpeg / rxing — pure Rust, no native barcode API).
+// (zune-jpeg → zxing-cpp's C++ reader, no native platform barcode API).
 
 import 'dart:async';
 import 'dart:io';
@@ -132,7 +132,7 @@ class _State extends ConsumerState<CastScanScreen> with WidgetsBindingObserver {
       final isDesktop =
           Platform.isWindows || Platform.isLinux || Platform.isMacOS;
       // Mobile: max frame rate via the yuv420 frame stream (the Y plane is
-      // luma — fed straight to rxing, zero conversion, no JPEG round-trip).
+      // luma — fed straight to zxing-cpp, zero conversion, no JPEG round-trip).
       // Desktop: camera_windows has no frame stream — poll takePicture at a
       // high rate with the camera's maximum resolution (a low preset is why
       // a QR had to be shoved right against the lens to decode).

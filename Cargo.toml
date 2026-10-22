@@ -37,6 +37,13 @@ crc32fast = "1.5"
 [profile.dev]
 overflow-checks = false
 
+# zxing-cpp's bundled build follows cargo's opt-level: at opt-level 0 it
+# configures CMake `Debug`, which compiles the C++ against the debug CRT
+# (/MDd) and then cannot link into a Rust binary — Rust always uses the release
+# CRT. Optimize the C++ core even in dev/test builds; the Rust side stays debug.
+[profile.dev.package.zxing-cpp]
+opt-level = 3
+
 [profile.release]
 overflow-checks = false
 lto = true

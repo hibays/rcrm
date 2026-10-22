@@ -31,6 +31,12 @@ Push-Location $bridge
 # RUSTC_BOOTSTRAP=rav1d: keep identical to Android/Windows scripts — cargo folds
 # it into the fingerprint config hash; any mismatch forces a full rebuild.
 $env:RUSTC_BOOTSTRAP = "rav1d"
+
+# zxing-cpp's bundled CMake build needs the iOS platform stated explicitly (a
+# toolchain file turns off cmake-rs's own cross-compile defaults, by design).
+$env:CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios = "$root\scripts\cmake\ios-device.cmake"
+$env:CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios_sim = "$root\scripts\cmake\ios-sim.cmake"
+
 cargo build --release -p rcrm-flutter-bridge --features mobile-decode --target aarch64-apple-ios
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Rust iOS device build failed!" -ForegroundColor Red

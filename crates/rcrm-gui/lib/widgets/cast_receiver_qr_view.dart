@@ -18,7 +18,7 @@ import '../services/cast_protocol.dart';
 /// through with a badge (expired / already paired) while the layout stays
 /// unchanged.
 ///
-/// The code itself is generated in Rust (`rcrm_generate_qr_webp` — rxing
+/// The code itself is generated in Rust (`rcrm_generate_qr_webp` — zxing-cpp
 /// encoder → 2048×2048 lossless WebP) instead of qr_flutter, so the Dart
 /// side has no QR dependency and the TV never re-renders a vector QR.
 class CastReceiverQrCard extends StatefulWidget {

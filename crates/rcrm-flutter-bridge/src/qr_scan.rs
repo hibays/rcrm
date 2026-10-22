@@ -3,23 +3,20 @@
 //
 // Windows has no QR-capable native barcode API, and the mobile_scanner plugin
 // ships no Windows implementation. Instead the bridge decodes QR codes itself
-// (zune-jpeg → luma → rxing), so every platform shares one code path.
+// (zune-jpeg → luma → zxing-cpp), so every platform shares one code path.
 //
-// rxing is a Rust port of the ZXing barcode library — unlike rqrr (a quirc
-// port) it has a full detector that tolerates perspective distortion, blur,
-// small module sizes and distance, so the phone no longer needs to fill most
-// of the frame with the QR code. Cargo features are pinned to decoders +
-// full_barcode_format_support + multi_barcode_readers (no image/client deps).
+// zxing-cpp is the C++ reference implementation of the ZXing barcode library,
+// reached through its official Rust wrapper (`zxing-cpp` crate, bundled). It
+// replaced rxing after a cross-benchmark on 4900 degraded images: 81.9% vs
+// 80.9% on QR, at roughly 2x the speed, with the wrapper's C-API FFI cost in
+// the noise (<5% median, identical results on all 4900 images). The full
+// detector tolerates perspective distortion, blur, small module sizes and
+// distance, so the phone does not need to fill the frame with the code.
 //
 // The C-ABI surface (rcrm_decode_qr / _bgra / _luma) lives in lib.rs; this
 // module exposes only plain Rust functions.
 
-use std::collections::HashSet;
-
-use rxing::common::HybridBinarizer;
-use rxing::{
-	BarcodeFormat, BinaryBitmap, DecodeHints, Luma8LuminanceSource, MultiFormatReader, Reader,
-};
+use zxingcpp::{BarcodeFormat, ImageFormat, ImageView, read};
 
 /// Decode the first QR code found in a JPEG frame.
 ///
@@ -87,9 +84,9 @@ pub fn decode_qr_bgra(
 ///
 /// Camera frame streams (CameraX / AVFoundation yuv420) expose the Y plane
 /// with padding: `row_stride` is the distance in bytes between row starts.
-/// This lets the mobile scanner feed frames straight to rxing without a
-/// JPEG round-trip (the Luma8 source needs a tight buffer, so strided rows
-/// are repacked here).
+/// This lets the mobile scanner feed frames straight to zxing-cpp without a
+/// JPEG round-trip (its ImageView needs a tight buffer, so strided rows are
+/// repacked here).
 pub fn decode_qr_luma(
 	width: usize,
 	height: usize,
@@ -107,7 +104,7 @@ pub fn decode_qr_luma(
 	for y in 0..height {
 		tight.extend_from_slice(&data[y * row_stride..y * row_stride + width]);
 	}
-	rxing_decode(width, height, tight)
+	zxing_decode(width, height, tight)
 }
 
 /// Convert arbitrary pixels to a tight luma buffer and decode a QR from it.
@@ -125,26 +122,36 @@ fn decode_luma(
 			luma.push(fill(x, y));
 		}
 	}
-	rxing_decode(width, height, luma)
+	zxing_decode(width, height, luma)
 }
 
-/// Run the ZXing (rxing) QR detector/decoder on a tight greyscale buffer.
-/// TryHarder is on: the scan screen wants maximum sensitivity (small, far,
-/// blurry codes) over speed — decode is still a few ms at frame sizes.
-fn rxing_decode(width: usize, height: usize, luma: Vec<u8>) -> Option<String> {
+/// Run the zxing-cpp QR detector/decoder on a tight greyscale buffer.
+///
+/// TryHarder stays on: the scan screen wants maximum sensitivity (small, far,
+/// blurry codes) over speed — decode is still a few ms at frame sizes. Rotate,
+/// invert and downscale match the benchmark's "not fast" reader profile, which
+/// is the profile a hand-held camera needs (the phone may be upside down, the
+/// frame may be inverted by a dark UI, and the code may be far away).
+fn zxing_decode(width: usize, height: usize, luma: Vec<u8>) -> Option<String> {
 	if width == 0 || height == 0 || luma.len() != width * height {
 		return None;
 	}
-	let source = Luma8LuminanceSource::new(luma, width as u32, height as u32).ok()?;
-	let mut bitmap = BinaryBitmap::new(HybridBinarizer::new(source));
-	let hints = DecodeHints {
-		PossibleFormats: Some(HashSet::from([BarcodeFormat::QR_CODE])),
-		TryHarder: Some(true),
-		..DecodeHints::default()
-	};
-	let mut reader = MultiFormatReader::default();
-	let result = reader.decode_with_hints(&mut bitmap, &hints).ok()?;
-	Some(result.getText().to_string())
+	let width = i32::try_from(width).ok()?;
+	let height = i32::try_from(height).ok()?;
+	let view = ImageView::from_slice(&luma, width, height, ImageFormat::Lum).ok()?;
+	let barcodes = read()
+		.formats([BarcodeFormat::QRCode])
+		.try_harder(true)
+		.try_rotate(true)
+		.try_invert(true)
+		.try_downscale(true)
+		.from(&view)
+		.ok()?;
+	barcodes
+		.into_iter()
+		.find(|b| b.is_valid() && b.format() == BarcodeFormat::QRCode)
+		.map(|b| b.text())
+		.filter(|text| !text.is_empty())
 }
 
 #[cfg(test)]
@@ -173,7 +180,7 @@ mod tests {
 		(size, size, luma)
 	}
 
-	/// rxing_decode from a greyscale buffer must recover a QR payload,
+	/// zxing_decode from a greyscale buffer must recover a QR payload,
 	/// including the mirrored variant (webcam previews can be mirrored).
 	#[test]
 	fn decodes_roundtrip_payload() {

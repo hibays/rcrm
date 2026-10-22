@@ -1,9 +1,9 @@
 // src/qr_gen.rs
 // rcrm-flutter-bridge — QR generation for the cast-pairing screen
 //
-// The TV receiver shows a pairing QR on screen. Generation runs here (rxing
-// encoder → L8 luma → WebP via zenwebp) instead of in Flutter, so the
-// qr_flutter package can be dropped and the 2048px (2K) code arrives as a
+// The TV receiver shows a pairing QR on screen. Generation runs here
+// (zxing-cpp encoder → L8 luma → WebP via zenwebp) instead of in Flutter, so
+// the qr_flutter package can be dropped and the 2048px (2K) code arrives as a
 // small WebP.
 //
 // Encoding is LOSSLESS (VP8L). Measured on a 2048² two-tone image
@@ -18,8 +18,8 @@
 // The C-ABI surface (rcrm_generate_qr_webp) lives in lib.rs; this module
 // exposes only plain Rust functions.
 
-use rxing::{BarcodeFormat, EncodeHints, MultiFormatWriter, Writer};
 use zenwebp::{EncodeRequest, LosslessConfig, PixelLayout};
+use zxingcpp::{BarcodeFormat, create, write};
 
 /// Nominal generated resolution: 2048×2048 (2K). The phone scans the QR from
 /// a TV screen, so extra pixels keep it readable at distance; the WebP is
@@ -29,42 +29,46 @@ pub const QR_SIZE: u32 = 2048;
 /// Encode [payload] as a QR code and return lossless WebP bytes.
 ///
 /// The output is a 2048×2048 white QR with black modules, quiet zone
-/// included (rxing's writer pads by 4 modules). Returns `None` on any
+/// included (zxing-cpp's writer pads by 4 modules). Returns `None` on any
 /// encoding failure.
 pub fn generate_qr_webp(payload: &str) -> Option<Vec<u8>> {
 	if payload.is_empty() {
 		return None;
 	}
-	let hints = EncodeHints {
-		// "M" error correction — good density/safety balance for a
-		// TV-displayed pairing code.
-		ErrorCorrection: Some("M".to_string()),
-		..EncodeHints::default()
-	};
-	let matrix = MultiFormatWriter
-		.encode_with_hints(
-			payload,
-			&BarcodeFormat::QR_CODE,
-			QR_SIZE as i32,
-			QR_SIZE as i32,
-			&hints,
-		)
+	// "M" error correction — good density/safety balance for a TV-displayed
+	// pairing code. zxing-cpp spells its creator options `key:value`.
+	let barcode = create(BarcodeFormat::QRCode)
+		.options("ec_level:M")
+		.from_str(payload)
 		.ok()?;
 
-	// L8 (1 byte/pixel luma) instead of RGBA: the QR is monochrome, so this
-	// cuts the intermediate buffer from 16 MiB to 4 MiB. 0 = black, 255 =
-	// white; lossless keeps module edges pixel-exact.
-	let mut luma = vec![0xffu8; (QR_SIZE as usize) * (QR_SIZE as usize)];
-	// matrix.get(x, y) → true = black. The writer pads to exactly 2048², so
-	// in-bounds reads are the norm; the check_in_bounds guard is
-	// belt-and-suspenders: for rxing's BitMatrix, an x beyond the width
-	// (but y within) reads the NEXT ROW's module, not "false" — silently
-	// corrupting the quiet zone. Note rxing's check_in_bounds has INVERTED
-	// semantics: it returns true when the coordinate is OUT of bounds.
-	for y in 0..QR_SIZE {
-		for x in 0..QR_SIZE {
-			if !matrix.check_in_bounds(x, y) && matrix.get(x, y) {
-				luma[(y * QR_SIZE + x) as usize] = 0;
+	// Render one pixel per module (quiet zone included), then scale up with
+	// nearest-neighbour so every module edge stays exact. 0 = black, 255 =
+	// white; L8 keeps the intermediate buffer at 4 MiB instead of 16.
+	let module = barcode.to_image_with(&write().scale(1)).ok()?;
+	let mw = usize::try_from(module.width()).ok()?;
+	let mh = usize::try_from(module.height()).ok()?;
+	let modules = module.data();
+	if mw == 0 || mh == 0 || modules.len() != mw * mh {
+		return None;
+	}
+	let scale = (QR_SIZE as usize) / mw.max(mh);
+	if scale == 0 {
+		return None;
+	}
+	let drawn_w = mw * scale;
+	let drawn_h = mh * scale;
+	let x0 = (QR_SIZE as usize - drawn_w) / 2;
+	let y0 = (QR_SIZE as usize - drawn_h) / 2;
+	let row = QR_SIZE as usize;
+	let mut luma = vec![0xffu8; row * row];
+	for y in 0..mh {
+		for x in 0..mw {
+			if modules[y * mw + x] < 0x80 {
+				for dy in 0..scale {
+					let base = (y0 + y * scale + dy) * row + x0 + x * scale;
+					luma[base..base + scale].fill(0);
+				}
 			}
 		}
 	}

@@ -35,6 +35,48 @@ New-Item -ItemType Directory -Force -Path "$jniLibsBase/x86_64" | Out-Null
 # every build script: cargo folds RUSTC_BOOTSTRAP into the fingerprint
 # config hash, so a mismatch between scripts forces a full rebuild.
 $env:RUSTC_BOOTSTRAP = "rav1d"
+
+# ── zxing-cpp (C++ through its official Rust wrapper) ──────────
+# The wrapper's `bundled` build compiles the C++ core with CMake; cmake-rs
+# picks a toolchain file per Rust target, so each ABI has its own shim (the NDK
+# toolchain needs ANDROID_ABI before it is included). Ninja is required on
+# Windows: the NDK toolchain file does not support Visual Studio generators.
+$cmakeShims = Join-Path $root "scripts/cmake"
+$env:CMAKE_GENERATOR = "Ninja"
+$env:CMAKE_TOOLCHAIN_FILE_aarch64_linux_android = Join-Path $cmakeShims "android-arm64-v8a.cmake"
+$env:CMAKE_TOOLCHAIN_FILE_armv7_linux_androideabi = Join-Path $cmakeShims "android-armeabi-v7a.cmake"
+$env:CMAKE_TOOLCHAIN_FILE_x86_64_linux_android = Join-Path $cmakeShims "android-x86_64.cmake"
+
+# zxing-cpp is C++. The wrapper links `-lstdc++`, which on Android resolves to
+# the NDK's small compatibility stub rather than the C++ runtime, so the real
+# one is linked here — statically, so the APK does not need libc++_shared.so.
+# Target-scoped rustflags keep the host-side build scripts clean (a global -l
+# would be passed to every host proc-macro link too).
+$libcxxFlags = "-C link-arg=-lc++_static -C link-arg=-lc++abi -C link-arg=-lunwind"
+
+# The NDK ships BOTH a legacy `libstdc++.so` stub (API-level dir, found first by
+# default) and a static `libstdc++.a` (ABI dir). A search dir holding ONLY the
+# static stub makes the wrapper's `-lstdc++` resolve to it, without also
+# changing how `-lc`/`-lm` resolve (pointing at the whole ABI dir would link
+# static libc and break armv7's versioned __aeabi_* symbols).
+#
+# RUSTFLAGS are split on whitespace, so the path is used unquoted: keep the
+# checkout path free of spaces.
+$llvmPrebuilt = Get-ChildItem (Join-Path $env:ANDROID_NDK_HOME "toolchains\llvm\prebuilt") -Directory | Select-Object -First 1
+$ndkLibDir = Join-Path $llvmPrebuilt.FullName "sysroot\usr\lib"
+$stdcxxRoot = Join-Path $root "target\android-stdcxx"
+foreach ($v in @(
+        @{ dir = "arm64-v8a"; triple = "aarch64-linux-android" },
+        @{ dir = "armeabi-v7a"; triple = "arm-linux-androideabi" },
+        @{ dir = "x86_64"; triple = "x86_64-linux-android" })) {
+    $d = Join-Path $stdcxxRoot $v.dir
+    New-Item -ItemType Directory -Force $d | Out-Null
+    Copy-Item (Join-Path $ndkLibDir "$($v.triple)\libstdc++.a") (Join-Path $d "libstdc++.a") -Force
+}
+$env:CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS = "-L native=$(Join-Path $stdcxxRoot 'arm64-v8a') $libcxxFlags"
+$env:CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS = "-L native=$(Join-Path $stdcxxRoot 'armeabi-v7a') $libcxxFlags"
+$env:CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS = "-L native=$(Join-Path $stdcxxRoot 'x86_64') $libcxxFlags"
+
 cargo ndk `
     --target aarch64-linux-android `
     --target armv7-linux-androideabi `

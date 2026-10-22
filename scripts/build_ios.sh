@@ -34,6 +34,10 @@ echo "[1/4] Building Rust bridge for iOS..."
   # RUSTC_BOOTSTRAP=rav1d: keep identical to other build scripts — cargo folds
   # it into the fingerprint config hash; any mismatch forces a full rebuild.
   export RUSTC_BOOTSTRAP=rav1d
+  # zxing-cpp's bundled CMake build needs the iOS platform stated explicitly
+  # (a toolchain file turns off cmake-rs's own cross-compile defaults).
+  export CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios="$ROOT/scripts/cmake/ios-device.cmake"
+  export CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios_sim="$ROOT/scripts/cmake/ios-sim.cmake"
   cargo build --release -p rcrm-flutter-bridge --features mobile-decode --target aarch64-apple-ios
   cargo build --release -p rcrm-flutter-bridge --features mobile-decode --target aarch64-apple-ios-sim 2>/dev/null || echo "  (simulator target skipped)"
 )

@@ -40,6 +40,40 @@ mkdir -p "$JNI_LIBS/arm64-v8a" "$JNI_LIBS/armeabi-v7a" "$JNI_LIBS/x86_64"
 # every build script: cargo folds RUSTC_BOOTSTRAP into the fingerprint
 # config hash, so a mismatch between scripts forces a full rebuild.
 export RUSTC_BOOTSTRAP=rav1d
+
+# ── zxing-cpp (C++ through its official Rust wrapper) ──────────
+# The wrapper's `bundled` build compiles the C++ core with CMake; cmake-rs
+# picks a toolchain file per Rust target, so each ABI has its own shim (the NDK
+# toolchain needs ANDROID_ABI before it is included).
+export CMAKE_TOOLCHAIN_FILE_aarch64_linux_android="$ROOT/scripts/cmake/android-arm64-v8a.cmake"
+export CMAKE_TOOLCHAIN_FILE_armv7_linux_androideabi="$ROOT/scripts/cmake/android-armeabi-v7a.cmake"
+export CMAKE_TOOLCHAIN_FILE_x86_64_linux_android="$ROOT/scripts/cmake/android-x86_64.cmake"
+
+# zxing-cpp is C++. The wrapper links `-lstdc++`, which on Android resolves to
+# the NDK's small compatibility stub rather than the C++ runtime, so the real
+# one is linked here — statically, so the APK does not need libc++_shared.so.
+# Target-scoped rustflags keep host-side build scripts clean.
+LIBCXX_FLAGS="-C link-arg=-lc++_static -C link-arg=-lc++abi -C link-arg=-lunwind"
+
+# The NDK ships BOTH a legacy `libstdc++.so` stub (API-level dir, found first
+# by default) and a static `libstdc++.a` (ABI dir). A dir holding ONLY the
+# static stub makes the wrapper's `-lstdc++` resolve to it without changing
+# how `-lc`/`-lm` resolve (pointing at the whole ABI dir links static libc and
+# breaks armv7's versioned __aeabi_* symbols).
+#
+# RUSTFLAGS are whitespace-split: keep the checkout path free of spaces.
+LLVM_PREBUILT=$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -n1)
+NDK_LIB="$LLVM_PREBUILT/sysroot/usr/lib"
+STDCXX_ROOT="$ROOT/target/android-stdcxx"
+for pair in "arm64-v8a:aarch64-linux-android" "armeabi-v7a:arm-linux-androideabi" "x86_64:x86_64-linux-android"; do
+  abi="${pair%%:*}"; triple="${pair#*:}"
+  mkdir -p "$STDCXX_ROOT/$abi"
+  cp "$NDK_LIB/$triple/libstdc++.a" "$STDCXX_ROOT/$abi/libstdc++.a"
+done
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-L native=$STDCXX_ROOT/arm64-v8a $LIBCXX_FLAGS"
+export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-L native=$STDCXX_ROOT/armeabi-v7a $LIBCXX_FLAGS"
+export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-L native=$STDCXX_ROOT/x86_64 $LIBCXX_FLAGS"
+
 cargo ndk \
     --target aarch64-linux-android \
     --target armv7-linux-androideabi \

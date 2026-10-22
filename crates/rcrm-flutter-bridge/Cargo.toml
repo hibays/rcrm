@@ -50,7 +50,13 @@ heic = { git = "https://github.com/imazen/heic", rev = "db52055b4d5e74dff848060b
 	"std",
 	"parallel",
 ], optional = true }
-rxing = { version = "0.9.2", default-features = false, features = ["decoders", "full_barcode_format_support", "multi_barcode_readers", "encoding_rs", "encoders"] }
+# QR encode + decode: the C++ reference ZXing via its official Rust wrapper.
+# `bundled` compiles zxing-cpp (3.1.1) with CMake and statically links it; the
+# wrapper's FFI cost measured in the noise against calling the C++ directly, and
+# the C++ reader beats the pure-Rust rxing port on small/blurry QR codes and is
+# ~2x faster (the zxing/rxing cross-benchmark on 4900 degraded images). Build
+# needs a C++ toolchain + CMake; Android/iOS shims live in scripts/cmake/.
+zxing-cpp = { version = "0.5.3", features = ["bundled"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

@@ -20,6 +20,8 @@ Changing any version independently WILL break the build. All components are inte
 | file_picker | 13.1.0 resolved (Android APK + Windows exe built) | ✅ | `pubspec.lock` |
 | `rav1d` (git) | rev `9f00b03b…` | ✅ | `crates/rcrm-flutter-bridge/Cargo.toml` |
 | `heic` (git) | rev `db52055b…` | ✅ | `crates/rcrm-flutter-bridge/Cargo.toml` |
+| `zxing-cpp` | wrapper **0.5.3** (C++ **3.1.1**, `bundled`) | ✅ host + Android | `crates/rcrm-flutter-bridge/Cargo.toml` |
+| CMake / Ninja | CMake **≥ 3.21**; Ninja **required** for Windows→Android | ✅ 4.4.4 / 1.13.2 | `cmake --version`, `ninja --version` |
 
 **`file_picker` 13.x and our AGP 9 flags.** The Android build runs with
 `android.newDsl=false` + `android.builtInKotlin=false` (both written by the Flutter template), so
@@ -48,6 +50,10 @@ future versions of Flutter will fail to build" warning no longer appears.
 - Flutter 3.47.x with desktop + Android support
 - Rust stable ≥ 1.89: `rustup toolchain install stable`
 - ffmpeg in PATH (video posters/previews) — see Known issues for ffmpeg ≥ 9
+- **CMake ≥ 3.21 and a C++ toolchain**: QR encode/decode is the C++ zxing-cpp,
+  built by its official Rust wrapper (`zxing-cpp`, feature `bundled`). Desktop
+  builds use the host compiler; Android and iOS add the toolchain shims in
+  `scripts/cmake/` (the build scripts set them).
 - Two **git** dependencies are fetched on first build: `rav1d` (AVIF) and `heic`
   (HEIC/HEIF), both behind the `mobile-decode` feature. On a restricted network
   add mirror entries to the local, gitignored `.cargo/config.toml` the way
@@ -56,6 +62,8 @@ future versions of Flutter will fail to build" warning no longer appears.
 ### Windows
 
 - MSVC Build Tools (Visual Studio 2022) with C++ workload
+- CMake and Ninja on PATH (the bundled zxing-cpp build; Ninja is also what the
+  NDK toolchain needs for the Android cross-build)
 - OpenSSL dev libraries (for Rust TLS)
 
 ### Android
@@ -63,6 +71,9 @@ future versions of Flutter will fail to build" warning no longer appears.
 - Android SDK with NDK 28.2.13676358 exactly: `sdkmanager "ndk;28.2.13676358"`
 - Rust Android targets: `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android`
 - `cargo-ndk`: `cargo install cargo-ndk`
+- CMake + Ninja on PATH. The script points cmake-rs at the per-ABI shims in
+  `scripts/cmake/` and adds the static C++ runtime link flags itself — a manual
+  `cargo ndk` invocation has to do the same (see the script).
 - The mobile bridge build enables `mobile-decode` (AVIF + JXL + HEIC software
   decoding). `heic` is a pure-Rust HEVC decoder (`backend-rust`), chosen so no
   platform SDK is involved and cross-compilation keeps working; it is
@@ -128,7 +139,7 @@ $env:ANDROID_NDK_HOME = "D:\Dev\Android\Sdk\ndk\28.2.13676358"
 .\scripts\build_android.ps1 -Release -SplitAbi
 ```
 
-Pipeline: `cargo-ndk` for 3 ABIs (aarch64, armv7, x86_64) → download libmpv Android JARs → `flutter build apk --split-per-abi`. Output: `build/app/outputs/flutter-apk/app-*-release.apk`.
+Pipeline: `cargo-ndk` for 3 ABIs (aarch64, armv7, x86_64; zxing-cpp's C++ core is compiled per ABI by CMake with the `scripts/cmake/android-*.cmake` shims) → download libmpv Android JARs → `flutter build apk --split-per-abi`. Output: `build/app/outputs/flutter-apk/app-*-release.apk`.
 
 ### Linux
 
@@ -151,10 +162,15 @@ Pipeline: `cargo-ndk` for 3 ABIs (aarch64, armv7, x86_64) → download libmpv An
 # Output: build/ios/iphoneos/Runner.app
 ```
 
+The iOS bridge is a static library and now contains zxing-cpp's C++ objects, so
+whatever links `librcrm_flutter_bridge.a` must also link libc++ (`-lc++` in the
+target's `OTHER_LDFLAGS`). This has not been verified on a Mac (the iOS
+toolchain shims are in `scripts/cmake/`).
+
 ## Known toolchain issues
 
-Two environment-level changes bite builds even though the source is unchanged.
-Neither is a code bug in this repo; both were reproduced and diagnosed locally.
+Three environment-level changes bite builds even though the source is unchanged.
+None is a code bug in this repo; all were reproduced and diagnosed locally.
 
 ### ffmpeg ≥ 9 verifies TLS peers by default
 
@@ -210,6 +226,36 @@ regression appeared with the SDK upgrade (3.44.8 → 3.47.x).
   `windows/runner/main.cpp`), or decode these formats through the Rust bridge —
   which the **Android** build already does (`mobile-decode`).
 
+### zxing-cpp is C++ (CMake), not a Rust crate
+
+The QR reader/writer is zxing-cpp 3.1.1, compiled by the `zxing-cpp` wrapper's
+`bundled` feature. Three things bite:
+
+- **Build profile**: cmake-rs maps cargo `opt-level=0` to CMake `Debug`, which
+  compiles the C++ against the debug CRT (`/MDd`); Rust always links the release
+  CRT, so `cargo test` then fails with `__imp__CrtDbgReport` / `calloc_dbg`.
+  The root `Cargo.toml` therefore pins
+  `[profile.dev.package.zxing-cpp] opt-level = 3` — the C++ is optimized even in
+  dev/test builds, the Rust side stays debug.
+- **Android C++ runtime**: the wrapper's build script emits `-lstdc++` for
+  every `*-linux*` target. The NDK's `libstdc++.a` is only a compatibility
+  stub, so the real runtime is linked by the build scripts through
+  target-scoped `-lc++_static -lc++abi -lunwind` rustflags (the shim sets
+  `ANDROID_STL=c++_static`). Without them the link ends in hundreds of
+  undefined `std::__ndk1::…` symbols. The NDK ALSO ships a legacy
+  `libstdc++.so` stub in the API-level directory, which the linker finds
+  first and records as a `DT_NEEDED`; the scripts prepend the ABI's sysroot
+  directory with `-L native=…` so `-lstdc++` resolves to the static stub
+  instead. RUSTFLAGS are whitespace-split, so **the Android SDK/NDK path must
+  not contain spaces** (the scripts use it unquoted).
+- **Toolchain shims**: the NDK toolchain file needs `ANDROID_ABI` set before it
+  is included, and cmake-rs only exposes a per-target toolchain hook. Each ABI
+  has a shim in `scripts/cmake/`; iOS has device/simulator shims for the same
+  reason. Changes at the CMake level belong in those files, not in the crate.
+
+The `bundled` build compiles readers AND writers (with zint), so a full C++
+rebuild happens once per target/profile under `target/<triple>/…/build/`.
+
 ## Test & Analyze
 
 ```bash
@@ -246,9 +292,13 @@ cargo ndk --target aarch64-linux-android --target armv7-linux-androideabi \
   build -p rcrm-flutter-bridge --features mobile-decode --release
 ```
 
-Cross-compile check without the NDK link step:
+Cross-compile check without the NDK link step. `check` still runs
+zxing-cpp's CMake build, so the per-ABI toolchain shim must be set even though
+nothing is linked (the build script sets it; for a one-off command):
 
-```bash
+```powershell
+$env:CMAKE_TOOLCHAIN_FILE_aarch64_linux_android = "$PWD/scripts/cmake/android-arm64-v8a.cmake"
+$env:CMAKE_GENERATOR = "Ninja"
 RUSTC_BOOTSTRAP=rav1d cargo ndk --target aarch64-linux-android check \
   -p rcrm-flutter-bridge --features mobile-decode
 ```
@@ -266,6 +316,9 @@ RUSTC_BOOTSTRAP=rav1d cargo ndk --target aarch64-linux-android check \
 | AVIF/JXL/HEIC broken in the **Windows** app | Impeller is the default desktop renderer | See Known toolchain issues above |
 | Missing DLLs at runtime | DLL copy step failed | Re-run build or manually copy DLLs to runner dir |
 | Cargo can't fetch `rav1d`/`heic` | Restricted network | Add mirror entries to the local `.cargo/config.toml` |
+| `cmake` not found / no C++ compiler | zxing-cpp is C++ | Install CMake ≥ 3.21 + the platform C++ toolchain (MSVC workload on Windows, `build-essential` on Linux) |
+| `__imp__CrtDbgReport` / `calloc_dbg` at link | cmake-rs configured the C++ as Debug (/MDd) | Ensure `[profile.dev.package.zxing-cpp] opt-level = 3` is in the root `Cargo.toml` (it is) |
+| `undefined symbol: std::__ndk1::…` on Android | C++ runtime not linked | Use `scripts/build_android.*` (adds the static C++ runtime); a manual `cargo ndk` needs the same flags |
 
 ### Windows
 

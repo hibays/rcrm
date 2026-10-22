@@ -252,3 +252,13 @@ Update report:
 			⑥ 标签与说明句的间距 2dp(行高测量与绘制两处写死)→ 常量 3dp，两处共用；同一屏另外三处 11dp `white38`(方向说明、快捷键行、Up-next 副行，后者现在还要读 "Random pick")→ Silver，与菜单同一条规则、同一个暗室
 		⑫ 重做的测试与验证：新增目标尺寸(375→32×40、1280→41×44)、菜单高度上限(<300dp，测试字体)、说明句 ≤32 字符；`_pumpBar` 改用 `tester.view.physicalSize`(旧的 `setSurfaceSize` 不传导到 `MediaQuery.sizeOf`，密度档一直错)，原对比度/位移=真实高度/行间空气/无 handler 不弹菜单等断言保留。`flutter analyze lib test` 零告警；播放器相关的 6 个测试文件 93 条全绿，全量 `flutter test` **684** 全绿；渲染重跑 12 张(1280/360/420 × 1.0/1.3/1.6x + 短窗 + 倍速对照)逐张看过
 		⑬ 重做的未验证：无安卓/iOS 真机；32dp 宽的目标在手指下的触感、菜单在刘海屏上的上边界未实机跑过；1.6x 文字 + 420×300 窗口仍不能同时看见四项(已写入 DESIGN.md)
+5. 2026.10.21.9.40.AM.Wednesday
+	*本批为未发布的工作区改动：二维码编解码 rxing → zxing-cpp*
+
+	1) 依赖替换：rxing 0.9.3 → zxing-cpp 0.5.3（C++ zxing-cpp 3.1.1，官方 Rust wrapper，`bundled`）
+		① 依据 `D:\Belong\tmp\xing_bench\cross_bench\REPORT.md`（4900 张退化图）：整体识别 74.0% vs 72.2%，QR 81.9% vs 80.9%，Aztec +10.6pp、小码/低分辨率 +7.3pp；QR 中位耗时约为 rxing 的 0.45（全格式 0.12–0.33），官方 wrapper 与直连 C++ 逐图 4900/4900 一致、FFI 开销 <5%。本仓库只用 QR 的编与读，这两个 QR 数字就是替换的依据
+		② `qr_scan.rs`：`ImageView::from_slice(..., ImageFormat::Lum)` + `BarcodeReader`（QRCode only，try_harder/rotate/invert/downscale）；JPEG/RGB/BGRA/strided-luma 四个入口仍汇到同一条 tight-luma 路径。`qr_gen.rs`：`create(QRCode).options("ec_level:M")` 生成模块图（自带 4 模块静区），按整数倍最近邻放大到 2048²，仍由 zenwebp 输出 lossless WebP
+		③ 测试：`cargo test -p rcrm-flutter-bridge` 25/25（含 `generated_qr_scans_back` 生成→扫码闭环、JPEG/BGRA/stride 往返、`garbage_frame_returns_none`）
+		④ 构建：`bundled` 用 CMake 编译 C++，需要 CMake ≥3.21 + C++ 工具链。Android 每 ABI 一个 `scripts/cmake/android-*.cmake` shim（ANDROID_ABI、ANDROID_STL=c++_static）；wrapper 对 `*-linux*` 发的 `-lstdc++` 在 NDK 上会先命中 legacy `libstdc++.so`，脚本把各 ABI 的静态 `libstdc++.a` 复制到 `target/android-stdcxx/<abi>` 并用 target-scoped `-L native=...` 改选它，再补 `-lc++_static -lc++abi -lunwind`。直接指向整个 ABI sysroot 会误链静态 libc，armv7 的 `__aeabi_*` 版本符号会报 `undefined version LIBC_N`。iOS 加 device/sim shim；Windows 上 cmake-rs 把 opt-level=0 映射成 CMake Debug（/MDd），根 `Cargo.toml` 用 `[profile.dev.package.zxing-cpp] opt-level=3` 固定到 release CRT
+		⑤ 验证：host 全量 `cargo test` 通过；Android 3 ABI release 交叉编译通过（`build_android.ps1 -Release -SplitAbi` 连 APK 一起出包，三个 .so 的 NEEDED 只剩 libdl/libm/libc）；`cargo clippy --all` 与 `cargo clippy -p rcrm-flutter-bridge --features mobile-decode --all-targets` 零告警；Windows release bridge（DLL）构建通过
+		⑥ 未验证：iOS/Linux/macOS 未在本机构建（无 macOS 主机）；真机扫码未跑，灵敏度依据是单测 + 基准报告
