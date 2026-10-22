@@ -133,9 +133,12 @@ VideoCard tap → Navigator.push(video_player_screen)
     different gesture from the transport's prev, which reaches the same video
     with nothing on screen moving); an empty stack leaves the player
   → Related list (utils/related_videos.dart) excludes the stack's entries
-  → end of file in `Loop All`: the next video is OFFERED (an up-next card, 8s,
-    refusable) instead of taken — the card's ring and its countdown are one
-    controller, so the time it shows is the time it waits
+  → end of file in `Loop All` or `Shuffle` (utils/player_playback_mode.dart,
+    the transport bar's mode chip): the next video is OFFERED (an up-next card,
+    8s, refusable) instead of taken — Loop All offers the list's top row,
+    Shuffle a uniform draw over it (utils/shuffle_next.dart) — and the card's
+    ring and its countdown are one controller, so the time it shows is the time
+    it waits
   → Player.stop() before Navigator.pop — a route the player REPLACES is stopped
     and disposed by its own `dispose()`, i.e. once its transition has finished,
     which is what keeps its last frame on screen instead of blanking it

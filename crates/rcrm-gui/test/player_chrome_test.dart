@@ -6,6 +6,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/config/theme.dart';
+import 'package:rcrm_gui/utils/player_playback_mode.dart';
 import 'package:rcrm_gui/widgets/player_controls.dart';
 
 const _position = Duration(minutes: 1, seconds: 23);
@@ -27,6 +28,7 @@ Future<void> _pumpBar(
   bool playing = false,
   double volume = 100,
   double speed = 1.0,
+  PlaybackMode mode = PlaybackMode.pauseAfter,
   bool hasPrev = false,
   bool hasNext = true,
   bool hasEpisodes = true,
@@ -49,6 +51,7 @@ Future<void> _pumpBar(
         buffer: const Duration(minutes: 2),
         volume: volume,
         speed: speed,
+        mode: mode,
         fullscreen: fullscreen,
         hasPrev: hasPrev,
         hasNext: hasNext,
@@ -361,6 +364,7 @@ void main() {
             buffer: Duration.zero,
             volume: 100,
             speed: 1.0,
+            mode: PlaybackMode.pauseAfter,
             fullscreen: false,
             onSeek: (_) {},
           ),
@@ -448,6 +452,7 @@ void main() {
             buffer: Duration.zero,
             volume: 100,
             speed: 1.0,
+            mode: PlaybackMode.pauseAfter,
             fullscreen: false,
             timeMode: PlayerTimeMode.remaining,
             onTimeModeChanged: () {},

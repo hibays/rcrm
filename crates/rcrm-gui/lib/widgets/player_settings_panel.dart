@@ -1,60 +1,18 @@
 // widgets/player_settings_panel.dart
-// Settings overlay for video player: playback mode, auto-rotate, and what the
-// player can honestly say about the file it is playing.
+// Settings overlay for video player: fullscreen orientation, the keyboard map,
+// and what the player can honestly say about the file it is playing.
 // Rendered as a floating panel in the video player's Stack.
+//
+// The playback mode used to be the first row here and is not any more — it is
+// the transport bar's own chip (`utils/player_playback_mode.dart`), because a
+// mode is changed while watching rather than by leaving the picture to open a
+// panel. What is left is what a panel is for: choices you make once and facts
+// you read.
 
 import 'package:flutter/material.dart';
 
 import '../config/theme.dart';
 import '../utils/player_orientation.dart';
-
-/// Playback mode enum for video end-of-stream behavior.
-enum PlaybackMode {
-  /// Auto-play the next video in the related list.
-  loopAll,
-
-  /// Repeat the current video.
-  loopOne,
-
-  /// Pause when the current video finishes.
-  pauseAfter;
-
-  String get label => switch (this) {
-    PlaybackMode.loopAll => 'Loop All',
-    PlaybackMode.loopOne => 'Loop One',
-    PlaybackMode.pauseAfter => 'Pause After',
-  };
-
-  /// What the mode actually does when a file ends. Printed under the choice,
-  /// because "Loop All" and "Loop One" are one letter apart and describe
-  /// opposite behaviour — and because Loop All's next video now arrives through
-  /// a countdown the viewer can refuse, which is not something a two-word
-  /// segment can say.
-  String get note => switch (this) {
-    PlaybackMode.loopAll =>
-      'When this one ends, offer the next video in Related — eight seconds to '
-          'play it now or stay put',
-    PlaybackMode.loopOne => 'Start this video again from the beginning',
-    PlaybackMode.pauseAfter => 'Stop on the last frame and wait',
-  };
-
-  static PlaybackMode fromString(String s) {
-    switch (s) {
-      case 'loopAll':
-        return PlaybackMode.loopAll;
-      case 'loopOne':
-        return PlaybackMode.loopOne;
-      default:
-        return PlaybackMode.pauseAfter;
-    }
-  }
-
-  String get key => switch (this) {
-    PlaybackMode.loopAll => 'loopAll',
-    PlaybackMode.loopOne => 'loopOne',
-    PlaybackMode.pauseAfter => 'pauseAfter',
-  };
-}
 
 /// One read-only fact about the media that is playing, as the player itself
 /// reported it. A value the player never reported is simply absent — this list
@@ -67,9 +25,6 @@ class PlayerMediaFact {
 }
 
 class PlayerSettingsPanel extends StatelessWidget {
-  final PlaybackMode mode;
-  final ValueChanged<PlaybackMode> onModeChanged;
-
   /// How the fullscreen player chooses which way up it is
   /// (`utils/player_orientation.dart`).
   final PlayerOrientation orientation;
@@ -93,8 +48,6 @@ class PlayerSettingsPanel extends StatelessWidget {
 
   const PlayerSettingsPanel({
     super.key,
-    required this.mode,
-    required this.onModeChanged,
     required this.orientation,
     required this.onOrientationChanged,
     required this.onDismiss,
@@ -145,20 +98,12 @@ class PlayerSettingsPanel extends StatelessWidget {
                     children: [
                       _header(),
                       const SizedBox(height: 20),
-                      _label('Playback Mode'),
-                      const SizedBox(height: 10),
-                      _modeSegments(context),
-                      const SizedBox(height: 8),
-                      Text(
-                        mode.note,
-                        style: const TextStyle(
-                          color: Colors.white38,
-                          fontSize: 11,
-                          height: 1.4,
-                        ),
-                      ),
+                      // The playback mode used to be the first row here. It is
+                      // the transport bar's own chip now: a mode is changed while
+                      // watching, and a control reached by leaving the picture to
+                      // open a panel is reached at the wrong moment. One setting,
+                      // one door (`utils/player_playback_mode.dart`).
                       if (showOrientation) ...[
-                        const SizedBox(height: 20),
                         _label('Fullscreen Orientation'),
                         const SizedBox(height: 10),
                         _orientationSegments(context),
@@ -166,7 +111,11 @@ class PlayerSettingsPanel extends StatelessWidget {
                         Text(
                           orientationNote(orientation.policy),
                           style: const TextStyle(
-                            color: Colors.white38,
+                            // Silver, not white38: 11dp at 3.6:1 is an
+                            // explanation for a dim room that the dim room
+                            // cannot read. The mode menu's notes use the same
+                            // token for the same reason.
+                            color: RCrmColors.silver,
                             fontSize: 11,
                             height: 1.4,
                           ),
@@ -189,7 +138,8 @@ class PlayerSettingsPanel extends StatelessWidget {
                         const Text(
                           _shortcutLine,
                           style: TextStyle(
-                            color: Colors.white38,
+                            // See the orientation note: the same 11dp line.
+                            color: RCrmColors.silver,
                             fontSize: 11,
                             height: 1.6,
                           ),
@@ -242,33 +192,6 @@ class PlayerSettingsPanel extends StatelessWidget {
     ),
   );
 
-  Widget _modeSegments(BuildContext context) {
-    return SizedBox(
-      width: double.infinity,
-      child: SegmentedButton<PlaybackMode>(
-        segments: PlaybackMode.values
-            .map(
-              (m) => ButtonSegment<PlaybackMode>(
-                value: m,
-                label: Text(m.label),
-              ),
-            )
-            .toList(),
-        selected: {mode},
-        // No check on the chosen segment, here or on the orientation rows: the
-        // accent fill already says which one it is, and the icon is what made
-        // this row wrap onto three lines ("Loo / p / All") on a 320dp phone —
-        // measured at 320x640, where the three labels plus the icon need more
-        // than the panel can give.
-        showSelectedIcon: false,
-        onSelectionChanged: (sel) {
-          if (sel.isNotEmpty) onModeChanged(sel.first);
-        },
-        style: _segmentStyle(context),
-      ),
-    );
-  }
-
   Widget _orientationSegments(BuildContext context) {
     final policies = orientationPolicies();
     return SizedBox(
@@ -283,8 +206,12 @@ class PlayerSettingsPanel extends StatelessWidget {
             )
             .toList(),
         selected: {orientation.policy},
-        // See `_modeSegments`: the fill says which one is chosen, and four
-        // segments plus a check icon do not fit a narrow phone.
+        // No check on the chosen segment, here or on the lock's row: the accent
+        // fill already says which one it is, and the icon is what made the old
+        // playback-mode row wrap onto three lines ("Loo / p / All") on a 320dp
+        // phone — measured at 320x640, where its three labels plus the icon
+        // needed more than the panel could give. Four policy labels with a check
+        // icon beside them do not fit there either.
         showSelectedIcon: false,
         onSelectionChanged: (sel) {
           if (sel.isEmpty) return;
@@ -327,8 +254,8 @@ class PlayerSettingsPanel extends StatelessWidget {
     );
   }
 
-  /// The one style all three segmented rows share (playback mode, the
-  /// orientation policy, and the lock's direction).
+  /// The one style both remaining segmented rows share (the orientation policy
+  /// and the lock's direction).
   ///
   /// The label's colour comes from `foregroundColor` rather than from each
   /// `Text`, so the selected segment cannot end up with two colours fighting.

@@ -10,6 +10,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:rcrm_gui/utils/player_playback_mode.dart';
 import 'package:rcrm_gui/widgets/player_controls.dart';
 
 const _duration = Duration(minutes: 42, seconds: 5); // 2_525_000 ms
@@ -42,6 +43,7 @@ Future<void> _pumpBar(
         buffer: const Duration(minutes: 5),
         volume: 80,
         speed: 1.0,
+        mode: PlaybackMode.pauseAfter,
         fullscreen: false,
         hasPrev: false,
         hasNext: false,
@@ -188,6 +190,7 @@ void main() {
             buffer: buffer,
             volume: 80,
             speed: 1.0,
+            mode: PlaybackMode.pauseAfter,
             fullscreen: false,
             hasPrev: false,
             hasNext: false,

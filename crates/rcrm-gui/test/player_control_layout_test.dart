@@ -33,6 +33,10 @@ PlayerControlPlan plan(
     positionWidth: posW,
     durationWidth: durW,
     speedWidth: speedW,
+    // The mode chip is an icon in a padded box and its width is DERIVED from the
+    // metrics, not measured text — so the test can use the real formula rather
+    // than a stand-in (about 23dp compact, 40dp expanded).
+    modeWidth: m.modeChipWidth,
     hasPrev: hasPrev,
     hasNext: hasNext,
     // The episode sheet only exists in fullscreen, so the windowed bar never
@@ -68,6 +72,7 @@ void main() {
       // a window is dragged, and the drop order would not be a ladder at all.
       var sawFullscreen = true;
       var sawMute = true;
+      var sawMode = true;
       for (var w = 2000.0; w >= 40; w -= 1) {
         final p = plan(w);
         if (!sawFullscreen) {
@@ -80,8 +85,12 @@ void main() {
         if (!sawMute) {
           expect(p.showMute, isFalse, reason: 'mute returned at ${w}dp');
         }
+        if (!sawMode) {
+          expect(p.showMode, isFalse, reason: 'the mode chip returned at ${w}dp');
+        }
         sawFullscreen = sawFullscreen && p.showFullscreen;
         sawMute = sawMute && p.showMute;
+        sawMode = sawMode && p.showMode;
       }
     });
 
@@ -115,14 +124,27 @@ void main() {
       // 411dp: time, skip and rate are all still shown, so there is no room
       // left for a draggable slider — the mute button carries volume alone.
       expect(plan(411, window: const Size(411, 900)).showVolumeSlider, isFalse);
-      // A little wider and it earns its minimum drag width...
-      final wider = plan(440, window: const Size(440, 900));
+      // The mode chip took the slider's next doorway: it is admitted BEFORE the
+      // slider's leftover is measured, so at 440dp the bar spends those 30dp on
+      // the chip and the slider is gone (mute, the wheel, the volume gestures
+      // and the hardware keys all still move the volume — which is the whole
+      // reason the slider is the last thing admitted). Where the chip's removal
+      // would leave the mode unreachable, the slider is the one that yields:
+      // there is no other door to the mode at all, and a setting nobody can
+      // reach is the worse trade. Pinned in both directions below.
+      final chipNotSlider = plan(440, window: const Size(440, 900));
+      expect(chipNotSlider.showMode, isTrue, reason: 'the new chip is admitted');
+      expect(chipNotSlider.showVolumeSlider, isFalse);
+      expect(chipNotSlider.contentWidth, lessThanOrEqualTo(440));
+      // A little wider and the slider earns its minimum drag width as well...
+      final wider = plan(470, window: const Size(470, 900));
       expect(wider.showVolumeSlider, isTrue);
+      expect(wider.showMode, isTrue, reason: 'and the chip keeps its place');
       expect(
         wider.volumeSliderWidth,
         greaterThanOrEqualTo(kMinVolumeSliderWidth),
       );
-      expect(wider.contentWidth, lessThanOrEqualTo(440));
+      expect(wider.contentWidth, lessThanOrEqualTo(470));
       // ...without ever costing the controls that have no alternative.
       expect(wider.showPrev, isTrue);
       expect(wider.showNext, isTrue);
@@ -169,6 +191,7 @@ void main() {
           p.showPrev,
           p.showSpeed,
           p.showEpisodes,
+          p.showMode,
         ].where((e) => e).length;
         expect(
           shown,

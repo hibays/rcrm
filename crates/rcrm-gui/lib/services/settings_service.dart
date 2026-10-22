@@ -292,10 +292,17 @@ class SettingsService {
 
   // ── Playback settings ─────────────────────────────────────
   // Default: 'pauseAfter' — stop when the current video ends.
+  //
+  // The whitelist is the read-side guard for a preference file this build did
+  // not write (an older version's value, a hand-edited one): an unknown string
+  // reads as the default rather than as a mode. `PlaybackMode.key` is the
+  // vocabulary (`utils/player_playback_mode.dart`).
   Future<String> getPlaybackMode() async {
     final p = await prefs;
     final v = p.getString(_keyPlaybackMode);
-    if (v == 'loopAll' || v == 'loopOne' || v == 'pauseAfter') return v!;
+    if (v == 'loopAll' || v == 'shuffle' || v == 'loopOne' || v == 'pauseAfter') {
+      return v!;
+    }
     return 'pauseAfter';
   }
 

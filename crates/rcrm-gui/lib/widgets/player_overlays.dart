@@ -216,7 +216,11 @@ class _PlayerUpNextCardState extends State<PlayerUpNextCard>
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
-                                color: Colors.white38,
+                                // The card's one line of context — size,
+                                // format, and now "Random pick". White38 read
+                                // at 3.6:1 on the card's dark surface; the
+                                // system's secondary token is Silver.
+                                color: RCrmColors.silver,
                                 fontSize: 11,
                               ),
                             ),

@@ -37,10 +37,12 @@ import '../utils/player_eof.dart';
 import '../utils/player_exit.dart';
 import '../utils/player_orientation.dart';
 import '../utils/player_panels.dart';
+import '../utils/player_playback_mode.dart';
 import '../utils/player_volume.dart';
 import '../utils/poster_quiet_route.dart';
 import '../utils/related_videos.dart';
 import '../utils/seek_preview.dart';
+import '../utils/shuffle_next.dart';
 import '../utils/swipe_value.dart';
 import '../utils/wheel_guard.dart';
 
@@ -196,11 +198,17 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// property of one video.
   PlayerTimeMode _timeMode = PlayerTimeMode.elapsed;
 
-  /// The video waiting for a yes, while `loopAll` counts down to it. Null the
-  /// rest of the time — including while the countdown is running out of the
-  /// user's sight behind an open panel, where it is still the autoplay they
-  /// asked for.
-  MediaItem? _upNext;
+  /// The video waiting for a yes, while an offering mode counts down to it, and
+  /// HOW it was chosen. Null the rest of the time — including while the
+  /// countdown is running out of the user's sight behind an open panel, where it
+  /// is still the autoplay they asked for.
+  ///
+  /// `shuffled` is part of the offer rather than read from the mode at paint
+  /// time: the card's subtitle says a random offer was random, and re-deriving
+  /// that from the current mode would relabel an offer the viewer has already
+  /// been given — switching modes with the card up would call a drawn video "the
+  /// next in Related", or the reverse. One decision, one record.
+  ({MediaItem item, bool shuffled})? _upNext;
 
   /// Where this file has got to at its end — the app's own memory of the
   /// ending, because media_kit cannot report it (see `utils/player_eof.dart`).
@@ -502,22 +510,65 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// frame. The same list, the same next video; what changed is that it now
   /// asks. The list is the one `onNext` reads, exclusions included, so the card
   /// cannot promise a video the Related list refuses to show.
+  ///
+  /// `shuffle` ends here too: the same card, the same ring, the same refusal —
+  /// only the video in it is drawn differently (see [_nextAfterEnd]).
   void _offerNext() {
-    final r = _relatedFor(
+    final next = _nextAfterEnd();
+    if (next == null) return;
+    if (!mounted) return;
+    setState(() => _upNext = next);
+  }
+
+  /// What an ending offers. This is the whole of what the playback mode
+  /// decides about the next video, and the two modes that offer one differ only
+  /// here:
+  ///
+  /// * `loopAll` takes the TOP of the Related list — the same video the Next
+  ///   button would play, because a viewer who has just watched the end of one
+  ///   file is looking at a list whose first row is that video, and the mode
+  ///   says "the list's next one".
+  /// * `shuffle` draws uniformly over the SAME list (`utils/shuffle_next.dart`)
+  ///   — the rows the viewer was looking at, same directory first, the jump
+  ///   history already excluded. Not the whole library: the list is what keeps
+  ///   the draw inside a set the viewer has seen, and the card names the video
+  ///   either way.
+  ///
+  /// Both go through the card, so both can be refused.
+  ({MediaItem item, bool shuffled})? _nextAfterEnd() {
+    final mode = PlaybackMode.fromString(
+      ref.read(uiSettingsProvider).playbackMode,
+    );
+    final related = _relatedFor(
       ref.read(videosListProvider),
       ref.read(jumpExcludedPathsProvider),
       ref.read(scanStateProvider).scanGen,
     );
-    if (r.isEmpty) return;
-    if (!mounted) return;
-    setState(() => _upNext = r.first);
+    if (related.isEmpty) return null;
+    if (mode == PlaybackMode.shuffle) {
+      final drawn = shuffledPick(related)!;
+      return (item: drawn, shuffled: true);
+    }
+    return (item: related.first, shuffled: false);
+  }
+
+  /// Adopts a playback mode from the bar's chip.
+  ///
+  /// Withdrawing an open offer is part of it: the card IS the mode's countdown,
+  /// so leaving a mode that offers a next video while one is up would leave the
+  /// ring counting down to a video the viewer has just said they do not want.
+  /// That covers `pauseAfter` and `loopOne` alike — a mode that keeps the file
+  /// where it is has no business advancing it.
+  void _setPlaybackMode(PlaybackMode mode) {
+    if (!mode.offersNextVideo) _clearUpNext();
+    ref.read(uiSettingsProvider.notifier).setPlaybackMode(mode.key);
   }
 
   /// The card's "yes", from the button and from the ring running out alike.
   void _playUpNext() {
-    final item = _upNext;
+    final offer = _upNext;
     if (mounted) setState(() => _upNext = null);
-    if (item != null) _playInPlace(item, back: false);
+    if (offer != null) _playInPlace(offer.item, back: false);
   }
 
   /// The card's "not this one": the video stays where it ended, paused, and
@@ -650,19 +701,27 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         // second pass would seek a video the viewer had just dragged back to 0.
         if (_eof.finished) return;
         _eof = _eof.ended();
-        final mode = ref.read(uiSettingsProvider).playbackMode;
+        final mode = PlaybackMode.fromString(
+          ref.read(uiSettingsProvider).playbackMode,
+        );
+        // Switched on the ENUM rather than on the stored string: a mode added
+        // later then fails to compile here instead of silently behaving like
+        // `pauseAfter`. The stored form is `PlaybackMode.key`.
         switch (mode) {
-          case 'loopAll':
+          case PlaybackMode.loopAll:
+          case PlaybackMode.shuffle:
+            // The two modes that lead to another video end here, identically:
+            // which video the card offers is `_offerNext`'s business.
             _offerNext();
             break;
-          case 'loopOne':
+          case PlaybackMode.loopOne:
             // Rolling again before this returns, so the latch is dropped here --
             // kept, it would sit over the whole loop and swallow the next ending.
             _eof = PlayerEof.idle;
             p!.seek(Duration.zero);
             p!.play();
             break;
-          case 'pauseAfter':
+          case PlaybackMode.pauseAfter:
             break;
         }
       });
@@ -1195,6 +1254,13 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     if (!show) _pipDismissed = false;
     if (_pipDismissed) return;
     if (show != _pip && mounted) {
+      // EITHER direction swaps a picture surface out of the tree under the
+      // finger — scrolling past the video takes the picture itself out and puts
+      // the window in its place, and scrolling back takes the window out — and a
+      // hold only ever ends by the surface that took it. So whoever flips `_pip`
+      // ends the hold itself; see [_longPress2xEnd]. Guarded by `show2x`, so the
+      // common case (nothing held) is a no-op.
+      _longPress2xEnd();
       if (show) {
         if (pipSize == 'small') {
           _pipW = 200;
@@ -1206,10 +1272,6 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           _pipH = _pipW * 9 / 16;
           _pipX = 0;
         }
-      } else {
-        // Scrolling back past the video takes the window out of the tree under
-        // whatever the finger is holding on it — see [_longPress2xEnd].
-        _longPress2xEnd();
       }
       setState(() => _pip = show);
     }
@@ -1851,8 +1913,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// (`resolve(rejected)` after acceptance resets without a callback) — which is
   /// what [_longPress2xEnd]'s guard and its callers are for: whoever tears a
   /// surface down ends the hold itself. Reachable on desktop with one hand, in
-  /// fact: hold the floating window and turn the wheel, and the window leaves the
-  /// tree under the finger.
+  /// fact, and in both directions: hold the floating window and turn the wheel,
+  /// and the window leaves the tree under the finger; hold the picture and turn
+  /// it the other way, and the picture leaves for the window. [_onScroll] runs
+  /// both flips through the same call for that reason.
   void _longPress2xStart() {
     _savedRate = p?.state.rate ?? 1.0;
     p?.setRate(2.0);
@@ -2059,6 +2123,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
               buffer: _miniBuf.value,
               volume: _volume.value,
               speed: _rate.value,
+              mode: PlaybackMode.fromString(
+                ref.watch(uiSettingsProvider).playbackMode,
+              ),
               fullscreen: fullscreen,
               hasPrev: ref.watch(videoJumpStackProvider).isNotEmpty,
               hasNext: _relCache?.isNotEmpty ?? false,
@@ -2074,6 +2141,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
               onVolumeChangeEnd: _queueVolSave,
               onToggleMute: _toggleMute,
               onSpeedChanged: (s) => p?.setRate(s),
+              onModeChanged: _setPlaybackMode,
               onPrev: onPrev,
               onNext: onNext,
               onEpisodes: _toggleEpisodes,
@@ -2468,8 +2536,14 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       right: 0,
       bottom: bottom,
       child: PlayerUpNextCard(
-        title: next.name,
-        subtitle: '${next.formattedSize} · ${next.extension.toUpperCase()}',
+        title: next.item.name,
+        // A shuffled offer says why it is THIS one: the viewer was not looking
+        // at a list, so nothing else on screen would account for it.
+        subtitle: next.shuffled
+            ? 'Random pick · ${next.item.formattedSize} · '
+                  '${next.item.extension.toUpperCase()}'
+            : '${next.item.formattedSize} · '
+                  '${next.item.extension.toUpperCase()}',
         countdown: _upNextSeconds,
         onAdvance: _playUpNext,
         onDismiss: _dismissUpNext,
@@ -2506,14 +2580,6 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         // only, and a control that cannot act is not shown at all.
         showOrientation: _isMobile,
         showShortcuts: !_isMobile,
-        mode: PlaybackMode.fromString(settings.playbackMode),
-        onModeChanged: (m) {
-          // Leaving `loopAll` withdraws the offer: the card is that mode's
-          // countdown, and it would otherwise still advance a video the user
-          // has just told the player not to advance to.
-          if (m != PlaybackMode.loopAll) _clearUpNext();
-          ref.read(uiSettingsProvider.notifier).setPlaybackMode(m.key);
-        },
         orientation: settings.playerOrientation,
         onOrientationChanged: (o) {
           ref.read(uiSettingsProvider.notifier).setPlayerOrientation(o);

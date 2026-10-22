@@ -40,7 +40,12 @@ class SettingsState {
   final String videoClassification; // 'none' | 'folder' | 'format'
   final bool pipEnabled;
   final String pipSize; // 'normal' or 'small'
-  final String playbackMode; // 'loopAll' | 'loopOne' | 'pauseAfter'
+  /// What the player does when a file ends, in `PlaybackMode.key`'s vocabulary
+  /// (`utils/player_playback_mode.dart`): 'loopAll' | 'shuffle' | 'loopOne' |
+  /// 'pauseAfter'. Kept as the stored string rather than the enum so this
+  /// provider stays free of the player's own types; the screen converts once, at
+  /// the two places that read it.
+  final String playbackMode;
 
   /// How the FULLSCREEN mobile player chooses which way up it is
   /// (`utils/player_orientation.dart`): fit the video (the default), follow the

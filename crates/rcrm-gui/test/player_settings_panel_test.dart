@@ -1,6 +1,10 @@
 // test/player_settings_panel_test.dart
 // The player's settings panel: what it offers, and — just as important — what
 // it refuses to offer where the platform cannot act on it.
+//
+// The play mode is NOT here any more: it is the transport bar's own chip, and
+// its tests live with that control (`player_mode_chip_test.dart`). The panel is
+// what a panel is for — choices made once (orientation) and facts you read.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -12,8 +16,6 @@ Widget _host(Widget child) => MaterialApp(
 );
 
 Widget _panel({
-  PlaybackMode mode = PlaybackMode.pauseAfter,
-  ValueChanged<PlaybackMode>? onModeChanged,
   PlayerOrientation orientation = defaultOrientation,
   ValueChanged<PlayerOrientation>? onOrientationChanged,
   bool showOrientation = false,
@@ -22,8 +24,6 @@ Widget _panel({
   VoidCallback? onDismiss,
 }) => _host(
   PlayerSettingsPanel(
-    mode: mode,
-    onModeChanged: onModeChanged ?? (_) {},
     orientation: orientation,
     onOrientationChanged: onOrientationChanged ?? (_) {},
     onDismiss: onDismiss ?? () {},
@@ -34,33 +34,15 @@ Widget _panel({
 );
 
 void main() {
-  testWidgets('each mode says what it will really do', (tester) async {
-    // "Loop All" and "Loop One" are one letter apart and mean opposite things,
-    // and Loop All now arrives through a countdown the viewer can refuse — none
-    // of which a two-word segment can carry.
-    for (final mode in PlaybackMode.values) {
-      await tester.pumpWidget(_panel(mode: mode));
-      await tester.pumpAndSettle();
-      expect(find.text(mode.label), findsOneWidget);
-      expect(
-        find.text(mode.note),
-        findsOneWidget,
-        reason: '${mode.label} explains itself',
-      );
-    }
-    expect(PlaybackMode.loopAll.note, contains('next video'));
-    expect(PlaybackMode.loopOne.note, contains('again'));
-    expect(PlaybackMode.pauseAfter.note, contains('wait'));
-  });
-
-  testWidgets('picking a mode hands it back, selected', (tester) async {
-    final picked = <PlaybackMode>[];
-    await tester.pumpWidget(
-      _panel(mode: PlaybackMode.pauseAfter, onModeChanged: picked.add),
-    );
+  testWidgets('the panel no longer carries the playback mode', (tester) async {
+    // It moved to the transport bar's chip (`utils/player_playback_mode.dart`):
+    // a mode is changed while watching, and two doors to one setting is one too
+    // many. Pinned here so it cannot quietly come back as a second entry point.
+    await tester.pumpWidget(_panel(showOrientation: true));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Loop One'));
-    expect(picked, [PlaybackMode.loopOne]);
+    expect(find.text('Playback Mode'), findsNothing);
+    expect(find.text('Loop All'), findsNothing);
+    expect(find.text('Shuffle'), findsNothing);
   });
 
   testWidgets('the orientation row is only there where it can act', (

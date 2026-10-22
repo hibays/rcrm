@@ -22,6 +22,7 @@ import 'package:flutter/material.dart';
 
 import '../config/theme.dart';
 import '../utils/format.dart';
+import '../utils/player_playback_mode.dart';
 import 'player_scrub_bar.dart';
 
 // ── Density ─────────────────────────────────────────────────────────
@@ -193,6 +194,33 @@ class PlayerChromeMetrics {
     fontWeight: FontWeight.w500,
   );
 
+  /// The glyph inside the mode chip, sized off the chip text rather than off
+  /// [icon]: two chips in one row are one species, and a 20dp glyph beside an
+  /// 11dp label reads as two different controls.
+  double get chipIcon => font + 5;
+
+  /// The chip's painted face: its glyph plus the same horizontal padding the
+  /// speed chip wears (`gap * 2` on each side).
+  double get modeChipFace => chipIcon + gap * 4;
+
+  /// The mode chip's TAP TARGET, and therefore what the planner spends.
+  ///
+  /// The face is a pill the height of its text — the right size to look at and
+  /// the wrong size to hit. Left as its own child it measured 23x21 on a phone
+  /// (the framework adds no padding around the child), a third of the bar's own
+  /// 40dp target and the one control in this row you had to aim at. So the pill
+  /// is centred in a box [tap] tall and at least 80% of [tap] wide — 32x40 at
+  /// compact, 32.5x40 at regular (the face itself is wider there), 41x44 at
+  /// expanded.
+  ///
+  /// 80%, not 100%: the width is what the bar is short of. At the full 40 the
+  /// chip would cost the SPEED chip on a 375dp phone (the bar measures 378.6
+  /// there, four dp over), and the rate chip has no other door, while 32x40 is
+  /// 2.6x the area of the old face (23x21). The pill keeps its own size either
+  /// way;
+  /// only the reachable area grows, and the bar's gaps absorb the rest.
+  double get modeChipWidth => math.max(modeChipFace, tap * 0.8);
+
   /// The geometry both the progress control and the volume slider are built
   /// from — so the two can never drift into different weights of the same bar.
   ScrubBarStyle get scrub => ScrubBarStyle(
@@ -218,13 +246,14 @@ class PlayerControlPlan {
   final bool showNext;
   final bool showSpeed;
   final bool showEpisodes;
+  final bool showMode;
 
   /// The two essentials that can still be dropped when the bar is narrower than
   /// even the smallest tier's three buttons (a desktop window can be dragged to
   /// any width). Fullscreen goes first — the `F` shortcut and the title-bar
   /// button still do it — then mute, which the volume gestures and keys still
-  /// do, and last the speed chip. Play/pause is the one that always stays, and
-  /// it fits at any width.
+  /// do, and last the mode chip, which has no other door at all. Play/pause is
+  /// the one that always stays, and it fits at any width.
   final bool showMute;
   final bool showFullscreen;
 
@@ -242,6 +271,7 @@ class PlayerControlPlan {
     required this.showNext,
     required this.showSpeed,
     required this.showEpisodes,
+    required this.showMode,
     required this.volumeSliderWidth,
     required this.contentWidth,
     this.showMute = true,
@@ -254,7 +284,8 @@ class PlayerControlPlan {
   String toString() =>
       'PlayerControlPlan(pos: $showPosition, dur: $showDuration, '
       'prev: $showPrev, next: $showNext, speed: $showSpeed, '
-      'eps: $showEpisodes, mute: $showMute, fs: $showFullscreen, '
+      'eps: $showEpisodes, mode: $showMode, mute: $showMute, '
+      'fs: $showFullscreen, '
       'volume: $volumeSliderWidth, width: ${contentWidth.toStringAsFixed(1)})';
 }
 
@@ -276,6 +307,7 @@ PlayerControlPlan planPlayerControlBar({
   required double positionWidth,
   required double durationWidth,
   required double speedWidth,
+  required double modeWidth,
   required bool hasPrev,
   required bool hasNext,
   required bool hasEpisodes,
@@ -287,6 +319,7 @@ PlayerControlPlan planPlayerControlBar({
     required bool next,
     required bool speed,
     required bool episodes,
+    bool mode = false,
     double volume = 0,
     bool mute = true,
     bool fullscreen = true,
@@ -315,6 +348,7 @@ PlayerControlPlan planPlayerControlBar({
     if (showPrev) widths.add(m.tap);
     if (speed) widths.add(speedWidth);
     if (showEpisodes) widths.add(m.tap);
+    if (mode) widths.add(modeWidth);
     if (volume > 0) widths.add(volume);
     return m.pad * 2 +
         widths.fold<double>(0, (a, b) => a + b) +
@@ -327,11 +361,36 @@ PlayerControlPlan planPlayerControlBar({
   var showNext = false;
   var showSpeed = false;
   var showEpisodes = false;
+  var showMode = false;
 
   // Priority order: what the user needs to understand playback (time), then
-  // transport (next/prev), then rate, then the episode list.
+  // transport (next), then the playback mode, then the skip Back, then rate,
+  // then the episode list.
+  //
+  // The mode sits ABOVE the skip Back, which is not a judgement about how often
+  // each is used — it is about doors. Back has the platform's own gesture behind
+  // it on mobile and `Esc` on desktop (both retrace the jump history through
+  // `_handleBack`), so a bar too narrow for the button has not lost the ACTION.
+  // The mode has only this chip: its row left the settings panel when the chip
+  // arrived, and a mode nobody can reach is the one thing worse than a crowded
+  // bar. (`prev` is also the cheaper loss in the measured ladder: on the widths
+  // where the chip pushes it out, the button was one or two taps from the edge
+  // of fitting anyway.)
+  //
+  // A LADDER, not a greedy fill: once a control does not fit, nothing below it is
+  // admitted either. Admitting whatever still fits would let a cheaper control
+  // into a slot the one above it could not use — the speed chip's label is
+  // measured, so at 1.25x it is wider than the mode chip, and the bar would then
+  // swap the TWO chips as a window was dragged a single dp narrower. Priority
+  // that can be overtaken from below is not priority.
+  var dropped = false;
   void admit(bool Function() fits, void Function() mark) {
-    if (fits()) mark();
+    if (dropped) return;
+    if (fits()) {
+      mark();
+    } else {
+      dropped = true;
+    }
   }
 
   admit(
@@ -378,10 +437,25 @@ PlayerControlPlan planPlayerControlBar({
         total(
           position: showPosition,
           duration: showDuration,
+          prev: false,
+          next: showNext,
+          speed: false,
+          episodes: false,
+          mode: true,
+        ) <=
+        maxWidth,
+    () => showMode = true,
+  );
+  admit(
+    () =>
+        total(
+          position: showPosition,
+          duration: showDuration,
           prev: true,
           next: showNext,
           speed: false,
           episodes: false,
+          mode: showMode,
         ) <=
         maxWidth,
     () => showPrev = true,
@@ -395,6 +469,7 @@ PlayerControlPlan planPlayerControlBar({
           next: showNext,
           speed: true,
           episodes: false,
+          mode: showMode,
         ) <=
         maxWidth,
     () => showSpeed = true,
@@ -408,6 +483,7 @@ PlayerControlPlan planPlayerControlBar({
           next: showNext,
           speed: showSpeed,
           episodes: true,
+          mode: showMode,
         ) <=
         maxWidth,
     () => showEpisodes = true,
@@ -420,6 +496,7 @@ PlayerControlPlan planPlayerControlBar({
     next: showNext,
     speed: showSpeed,
     episodes: showEpisodes,
+    mode: showMode,
   );
   // The slider costs one more gap than the row it joins, so budget for it.
   final leftover = maxWidth - withoutVolume - m.gap;
@@ -430,6 +507,14 @@ PlayerControlPlan planPlayerControlBar({
   // Last resort, narrower than even the smallest tier's three buttons: give up
   // the controls that have somewhere else to live, in the order that costs the
   // user least, so the row fits instead of painting an overflow stripe.
+  //
+  // The mode chip is not in this ladder, and that is not an oversight: it is
+  // admitted LAST of the ordinary controls, so by the time the ladder runs there
+  // is only one of two things true — it is not shown at all (nothing else was
+  // admitted either, at a width below the bar's own floor), or it was admitted
+  // and therefore fits with mute and fullscreen still in the row. The ladder's
+  // job here is the pair that has another door (the `F` shortcut, the volume
+  // gestures), and the mode has none.
   var showMute = true;
   var showFullscreen = true;
   double widthWith(bool mute, bool fullscreen) => total(
@@ -439,6 +524,7 @@ PlayerControlPlan planPlayerControlBar({
     next: showNext && hasNext,
     speed: showSpeed,
     episodes: showEpisodes && hasEpisodes,
+    mode: showMode,
     volume: volume,
     mute: mute,
     fullscreen: fullscreen,
@@ -455,6 +541,7 @@ PlayerControlPlan planPlayerControlBar({
     showNext: showNext && hasNext,
     showSpeed: showSpeed,
     showEpisodes: showEpisodes && hasEpisodes,
+    showMode: showMode,
     volumeSliderWidth: volume,
     showMute: showMute,
     showFullscreen: showFullscreen,
@@ -502,6 +589,17 @@ class PlayerControlBar extends StatefulWidget {
   /// BOTH, so a tap cannot make the duration disappear at a narrow width.
   final PlayerTimeMode timeMode;
 
+  /// What this player does when a file ends, and the choice of the four ways to
+  /// change it. The mode rides on the bar rather than in the settings panel
+  /// because it is a viewing decision, made while watching — its own chip
+  /// reports the mode in force and opens the menu, exactly as the speed chip
+  /// reports the rate (`utils/player_playback_mode.dart`).
+  final PlaybackMode mode;
+
+  /// Swaps [mode]. Null leaves the chip as a report with nothing behind it —
+  /// the menu is not offered rather than offered and ignored.
+  final ValueChanged<PlaybackMode>? onModeChanged;
+
   /// Swaps [timeMode]. Null leaves the readout as plain text — there is then no
   /// affordance claiming otherwise.
   final VoidCallback? onTimeModeChanged;
@@ -539,6 +637,7 @@ class PlayerControlBar extends StatefulWidget {
     required this.buffer,
     required this.volume,
     required this.speed,
+    required this.mode,
     required this.fullscreen,
     this.safe = EdgeInsets.zero,
     this.hasPrev = false,
@@ -546,6 +645,7 @@ class PlayerControlBar extends StatefulWidget {
     this.hasEpisodes = false,
     this.timeMode = PlayerTimeMode.elapsed,
     this.onTimeModeChanged,
+    this.onModeChanged,
     this.onPlayPause,
     this.onSeek,
     this.onScrubActive,
@@ -639,11 +739,14 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
           // The chip is the label plus its own horizontal padding, measured in
           // the style the chip actually paints (w500 — wider than timeStyle).
           speedWidth: _measure(ctx, speedText, m.chipStyle) + m.gap * 4 + 2,
+          // The mode chip is an icon, so its width is its own padding plus the
+          // icon's box — no text to measure, but it is budgeted for anyway:
+          // a control the plan does not know about is a row that overflows.
+          modeWidth: m.modeChipWidth,
           hasPrev: widget.hasPrev,
           hasNext: widget.hasNext,
           hasEpisodes: widget.hasEpisodes,
         );
-
         final duration = durMs.toDouble();
         final played = duration > 0 ? posMs / duration : 0.0;
 
@@ -760,6 +863,12 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                       tooltip: 'Next',
                     ),
                   ],
+                  // The mode chip sits with the skip pair rather than in the
+                  // settings panel: the mode is what "the end of this one" means,
+                  // and the buttons it explains are the two beside it. Admitted
+                  // (and painted) after Next and before the skip Back — see the
+                  // ladder above for why it outranks Back.
+                  if (plan.showMode) ...[_gap(m), _modeChip(m)],
                   if (plan.showSpeed) ...[_gap(m), _speedChip(m)],
                   if (plan.showEpisodes) ...[
                     _gap(m),
@@ -1039,11 +1148,288 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
     );
   }
 
+  /// The glyph for a mode. Written out per case rather than looked up in a
+  /// table or returned as an `IconData`: the release build's icon tree-shaker
+  /// only keeps the `Icons.x` values it can see referenced, and a glyph picked
+  /// at runtime from a map ships as an empty box — this app has already paid for
+  /// that lesson once (the video grouping icons; CHANGELOG).
+  Widget _modeGlyph(
+    PlaybackMode mode, {
+    required double size,
+    required Color color,
+  }) => switch (mode) {
+    PlaybackMode.loopAll => Icon(Icons.repeat, size: size, color: color),
+    PlaybackMode.shuffle => Icon(Icons.shuffle, size: size, color: color),
+    PlaybackMode.loopOne => Icon(Icons.repeat_one, size: size, color: color),
+    PlaybackMode.pauseAfter => Icon(
+      Icons.stop_circle_outlined,
+      size: size,
+      color: color,
+    ),
+  };
+
+  /// Row height of one mode entry. A FLOOR, not a height: `PopupMenuItem.height`
+  /// is a minimum, and Material 3 gives an item no vertical padding of its own,
+  /// so a note that wraps past this floor grows its own row (see
+  /// [_modeRowHeight], and [_modeRowBreathing] for the room it then needs to not
+  /// touch its neighbour).
+  ///
+  /// 48 is one menu row, not one explanation: the note is a line, so the row is
+  /// a row. It spent a while at 78 — and at 95/139 measured — because the note
+  /// was two sentences, and four of those turned the menu into a panel taller
+  /// than the video it covers.
+  static const double _modeItemHeight = 48;
+
+  /// Widest the mode menu grows before a note wraps: wide enough for the longest
+  /// of the four lines at the compact font, narrow enough for a landscape phone
+  /// and for the menu to open above the bar on a short window.
+  static const double _modeMenuMaxWidth = 300;
+
+  /// Material 3's own `PopupMenuItem` padding (12dp each side), which is what the
+  /// row's text really wraps inside. Copied rather than derived: the framework
+  /// owns the number, so if it ever changes, the note wraps differently than the
+  /// row was measured for — the same coupling the width budget accepts for
+  /// `_measure`, and the reason the wrap width is written down here at all.
+  static const double _modeItemPadding = 12;
+
+  /// The glyph column and the gap that follows it.
+  static const double _modeGlyphColumn = 18 + 12;
+
+  /// The check the selected row alone carries, and its gap.
+  static const double _modeCheckColumn = 8 + 15;
+
+  /// Air above and below a row's content once that content outgrows the floor —
+  /// 6dp each side. Material 3 hands a menu item NO vertical padding, so without
+  /// this a row at 1.6x text ends exactly where the next row's label begins.
+  static const double _modeRowBreathing = 12;
+
+  /// The gap between a mode's label and its note — in the row AND in the
+  /// measure that gives the row its height. One constant, or the two drift and
+  /// the menu lands a line off.
+  static const double _modeLabelGap = 3;
+
+  /// The label and note styles, named so the row can be MEASURED in the style it
+  /// is painted in (`_measureHeight`), rather than budgeted at a nominal size and
+  /// painted at another — the reason the width budget keeps its own styles.
+  static const TextStyle _modeLabelStyle = TextStyle(
+    fontSize: 13,
+    height: 1.2,
+    fontWeight: FontWeight.w400,
+  );
+  static const TextStyle _modeLabelActiveStyle = TextStyle(
+    fontSize: 13,
+    height: 1.2,
+    fontWeight: FontWeight.w600,
+  );
+
+  /// The sentence under a choice — secondary text, so Silver (`#AAAAAA`, the
+  /// system's own token at 7.5:1 on Ash). It shipped at `white38` (3.6:1), which
+  /// is below AA for an 11dp line and is exactly the washed-out gray the system
+  /// bans: an explanation nobody can read in a dim room is not an explanation,
+  /// and these four sentences are the whole reason the menu carries text at all.
+  static const TextStyle _modeNoteStyle = TextStyle(
+    fontSize: 11,
+    height: 1.35,
+    color: RCrmColors.silver,
+  );
+
+  /// The height one mode row really paints, at the width it will really get.
+  ///
+  /// Measured rather than assumed on purpose: the menu opens by a NEGATIVE
+  /// offset, so a row height that is only right at 1.0x text puts the last row
+  /// on top of the chip that opened it — a wrapped note adds a line, and a line
+  /// is 15dp at 1.0x and 24dp at 1.6x. The inner width is the menu's own max
+  /// width minus the item's padding and the row's furniture; the selected row
+  /// spends the extra on its check, so it gets less room for its note.
+  double _modeRowHeight(BuildContext context, PlaybackMode mode) {
+    final selected = widget.mode == mode;
+    final inner =
+        _modeMenuMaxWidth -
+        _modeItemPadding * 2 -
+        _modeGlyphColumn -
+        (selected ? _modeCheckColumn : 0);
+    // The rows are painted inside Material's own menu item, so the style they
+    // inherit is the theme's `labelLarge` — not this bar's `DefaultTextStyle`.
+    // That is not a hair-splitting difference: `labelLarge` carries a 0.1
+    // letter-spacing, which at 1.6x text is enough to wrap the longest note one
+    // line earlier than the bar's own style does, and a row measured one line
+    // short is a menu that lands on top of the chip that opened it.
+    final base = Theme.of(context).textTheme.labelLarge;
+    final content =
+        _measureHeight(
+          context,
+          mode.label,
+          selected ? _modeLabelActiveStyle : _modeLabelStyle,
+          inner,
+          base: base,
+        ) +
+        _modeLabelGap +
+        _measureHeight(context, mode.note, _modeNoteStyle, inner, base: base);
+    final grown = content + _modeRowBreathing;
+    return grown > _modeItemHeight ? grown : _modeItemHeight;
+  }
+
+  /// The height the whole menu will take — which is what decides how far above
+  /// the chip it has to open, so that "clear of the bar" stays true at every
+  /// text scale instead of only at the one it was computed for.
+  double _modeMenuHeight(BuildContext context) =>
+      PlaybackMode.values.fold<double>(
+        0,
+        (total, mode) => total + _modeRowHeight(context, mode),
+      ) +
+      _menuPadding;
+
+  /// The playback mode, as the bar's second state-reporting chip.
+  ///
+  /// Same species as the speed chip beside it, and under the same rule: it
+  /// reports a state, so it holds the accent while that state is not the
+  /// ordinary one — and the ordinary one here is `pauseAfter`, the app's own
+  /// default (`providers/settings_provider.dart`). A viewer who has never
+  /// opened this menu sees a quiet chip; one who has chosen to loop everything,
+  /// loop this file, or shuffle the library sees it in the accent, answerable at
+  /// a glance without opening anything.
+  ///
+  /// The pill is painted inside a box that is [PlayerChromeMetrics.modeChipWidth]
+  /// by [PlayerChromeMetrics.tap]: the pill is what the viewer reads, the box is
+  /// what the finger gets. They are separate numbers because a chip whose face is
+  /// its target is a chip only a stylus can hit (see `modeChipWidth`).
+  ///
+  /// The four choices each carry their own sentence (see [PlaybackMode.note]) —
+  /// which is where the settings panel's one-sentence-for-the-current-mode went.
+  /// Four modes need four explanations, and the moment to read one is the moment
+  /// you are choosing it — in one line, because a menu is scanned.
+  Widget _modeChip(PlayerChromeMetrics m) {
+    final altered = widget.mode != PlaybackMode.pauseAfter;
+
+    // What the chip would say if it could speak: the tooltip, the screen
+    // reader's label, and the menu's own answer, in the same words. "Playback
+    // mode" named the control; this names the STATE, which is what a state
+    // report owes a viewer who cannot read a glyph.
+    String title() => 'When the video ends: ${widget.mode.label}';
+
+    // The chip itself, painted the same either way: it reports the mode whether
+    // or not this bar can change it. The key is on the FACE, so a test can tell
+    // the pill the viewer sees from the box the finger gets.
+    Widget chip() => SizedBox(
+      width: m.modeChipWidth,
+      height: m.tap,
+      child: Center(
+        child: Container(
+          key: const ValueKey('mode_chip'),
+          // 2, not 4: the pill's height is the speed chip's height plus a
+          // hair, so the two state chips still read as one species even though
+          // one holds a glyph and the other a label.
+          padding: EdgeInsets.symmetric(horizontal: m.gap * 2, vertical: 2),
+          decoration: BoxDecoration(
+            color: altered
+                ? RCrmColors.primary.withValues(alpha: 0.16)
+                : Colors.white.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(RCrmRadii.sm),
+          ),
+          child: _modeGlyph(
+            widget.mode,
+            size: m.chipIcon,
+            color: altered ? RCrmColors.primary : Colors.white70,
+          ),
+        ),
+      ),
+    );
+
+    // No handler, no menu: the chip stays a report rather than becoming a
+    // button that opens a list it cannot act on (the same rule the time readout
+    // follows when `onTimeModeChanged` is null). It still names itself.
+    if (widget.onModeChanged == null) {
+      return Tooltip(message: title(), child: chip());
+    }
+
+    return PopupMenuButton<PlaybackMode>(
+      initialValue: widget.mode,
+      onSelected: (mode) {
+        widget.onMenuVisibilityChanged?.call(false);
+        widget.onModeChanged?.call(mode);
+      },
+      // The menu is a panel too: while it is open the bar must not fade out from
+      // under it (the screen arms its idle timer from this).
+      onOpened: () => widget.onMenuVisibilityChanged?.call(true),
+      onCanceled: () => widget.onMenuVisibilityChanged?.call(false),
+      tooltip: title(),
+      // Open upward, clear of the bar, sized to the menu it will really show.
+      // The height is measured, not `_modeItemHeight × 4`: see [_modeMenuHeight].
+      offset: Offset(0, -_modeMenuHeight(context)),
+      color: RCrmColors.ash,
+      surfaceTintColor: Colors.transparent,
+      elevation: 8,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(RCrmRadii.md),
+      ),
+      constraints: const BoxConstraints(
+        minWidth: 240,
+        maxWidth: _modeMenuMaxWidth,
+      ),
+      itemBuilder: (_) => PlaybackMode.values
+          .map(
+            (mode) => PopupMenuItem(
+              value: mode,
+              height: _modeRowHeight(context, mode),
+              child: Row(
+                // A two-line row reads better with its glyph on the block's
+                // centre line than on the label's baseline.
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  _modeGlyph(
+                    mode,
+                    size: 18,
+                    color: widget.mode == mode
+                        ? RCrmColors.primary
+                        : Colors.white70,
+                  ),
+                  const SizedBox(width: 12),
+                  // The sentence wraps inside the menu's own max width instead
+                  // of stretching it: `Flexible` is what lets a note take two
+                  // lines rather than making the menu one very wide row.
+                  Flexible(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          mode.label,
+                          style:
+                              (widget.mode == mode
+                                      ? _modeLabelActiveStyle
+                                      : _modeLabelStyle)
+                                  .copyWith(
+                                    color: widget.mode == mode
+                                        ? RCrmColors.primary
+                                        : Colors.white70,
+                                  ),
+                        ),
+                        const SizedBox(height: _modeLabelGap),
+                        Text(mode.note, style: _modeNoteStyle),
+                      ],
+                    ),
+                  ),
+                  if (widget.mode == mode) ...[
+                    const SizedBox(width: 8),
+                    const Icon(
+                      Icons.check,
+                      size: 15,
+                      color: RCrmColors.primary,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          )
+          .toList(),
+      child: chip(),
+    );
+  }
+
   /// Width of [text] as it will really be painted: the ambient style (the
   /// theme's font — Roboto, Segoe UI, whatever the platform picked) merged
   /// with [style], at the user's font scaling. Budgeting with a different
   /// font than the one that renders is how a "fits" bar overflows.
-  ///
   /// Memoised because the bar rebuilds on every position tick (up to 10/s while
   /// playing) and would otherwise re-layout the same three strings every time —
   /// text layout is the expensive part of this widget. The cache is keyed by the
@@ -1069,6 +1455,38 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
     if (_widthCache.length >= 128) _widthCache.clear();
     _widthCache[key] = tp.width;
     return tp.width;
+  }
+
+  /// Height of [text] wrapped at [maxWidth] — the same merge, the same scaler and
+  /// the same memoisation as [_measure], because a row measured in one font and
+  /// painted in another overflows in the other axis. [base] overrides the ambient
+  /// style where the widget that paints the text does not sit under this
+  /// context's `DefaultTextStyle` — the mode menu's rows are painted inside
+  /// Material's own menu item, whose text style is the theme's `labelLarge`.
+  static final Map<(String, TextStyle, double, double), double> _heightCache =
+      {};
+
+  static double _measureHeight(
+    BuildContext context,
+    String text,
+    TextStyle style,
+    double maxWidth, {
+    TextStyle? base,
+  }) {
+    final effective = (base ?? DefaultTextStyle.of(context).style).merge(style);
+    final scale = MediaQuery.textScalerOf(context);
+    final key = (text, effective, scale.scale(1), maxWidth);
+    final cached = _heightCache[key];
+    if (cached != null) return cached;
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: effective),
+      textScaler: scale,
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: maxWidth);
+    final height = tp.height;
+    if (_heightCache.length >= 128) _heightCache.clear();
+    _heightCache[key] = height;
+    return height;
   }
 }
 
