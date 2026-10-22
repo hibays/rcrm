@@ -167,6 +167,27 @@ whatever links `librcrm_flutter_bridge.a` must also link libc++ (`-lc++` in the
 target's `OTHER_LDFLAGS`). This has not been verified on a Mac (the iOS
 toolchain shims are in `scripts/cmake/`).
 
+## Brand assets / app icons
+
+All platform icons are generated from the artwork in `brands/design/` — the
+Flutter template's icons are gone, so this is the only place an icon is edited:
+
+```bash
+python brands/build_icons.py            # every platform + the README banner
+python brands/build_icons.py --only android,windows
+```
+
+Requires Python 3.9+ and ffmpeg; the SVG is rasterised by ffmpeg's `librsvg`
+decoder (or `rsvg-convert` when that build lacks it), and every size is a
+lossless ffmpeg scale of one 4096px master. It writes Android legacy + adaptive +
+monochrome, iOS, macOS, the Windows `.ico`, the Linux window icon and
+`brands/out/`. See `brands/README.md` for the design rules and for what to
+commit after switching the logo.
+
+The Linux icon is loaded at runtime by `linux/runner/my_application.cc` from
+`<bundle>/data/app_icon.png` (installed by `linux/CMakeLists.txt`), because GTK
+wants a file path rather than a Flutter asset.
+
 ## Known toolchain issues
 
 Three environment-level changes bite builds even though the source is unchanged.

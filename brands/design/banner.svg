@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 512" width="1024" height="512">
+  <!-- The lockup is centred: the source artwork had 92px on the left and 154px
+       on the right at 1024 wide, which read as left-heavy. 46px to the right
+       balances the margins at 138.5px each. -->
+  <g transform="translate(70 56) scale(0.78)">
+    <path fill="#D64524" d="M256 48 L360 48 L424 88 V264 C424 356 352 424 256 464 C160 424 88 356 88 264 V88 Z"/>
+    <g fill="#FFFFFF">
+      <rect x="152" y="84" width="48" height="316"/>
+      <path d="M200 84 A112 112 0 0 1 200 308 L200 260 A64 64 0 0 0 200 132 Z"/>
+      <path d="M200 296 L240 296 L320 400 L280 400 Z"/>
+    </g>
+    <g fill="#D64524">
+      <circle cx="228" cy="180" r="18"/>
+      <path d="M224 198 H232 L236 240 H220 Z"/>
+    </g>
+  </g>
+  <text x="494" y="312" font-family="'JetBrains Mono','Cascadia Code','SF Mono',Consolas,monospace" font-size="176" font-weight="700" letter-spacing="-8" fill="#2B2D3A">rcrm</text>
+</svg>

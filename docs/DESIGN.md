@@ -226,6 +226,11 @@ Surfaces are flat at rest. Shadows appear only as a response to state — hover,
 - **Icons:** Material defaults
 - **Back key hierarchy:** back undoes the innermost thing that is open. An open video folder or photo album is a step INSIDE its tab — back closes it to the list, on either tab by the same rule, and the shell defers to the tab that owns it — and only then does back leave the tab for Home. On Home itself, Android guards the exit with a second press. One press, one step: the header's back arrow and the system gesture are never two different answers
 
+### App Icon
+
+- **The mark on cream, not on pitch.** The icon is the red shield on `#F6F1E9`, not the UI's near-black: an icon lives on a dock or a home screen, where the library's darkness would disappear, and cream is the one background that keeps the shield's silhouette readable at 16px. The artwork sits at 94% of the square, so the shield lands at ~62% of its width and ~76% of its height (62% of the Android adaptive canvas, inside its 72dp safe circle); the tile's 22.5% corner radius is the macOS grid's own. It is nudged 2% down, because the shield's alpha centroid is 3.8% above its bounding-box centre — bbox-centring it reads as floating high. A smaller mark reads as a stamp in the middle of a blank card, which is exactly what the first pass looked like.
+- **Generated, never hand-edited.** `brands/build_icons.py` turns `brands/design/logo.svg` into every platform size; the rules above and the banner are documented in `brands/README.md`. Do not touch the platform PNGs directly — the next run overwrites them.
+
 ### Controls Overlay (Video Player)
 
 - **Gradient:** Vertical `0x80000000` to `0x00000000` — from opaque black at bottom to transparent

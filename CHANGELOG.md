@@ -262,3 +262,15 @@ Update report:
 		④ 构建：`bundled` 用 CMake 编译 C++，需要 CMake ≥3.21 + C++ 工具链。Android 每 ABI 一个 `scripts/cmake/android-*.cmake` shim（ANDROID_ABI、ANDROID_STL=c++_static）；wrapper 对 `*-linux*` 发的 `-lstdc++` 在 NDK 上会先命中 legacy `libstdc++.so`，脚本把各 ABI 的静态 `libstdc++.a` 复制到 `target/android-stdcxx/<abi>` 并用 target-scoped `-L native=...` 改选它，再补 `-lc++_static -lc++abi -lunwind`。直接指向整个 ABI sysroot 会误链静态 libc，armv7 的 `__aeabi_*` 版本符号会报 `undefined version LIBC_N`。iOS 加 device/sim shim；Windows 上 cmake-rs 把 opt-level=0 映射成 CMake Debug（/MDd），根 `Cargo.toml` 用 `[profile.dev.package.zxing-cpp] opt-level=3` 固定到 release CRT
 		⑤ 验证：host 全量 `cargo test` 通过；Android 3 ABI release 交叉编译通过（`build_android.ps1 -Release -SplitAbi` 连 APK 一起出包，三个 .so 的 NEEDED 只剩 libdl/libm/libc）；`cargo clippy --all` 与 `cargo clippy -p rcrm-flutter-bridge --features mobile-decode --all-targets` 零告警；Windows release bridge（DLL）构建通过
 		⑥ 未验证：iOS/Linux/macOS 未在本机构建（无 macOS 主机）；真机扫码未跑，灵敏度依据是单测 + 基准报告
+
+6. 2026.10.23.2.40.AM.Friday
+	*本批为未发布的工作区改动：应用图标与品牌资产*
+
+	1) 图标：Flutter 模板图标全部换成 rcrm 自己的盾牌 R
+		① 源文件在 `.local_backup/select_rcrmicon/`（cc.svg 方形 mark、cc2.svg 横版 banner），现落到 `brands/design/logo.svg` / `banner.svg`；另加 `logo-monochrome.svg`（Android 13 主题图标：盾牌挖空 R，由系统着色）
+		② 生成器 `brands/build_icons.py`：一条命令产出全部平台图标 + README banner。SVG 由 ffmpeg 的 librsvg 解码器栅格化（该 ffmpeg 无 librsvg 时回落 rsvg-convert），背景合成、圆角遮罩、尺寸缩放全部由 ffmpeg 完成，输出只有无损 PNG（.ico/.icns 容器内也是 PNG 或 32bpp DIB）；脚本不依赖 Pillow，只用标准库写容器
+		③ 设计：源图透明，背景取奶油色 #F6F1E9（白底偏冷，深色会吃掉红盾的轮廓）；mark 占方形画布 94%（盾牌约 62% 宽、76% 高；第一版 78% 像白卡片中间的一枚小印章，已按反馈放大）；整体向下做 2% 光学微调（盾牌质心比外框中心高 3.8%，按外框居中会读成上飘；调后约 48.4%，上下留白 14%/10%）；自适应前景 62%（108dp 画布、72dp 安全圆内）；桌面 tile 圆角 22.5%；macOS 按 Apple 的 824/1024 画框内缩
+		④ 平台：Android 传统 mipmap（48/72/96/144/192）+ adaptive（foreground/monochrome 108dp 系列）+ `mipmap-anydpi-v26/ic_launcher.xml` + `values/colors.xml`；iOS 15 个尺寸（RGB、无 alpha）；macOS 7 个（含 824 画框，128px 同时是标题栏资产）；Windows .ico 10 档（≤128 为 32bpp DIB，256 为 PNG）；Linux 新增 `linux/runner/resources/app_icon.png`，runner 从 `/proc/self/exe` 定位、用 GTK 设置窗口图标，CMake 把它装进 bundle 的 data/
+		⑤ banner：`banner.svg` 生成 `brands/out/banner.png`（深色字）与 `banner-dark.png`（奶油字，做法是把 wordmark 的 #2B2D3A 替换为 #F6F1E9），README/README_zh 顶部用 `<picture>` 按 prefers-color-scheme 切换；另出 `brands/out/icon-1024.png` 预览与 `rcrm.icns`；banner 原稿左距 9%、右距 18%（重心偏左），锁排列整体右移 46/1024 改为左右各 13.5%
+		⑥ 验证：Windows release 构建通过（rc.exe 接受该 ico），从 exe 提取 32px 图标确认已嵌入；aapt2 compile + link 通过（含 `<monochrome>`、颜色与全部 mipmap）；Pillow 校验 iOS 尺寸/无 alpha、macOS 尺寸/透明角、Android 各密度尺寸；重跑脚本输出逐字节一致
+		⑦ 未验证：iOS/macOS/Linux 未在本机构建（无 macOS 与 GTK 主机）；真机/真桌面的图标观感未跑，32px 以下盾牌会糊（源图细节所限）

@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="rcrm logo">
+  <title>rcrm — Rust MIME-safe crypt</title>
+  <!-- 盾牌：外轮廓，源自 Paul Rand 的"形中藏字"构造法 -->
+  <path fill="#D64524" d="M256 48 L360 48 L424 88 V264 C424 356 352 424 256 464 C160 424 88 356 88 264 V88 Z"/>
+  <!-- R 字身：主干 + 半环碗 + 斜腿，全部基于 48px 网格 -->
+  <g fill="#FFFFFF">
+    <!-- 主干 -->
+    <rect x="152" y="84" width="48" height="316"/>
+    <!-- 碗部：半圆环，中心(200,196)，外径112，内径64 -->
+    <path d="M200 84 A112 112 0 0 1 200 308 L200 260 A64 64 0 0 0 200 132 Z"/>
+    <!-- 腿部：斜向平行四边形，底宽 40 -->
+    <path d="M200 296 L240 296 L320 400 L280 400 Z"/>
+  </g>
+  <!-- 钥匙孔：嵌于 R 碗部内孔中，"锁在字母里" -->
+  <g fill="#D64524">
+    <circle cx="228" cy="180" r="18"/>
+    <path d="M224 198 H232 L236 240 H220 Z"/>
+  </g>
+</svg>
