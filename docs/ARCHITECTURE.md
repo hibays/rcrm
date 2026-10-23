@@ -345,11 +345,20 @@ settings panel → settings_provider.playerOrientation → video_player_screen
                  setValue(_:forKey:"orientation") + attemptRotationToDeviceOrientation
                  pair before that. landscapeLeft/Right are INVERTED here, as every
                  iOS app reading this sensor has to
-             ORDER: the mask is sent first (iOS only honours a geometry request its
-             supported mask allows; on Android both write the same activity
-             property, so the channel call must be the last word), and "release"
-             stops the iOS observers on every other strategy and on the way out —
-             a sensor that kept forcing a geometry would fight the mask
+             ORDER: going in, the mask is sent first on iOS (a geometry request
+             has to be allowed by the supported mask). On Android a Follow
+             request writes NO mask: the all-four list is FULL_USER, the
+             lock-RESPECTING value, so writing it first makes the screen obey the
+             system's rotation for the instant before FULL_SENSOR lands — the
+             "system, then back to the phone" flash on every video change under
+             Follow. FULL_SENSOR already allows every orientation, so the channel
+             call is the whole policy there — unless it cannot be delivered (no
+             native half, a channel error), in which case the all-four mask is
+             written as the fallback instead of leaving a previous narrower mask
+             in force. Coming out, the sensor stops first,
+             then the mask; "release" also stops the iOS observers on every other
+             strategy, because a sensor that kept forcing a geometry would fight
+             the mask
   portrait → [portraitUp, portraitDown]      (USER_PORTRAIT)
   landscape→ [landscapeLeft, landscapeRight] (USER_LANDSCAPE)
   (not fullscreen) → all four: the app's own default, and what the library
@@ -364,24 +373,45 @@ the request that then took it back when the real shape landed. So every video
 change rotated twice, and between two same-shaped videos the two rotations
 cancelled out and still cost the viewer a jump.
 
-The fix is one record and one rule. `OrientationRequest.fittedShape` is the shape
-a request locks the axis to, and null for every request that locks nothing (out of
-fullscreen, the three strategies that do not read the video, a shape nobody knows
-yet). The screen keeps the last request's `fittedShape` as `_lockedShape`, written
-in `_applyOrientation` — the single writer, so the record cannot drift from the
-mask the platform holds — and `orientationRequestFor` HOLDS it while the shape is
-unknown: the answer to "which way up" a moment before the player could say is the
-way up it is already at. Only the shape that actually arrives changes the mask, so
-a switch now costs one rotation (different shape) or none (same shape). Entering
-fullscreen with nothing locked yet still forces nothing, which is the case the
-original "unknown = landscape" guess broke. A route step to another video
-(`_go`) hands the lock over as `startLockedShape`, because the outgoing screen
-deliberately does not release the mask on its way out — so the platform is still
-holding it when the replacement mounts. `_releaseOrientation` deliberately leaves
-the record alone: it runs at the START of an exit, while `fullscreen` is still true
-and `stream.videoParams` is still subscribed for the whole pop (only `_go` cancels
-it), so clearing it there would let the next report re-apply the fitted axis on top
-of the release and rotate the library on the way out.
+The fix is one record, one latch, and one rule. `OrientationRequest.fittedShape`
+is the shape a request locks the axis to, and null for every request that locks
+nothing (out of fullscreen, the three strategies that do not read the video, a
+shape nobody knows yet). The screen keeps the last request's `fittedShape` in a
+`PlayerOrientationSession` (`utils/player_orientation.dart`), whose `record` is the
+single writer — so the record cannot drift from the mask the platform holds — and
+`orientationRequestFor` HOLDS it while the shape is unknown: the answer to "which
+way up" a moment before the player could say is the way up it is already at. Only
+the shape that actually arrives changes the mask, so a switch now costs one
+rotation (different shape) or none (same shape). Entering fullscreen with nothing
+locked yet still forces nothing, which is the case the original "unknown =
+landscape" guess broke. A route step to another video (`_go`) hands the lock
+over as `startLockedShape`, and deliberately does not release the
+mask on its way out — so the platform is still holding it when the replacement
+mounts.
+
+Only `fill` reads the video, so a shape report is not news for `system`,
+`device` or the two locks. That is not only about avoiding a redundant write:
+re-applying Follow on a shape report used to write the lock-respecting mask
+before the sensor request on Android, which is the flash this section's ORDER
+note records. A Follow screen applies the strategy when it is chosen or entered
+and then leaves it alone while the same video plays.
+
+The session also carries the exit's RELEASE LATCH, and that is what keeps a lock
+from outliving the player. `_releaseOrientation` runs at the START of an exit,
+while `fullscreen` is still true and the player is still alive, and two writers
+outlive it: `stream.videoParams` stays subscribed for the whole pop (only a route
+step cancels it). A report applying the strategy after the release puts the
+video's axis back on top of the library's mask. The equality test alone protected only `fit`, whose record is the video's
+shape; an explicit Portrait lock records NO shape, so every report looked like
+news, and the one arriving during the pop re-applied portrait AFTER the release —
+the library arrived portrait-locked. The latch silences every writer for every
+strategy, `_applyOrientation` additionally refuses while a route step or a pop
+owns the screen, and entering fullscreen again re-arms it (the only way back, for
+a cancelled exit). The release also CLEARS the record: the mask it just wrote is
+the app's default all-four, so there is no fitted shape in force to hold, and a
+re-entered fullscreen then asks afresh instead of holding the pre-exit video's
+axis while the player reports no size. A player that STARTS fullscreen applies
+once in its post-frame callback, because no `_setFullscreen` call does it for it.
 
 The old `auto_rotate` boolean is still READ once (`getPlayerOrientation`): `true`
 meant `device` (and silently got `system`), `false` meant `fit`.

@@ -94,20 +94,14 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   StreamSubscription? _completedSub;
   StreamSubscription? _volumeSub;
   StreamSubscription? _rateSub;
-  /// The video shape the orientation mask in force is locked to, or null while
-  /// nothing is locked to one (outside fullscreen, a strategy that does not read
-  /// the shape, or no shape reported yet).
-  ///
-  /// It is the last request's `fittedShape`, and `_applyOrientation` is its only
-  /// writer (initState seeds it from `startLockedShape`), so the record cannot
-  /// drift from the mask the platform is actually holding. It has two jobs. It
-  /// stops the parameters stream's repeated reports (mpv sends them per property
-  /// change) from re-applying a mask that is already right — including after a
-  /// release, which is why `_releaseOrientation` leaves it alone — and it is what
-  /// `fill` HOLDS while the next file loads: a skip reports no size for a moment,
-  /// and releasing the lock for that moment is what cost a video change two
-  /// rotations. See `orientationRequestFor`.
-  bool? _lockedShape;
+  /// The orientation record and the exit latch
+  /// (`utils/player_orientation.dart`, [PlayerOrientationSession]): the shape
+  /// the mask in force holds, plus whether the exit has already handed the mask
+  /// back. It lives in one value because the two facts are always read together
+  /// and the screen cannot be mounted in a test; the latch is what keeps a
+  /// report that arrives during the pop from re-applying an explicit Portrait
+  /// lock after the release.
+  late final PlayerOrientationSession _orientation;
 
   StreamSubscription? _bufferingSub;
   StreamSubscription? _shapeSub;
@@ -609,7 +603,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     // The mask is still whatever the screen this one replaces left it at (see
     // `startLockedShape`), so that is what this screen starts out believing it
     // holds.
-    _lockedShape = widget.startLockedShape;
+    _orientation = PlayerOrientationSession(
+      lockedShape: widget.startLockedShape,
+    );
     if (_isMobile) {
       ScreenBrightness().application
           .then((b) {
@@ -726,9 +722,12 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         }
       });
       if (_isMobile && fullscreen) {
-        Future.delayed(const Duration(milliseconds: 700), () {
-          if (mounted) _applyOrientation();
-        });
+        // Apply NOW. A player that STARTS fullscreen (a route step with
+        // `startFullscreen: true`) has no `_setFullscreen` call to apply its
+        // strategy, and waiting would leave the mask at whatever the screen before
+        // it held. Fill with an unknown shape asks for everything; the shape
+        // stream (`_onVideoParams`) applies the real axis when it lands.
+        _applyOrientation();
       }
     });
   }
@@ -791,6 +790,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     setState(() => fullscreen = on);
     _globalImmersive = ref.read(immersiveModeProvider);
     if (_isMobile) {
+      // Entering fullscreen is the one way back from the exit latch (a route
+      // whose pop was cancelled); nothing else re-arms the writers.
+      if (on) _orientation.reenterFullscreen();
       SystemChrome.setEnabledSystemUIMode(
         on ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
       );
@@ -812,6 +814,15 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   // arriving (see `_onVideoParams`), and leaving the player.
   void _applyOrientation() {
     if (!_isMobile) return;
+    // The exit's release is a LATCH, not a single call: the parameters stream
+    // stays subscribed for the whole pop, and a report arriving then would put
+    // this screen's fullscreen request back on top of the library's mask -- and
+    // for an explicit Portrait lock that is the library arriving portrait-locked.
+    if (!_orientation.mayWrite) return;
+    // A route step has been taken, or the route is already leaving: this screen
+    // is no longer the one whose mask should be in force. The replacement
+    // applies its own, and the exit has its own release.
+    if (_disposed || _navigating || _isRoutePopping) return;
     final request = orientationRequestFor(
       mode: ref.read(uiSettingsProvider).playerOrientation,
       fullscreen: fullscreen,
@@ -819,21 +830,25 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       // What the platform is holding right now, so a request made while the
       // player has no shape to give repeats the mask in force instead of
       // releasing it (see `orientationRequestFor`).
-      lockedShape: _lockedShape,
+      lockedShape: _orientation.lockedShape,
     );
-    // Written HERE, before the call and unconditionally: whatever mask this
-    // request carries is what the screen is held at from now on, and a request
-    // that locks to no shape (out of fullscreen, the app's own direction) has to
-    // clear the record or the next unknown-shape request would hold a lock that
-    // was never asked for.
-    _lockedShape = request.fittedShape;
-    // The ORDER lives in `applyOrientationRequest` with a test: the mask first,
-    // the sensor request second (see that function).
+    // Written HERE, before the call: whatever mask this request carries is what
+    // the screen is held at from now on, and a request that locks to no shape
+    // (out of fullscreen, the app's own direction) has to clear the record or
+    // the next unknown-shape request would hold a lock that was never asked for.
+    _orientation.record(request);
+    // The ORDER and the platform rule live in `applyOrientationRequest` (with
+    // tests); the two writers are routed through the session so the exit latch is
+    // re-read between them too (see `followThrough` / `maskThrough`).
     unawaited(
       applyOrientationRequest(
         request,
-        writeMask: SystemChrome.setPreferredOrientations,
-        writeFollow: ScreenOrientation.followDevice,
+        writeMask: (orientations) => _orientation.maskThrough(
+          SystemChrome.setPreferredOrientations,
+          orientations,
+        ),
+        writeFollow: (follow) =>
+            _orientation.followThrough(ScreenOrientation.followDevice, follow),
       ),
     );
   }
@@ -861,21 +876,21 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// strategy would be applied to a screen that is already leaving.
   void _releaseOrientation() {
     if (!_isMobile) return;
-    // `_lockedShape` is deliberately NOT cleared here, and that is load-bearing
-    // rather than an oversight. This runs at the START of an exit -- `_goHome`
-    // and `_handleBack` reach it while `fullscreen` is still true and the player
-    // is still playing -- and `_shapeSub` stays subscribed for the whole pop
-    // (only `_go` cancels it). So a `video-params` report inside that window
-    // finds `fullscreen` still true and would re-apply the fitted axis ON TOP of
-    // the release just written, and the library would arrive rotated: exactly
-    // the second motion on the way out that `_restoreExitChrome` exists to
-    // prevent. Keeping the record is what lets `_onVideoParams` recognise that
-    // report as the shape it already knows and do nothing.
+    // The LATCH first: from here on this screen may not write a fullscreen mask
+    // again. The release runs at the START of an exit, while `fullscreen` is
+    // still true and the player is still alive, and `_shapeSub` stays subscribed
+    // for the whole pop (only a route step cancels it). A report re-applying the
+    // strategy after this point would put the video's axis back on top of the
+    // library's mask.
     //
-    // Nothing outlives it either: every caller of `_restoreExitChrome` pops the
-    // route, so a screen never re-enters fullscreen after a release, and
-    // `_applyOrientation` rewrites the record on the first real event anyway.
-    //
+    // The latch is what makes that hold for EVERY strategy, not just `fill`:
+    // `fill` leaves a fitted shape in the record, so a repeated report matched
+    // it and was ignored, but an explicit Portrait lock records no shape at all,
+    // so its report looked like news on every tick -- the one arriving during
+    // the pop re-applied portrait after the release, and the library arrived
+    // portrait-locked.
+    _orientation.release();
+
     // The way out has its own order (`releaseOrientationRequest`): the sensor
     // stops first, then the mask goes back to the app's default.
     unawaited(
@@ -901,17 +916,15 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   void _onVideoParams(_) {
     if (!_isMobile) return;
     final landscape = _landscapeVideo();
-    // No size is not news: mpv reports none while the file it is loading has no
-    // track open yet, which is every video skip and every seek over a gap. Acting
-    // on it released the fitted lock the screen was already held at and took it
-    // back when the real size landed -- two rotations per video change, and for
-    // two same-shaped videos two that cancelled out. The lock is held across the
-    // gap instead (`orientationRequestFor`), so there is nothing to decide here.
-    if (landscape == null) return;
-    // The shape in force is the one the mask already says: mpv repeats this
-    // report per property change, and re-writing the same mask is a call for no
-    // reason.
-    if (landscape == _lockedShape) return;
+    // The session decides what is news: only Fit reads the video at all, no size
+    // is not news (mpv reports none while the file it is loading has no track
+    // open yet, which is every video skip and every seek over a gap), the shape
+    // already in force is not news (mpv repeats the report per property change),
+    // and NOTHING is news after the exit's release -- that last clause is what
+    // keeps a report arriving during the pop from re-applying an explicit
+    // Portrait lock on top of the library's mask.
+    final mode = ref.read(uiSettingsProvider).playerOrientation;
+    if (!_orientation.videoShapeIsNews(mode, landscape)) return;
     _applyOrientation();
   }
 
@@ -1503,7 +1516,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         build: (warm) => VideoPlayerScreen(
           item: item,
           startFullscreen: fullscreen,
-          startLockedShape: _lockedShape,
+          startLockedShape: _orientation.lockedShape,
           warmPlayer: warm,
         ),
       ),

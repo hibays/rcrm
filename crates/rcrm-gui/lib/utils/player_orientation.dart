@@ -32,6 +32,8 @@
 // the sensor to change which direction the screen is facing") -- which is what
 // both "fit the video" and the explicit locks want.
 
+import 'dart:io' show Platform;
+
 import 'package:flutter/services.dart' show DeviceOrientation;
 
 /// How the fullscreen player chooses which way up it is.
@@ -141,18 +143,21 @@ List<OrientationPolicy> orientationPolicies() => OrientationPolicy.values;
 
 /// What the player asks the platform for.
 ///
-/// Two parts GO to the platform, and the caller must send them in this order:
-/// [orientations] is the mask `SystemChrome.setPreferredOrientations` takes, and
-/// [followDevice] asks the app's own channel to follow the phone's real posture,
-/// lock or no lock. [fittedShape] is the third field and is not sent at all: it
-/// is the shape that mask locks to, kept so the NEXT request knows what is in
-/// force (see the field).
+/// Two parts GO to the platform, and on iOS the caller must send them in this
+/// order: [orientations] is the mask `SystemChrome.setPreferredOrientations`
+/// takes, and [followDevice] asks the app's own channel to follow the phone's
+/// real posture, lock or no lock. [fittedShape] is the third field and is not
+/// sent at all: it is the shape that mask locks to, kept so the NEXT request
+/// knows what is in force (see the field).
 ///
-/// The mask comes FIRST because iOS only honours a geometry request its
-/// supported mask already allows, and it must also be sent when
-/// [followDevice] is true -- on Android both write the same activity property, so
-/// the channel call has to be the last word, and on iOS the mask is what opens
-/// the door for it.
+/// The mask comes FIRST on iOS because it only honours a geometry request its
+/// supported mask already allows. On Android a Follow request writes NO mask at
+/// all (see [applyOrientationRequest]): the all-four list decodes to
+/// `FULL_USER`, the lock-RESPECTING value, so writing it before the sensor
+/// request made the screen take the system's orientation for the instant before
+/// `FULL_SENSOR` landed -- the "system, then back to the phone" flash every
+/// video change under Follow used to play. If the sensor request cannot be
+/// delivered, the all-four mask is written as the fallback instead.
 class OrientationRequest {
   const OrientationRequest.allow(this.orientations, {this.fittedShape})
     : followDevice = false;
@@ -227,16 +232,45 @@ const List<DeviceOrientation> _portrait = <DeviceOrientation>[
 typedef OrientationMaskWriter =
     Future<void> Function(List<DeviceOrientation> orientations);
 
-/// Asks the app's own channel to follow (or stop following) the device.
-typedef DeviceFollowWriter = Future<void> Function(bool follow);
+/// Asks the app's own channel to follow (or stop following) the device, and
+/// reports whether the request reached the platform.
+typedef DeviceFollowWriter = Future<bool> Function(bool follow);
 
-/// Applies [request] to the platform, in the one order that works on both.
+/// The platform whose ordering rule applies to [applyOrientationRequest].
 ///
-/// The mask FIRST, always, even when [OrientationRequest.followDevice] is true:
-/// iOS only honours a geometry request its supported mask already allows, and on
-/// Android both calls write the same activity property, so the sensor request has
-/// to be the last word. The two calls are awaited in turn for that reason — not
-/// merely dispatched together, which would leave the order to the scheduler.
+/// The rule lives here, not at the call site, because getting it backwards is
+/// silent on a phone with auto-rotate on: Android must NOT write the all-four
+/// mask before a Follow request (it is `FULL_USER`, the lock-respecting value,
+/// so the screen flashes to the system's orientation before `FULL_SENSOR` wins),
+/// while iOS MUST write it (a geometry request is only honoured inside the
+/// supported mask).
+enum OrientationPlatform { android, ios }
+
+/// The platform this process is running on.
+///
+/// Only mobile callers matter; a desktop host falls on the iOS side (mask
+/// first), which is the safe order and what the tests exercise by default.
+OrientationPlatform get hostOrientationPlatform =>
+    Platform.isAndroid ? OrientationPlatform.android : OrientationPlatform.ios;
+
+/// Applies [request] to the platform, in the one order that works.
+///
+/// On iOS the mask comes FIRST, even when [OrientationRequest.followDevice] is
+/// true: iOS only honours a geometry request its supported mask already allows.
+/// The two calls are awaited in turn — not merely dispatched together, which would
+/// leave the order to the scheduler.
+///
+/// [platform] selects the ordering rule and defaults to [hostOrientationPlatform].
+/// On ANDROID, a Follow request writes no mask first: the all-four mask decodes to
+/// `FULL_USER`, the lock-RESPECTING value, so writing it makes the screen obey
+/// the system's rotation for the instant before `FULL_SENSOR` lands — the
+/// "system, then back to the phone" flash on every video change under Follow.
+/// `FULL_SENSOR` already allows every orientation, so the channel call is the
+/// whole policy WHEN IT IS DELIVERED; if `writeFollow` reports it could not be,
+/// the all-four mask is written as the fallback (the system's own preference)
+/// rather than leaving a previous, narrower mask in force. A non-Follow request
+/// still writes its mask, and on Android its following `release` is a no-op, so
+/// the mask is the last word. On iOS the mask is always written first.
 ///
 /// The order is here, in a function with a test, rather than in the screen, which
 /// cannot be mounted in a test: getting it backwards is invisible on a phone with
@@ -246,7 +280,28 @@ Future<void> applyOrientationRequest(
   OrientationRequest request, {
   required OrientationMaskWriter writeMask,
   required DeviceFollowWriter writeFollow,
+  OrientationPlatform? platform,
 }) async {
+  final host = platform ?? hostOrientationPlatform;
+  if (request.followDevice && host == OrientationPlatform.android) {
+    // Android: `FULL_SENSOR` is already a complete policy -- every orientation,
+    // rotation lock ignored -- so the channel call is the whole request. The
+    // mask that would go first is the all-four list, which the embedding decodes
+    // to `FULL_USER` ("Respect the user's sensor-based rotation preference");
+    // writing it makes the screen obey the lock for the moment before the sensor
+    // request replaces it, which is the flash the viewer sees as "system, then
+    // back to where it was".
+    final delivered = await writeFollow(request.followDevice);
+    if (!delivered) {
+      // No native half, or the channel refused: leaving no mask would strand the
+      // screen on whatever narrower mask was in force (a previous Portrait lock,
+      // for one). The all-four mask is the platform's own sane fallback -- it
+      // still respects the system, which is what the app did before this
+      // strategy existed.
+      await writeMask(request.orientations);
+    }
+    return;
+  }
   await writeMask(request.orientations);
   await writeFollow(request.followDevice);
 }
@@ -321,6 +376,125 @@ OrientationRequest orientationRequestFor({
       return const OrientationRequest.allow(_portrait);
     case PlayerOrientation.landscape:
       return const OrientationRequest.allow(_landscape);
+  }
+}
+
+/// The screen's orientation record and its exit latch, in one value.
+///
+/// The screen cannot be mounted in a test, so the two facts that decide whether
+/// a mask may be written live here:
+///
+///  * [lockedShape] — the [OrientationRequest.fittedShape] of the last request
+///    that went out, which [orientationRequestFor] HOLDS while the next file has
+///    no shape to give (a video change reports 0x0). [record] is the only writer,
+///    so the record cannot drift from the mask the platform holds.
+///  * [released] — whether the exit has already handed the mask back. It is a
+///    ONE-WAY LATCH for the life of the screen: every caller of the release pops
+///    the route, and two asynchronous writers are still live at that moment —
+///    the video parameters stream, subscribed for the whole pop (only a route
+///    step cancels it). A report applying the fullscreen request after the
+///    release puts the video's axis back on top of the library that is arriving.
+///
+/// The equality rule alone protected only fill: its record is the video's own
+/// shape, so a repeated report matched and was ignored. An explicit Portrait lock
+/// records no shape ([OrientationRequest.fittedShape] is null for every strategy
+/// that does not read the video), so every report looked like news — and the
+/// report that arrived during the exit re-applied the portrait mask AFTER the
+/// release. That is the "some choices self-lock portrait" bug; the latch is what
+/// closes it for every strategy, not just the one whose record happened to match.
+class PlayerOrientationSession {
+  PlayerOrientationSession({bool? lockedShape}) : this._(lockedShape);
+
+  PlayerOrientationSession._(this._lockedShape);
+
+  bool? _lockedShape;
+  bool _released = false;
+
+  /// The shape the mask in force holds, or null when it holds none.
+  bool? get lockedShape => _lockedShape;
+
+  /// True once the exit has written the library's mask; nothing may re-arm a
+  /// fullscreen request after that.
+  bool get released => _released;
+
+  /// Whether the screen may still write the fullscreen mask.
+  bool get mayWrite => !_released;
+
+  /// The exit has happened. One-way until [reenterFullscreen].
+  ///
+  /// The record is cleared with the latch: the release writes the app's default
+  /// all-four mask, so there is no fitted shape in force to hold any more. It
+  /// used to be kept on the premise that no writer could run after the release
+  /// (the old equality guard needed it to recognise a repeated report); the
+  /// latch now silences those writers, and leaving a stale shape behind would
+  /// make a re-entered fullscreen hold the pre-exit video's axis while the
+  /// player reports no size — the guess `orientationRequestFor` refuses to make.
+  void release() {
+    _released = true;
+    _lockedShape = null;
+  }
+
+  /// Fullscreen was entered again on a screen that is still mounted — the only
+  /// way back from a release, and needed so a cancelled exit cannot leave the
+  /// writers dead.
+  void reenterFullscreen() {
+    _released = false;
+  }
+
+  /// Records the request that just went out. Nothing is recorded after a
+  /// release, because nothing is sent after one; [release] itself clears the
+  /// record.
+  void record(OrientationRequest request) {
+    if (_released) return;
+    _lockedShape = request.fittedShape;
+  }
+
+  /// Whether a video-params report is news the screen must act on.
+  ///
+  /// Only [PlayerOrientation.fill] reads the video: the other strategies take
+  /// their axis from the viewer or the phone, so a shape arriving (or changing)
+  /// is not news for them. Re-applying one of them on a shape report is a
+  /// platform write for a decision the video cannot change. (It used to be
+  /// worse: before the Android Follow request skipped the lock-respecting
+  /// all-four mask, every such re-apply made the screen obey the system for the
+  /// instant before FULL_SENSOR put it back on the phone's real posture.)
+  ///
+  /// Not news either: no size (the player is between files), the shape already in
+  /// force (mpv repeats the report per property change), or ANY report after the
+  /// release.
+  bool videoShapeIsNews(PlayerOrientation mode, bool? landscapeVideo) {
+    if (_released) return false;
+    if (mode != PlayerOrientation.fill) return false;
+    if (landscapeVideo == null) return false;
+    return landscapeVideo != _lockedShape;
+  }
+
+  /// Runs [writer] only while the screen may still write, and reports `true` when
+  /// the latch is closed so a caller's Android fallback does not write either.
+  ///
+  /// The latch is re-read HERE rather than only before the apply starts: an apply
+  /// that began just before the exit has already sent its mask (same-channel FIFO
+  /// keeps the release's mask last), but on iOS it sends the follow request only
+  /// after that mask's reply. If the exit starts in between, that `follow(true)`
+  /// would land AFTER the release's `follow(false)` and leave the native half
+  /// forcing a geometry while the library arrives. `true` on the closed latch is
+  /// "handled": it suppresses the fallback mask as well.
+  Future<bool> followThrough(DeviceFollowWriter writer, bool follow) {
+    if (!mayWrite) return Future<bool>.value(true);
+    return writer(follow);
+  }
+
+  /// Runs [writer] only while the screen may still write.
+  ///
+  /// This is the other half of [followThrough]: a follow that fails after the
+  /// latch closes would otherwise take `applyOrientationRequest`'s fallback path
+  /// and write a mask after the release.
+  Future<void> maskThrough(
+    OrientationMaskWriter writer,
+    List<DeviceOrientation> mask,
+  ) {
+    if (!mayWrite) return Future<void>.value();
+    return writer(mask);
   }
 }
 

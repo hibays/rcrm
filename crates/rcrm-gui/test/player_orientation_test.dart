@@ -206,6 +206,131 @@ void main() {
     });
   });
 
+
+  group('the screen session', () {
+    test('the record is the request that went out', () {
+      final s = PlayerOrientationSession(lockedShape: false);
+      expect(s.lockedShape, isFalse);
+      s.record(requestFor(PlayerOrientation.fill));
+      expect(s.lockedShape, isTrue);
+      s.record(requestFor(PlayerOrientation.system));
+      expect(s.lockedShape, isNull);
+    });
+
+    test('no size is never news, and the shape in force is not news', () {
+      final s = PlayerOrientationSession();
+      s.record(requestFor(PlayerOrientation.fill, landscapeVideo: false));
+      expect(s.videoShapeIsNews(PlayerOrientation.fill, null), isFalse,
+          reason: 'between files');
+      expect(s.videoShapeIsNews(PlayerOrientation.fill, false), isFalse,
+          reason: 'already held');
+      expect(s.videoShapeIsNews(PlayerOrientation.fill, true), isTrue,
+          reason: 'a different shape');
+    });
+
+    test('only fit reads the video, so only fit treats a shape as news', () {
+      // Follow's axis comes from the phone and the locks' from the viewer, so a
+      // shape report is a platform write for a decision the video cannot change.
+      // (Before the Android Follow path skipped the lock-respecting mask, it was
+      // also the "system, then back to the phone" flash on every video change.)
+      for (final mode in PlayerOrientation.values) {
+        final s = PlayerOrientationSession();
+        s.record(requestFor(mode, landscapeVideo: false));
+        expect(
+          s.videoShapeIsNews(mode, true),
+          mode == PlayerOrientation.fill,
+          reason: mode.key,
+        );
+      }
+    });
+
+    test('the release silences the report that used to re-apply a lock', () {
+      // The equality guard covered only fill: its record is the video's own
+      // shape, so a repeated report matched and was ignored. A Portrait (or
+      // Landscape) request carries NO fittedShape -- the axis comes from the
+      // viewer, not from a frame -- so every report looked like news, and the
+      // one that arrived during the pop re-applied the lock AFTER the exit had
+      // handed the mask back. The library then arrived portrait-locked.
+      for (final mode in PlayerOrientation.values) {
+        final s = PlayerOrientationSession();
+        s.record(requestFor(mode, landscapeVideo: false));
+        s.release();
+        expect(s.released, isTrue, reason: mode.key);
+        expect(s.mayWrite, isFalse, reason: mode.key);
+        expect(s.videoShapeIsNews(mode, false), isFalse, reason: mode.key);
+        expect(s.videoShapeIsNews(mode, true), isFalse, reason: mode.key);
+      }
+      // The release also drops the record: the mask it wrote is the app's
+      // default all-four, so there is no fitted shape in force to hold.
+      final locked = PlayerOrientationSession();
+      locked.record(requestFor(PlayerOrientation.fill, landscapeVideo: false));
+      locked.release();
+      expect(locked.lockedShape, isNull);
+    });
+
+    test('a re-entered fullscreen starts with no stale shape', () {
+      // The release latch can be re-armed when a route pop is cancelled. The
+      // re-entry must not hold the axis of the video that was leaving: the mask
+      // in force after the release is the app's default, so an unknown shape has
+      // nothing to hold until the player reports the new one.
+      final s = PlayerOrientationSession();
+      s.record(requestFor(PlayerOrientation.fill, landscapeVideo: false));
+      s.release();
+      s.reenterFullscreen();
+      expect(s.lockedShape, isNull);
+      expect(s.videoShapeIsNews(PlayerOrientation.fill, true), isTrue);
+    });
+
+    test('nothing is recorded after a release', () {
+      final s = PlayerOrientationSession();
+      s.release();
+      s.record(requestFor(PlayerOrientation.fill));
+      expect(s.lockedShape, isNull);
+    });
+
+    test('re-entering fullscreen re-arms the writers', () {
+      final s = PlayerOrientationSession();
+      s.release();
+      expect(s.mayWrite, isFalse);
+      s.reenterFullscreen();
+      expect(s.released, isFalse);
+      expect(s.mayWrite, isTrue);
+      expect(s.videoShapeIsNews(PlayerOrientation.fill, true), isTrue);
+    });
+
+    test('a closed latch does not call either writer', () async {
+      // This is the sentinel the screen used to carry inline: a writer that is
+      // skipped must report "handled" for the follow, so Android does not take
+      // its fallback mask path after the exit; the mask writer is skipped too.
+      final s = PlayerOrientationSession();
+      s.release();
+      var followed = false;
+      var masked = false;
+      expect(
+        await s.followThrough((f) async {
+          followed = true;
+          return false;
+        }, true),
+        isTrue,
+      );
+      await s.maskThrough((o) async {
+        masked = true;
+      }, const []);
+      expect(followed, isFalse);
+      expect(masked, isFalse);
+    });
+
+    test('an open latch delegates and reports the writer result', () async {
+      final s = PlayerOrientationSession();
+      expect(await s.followThrough((f) async => false, true), isFalse);
+      var masks = 0;
+      await s.maskThrough((o) async {
+        masks++;
+      }, const []);
+      expect(masks, 1);
+    });
+  });
+
   group('the request value', () {
     test('compares by content, so a test can name what it expects', () {
       expect(
@@ -243,22 +368,26 @@ void main() {
       return (
         order: order,
         mask: (List<DeviceOrientation> o) async => order.add('mask:${o.length}'),
-        follow: (bool f) async => order.add('follow:$f'),
+        follow: (bool f) async {
+          order.add('follow:$f');
+          return true;
+        },
       );
     }
 
     test('the mask goes FIRST, then the sensor request', () async {
       // The order is the whole reason this lives in a function with a test: iOS
-      // only honours a geometry request its supported mask already allows, and on
-      // Android both calls write the same activity property, so the sensor
-      // request has to be the last word. Backwards, it is invisible on a phone
+      // only honours a geometry request its supported mask already allows, so the
+      // mask has to open the door first. Backwards, it is invisible on a phone
       // with auto-rotate on and only shows up on one with the rotation lock set —
-      // the exact bug this strategy exists to fix.
+      // the exact bug this strategy exists to fix. Android does not take this
+      // path at all (see the next test).
       final r = recorder();
       await applyOrientationRequest(
         requestFor(PlayerOrientation.device),
         writeMask: r.mask,
         writeFollow: r.follow,
+        platform: OrientationPlatform.ios,
       );
       expect(r.order, ['mask:4', 'follow:true']);
     });
@@ -271,6 +400,58 @@ void main() {
         requestFor(PlayerOrientation.landscape),
         writeMask: r.mask,
         writeFollow: r.follow,
+        platform: OrientationPlatform.ios,
+      );
+      expect(r.order, ['mask:2', 'follow:false']);
+    });
+
+    test('on Android a Follow request is the sensor alone', () async {
+      // The all-four mask decodes to FULL_USER on Android -- the lock-RESPECTING
+      // value -- so writing it before the sensor request makes the screen obey
+      // the system's rotation for the instant before FULL_SENSOR lands. That is
+      // the "system, then back to the phone" flash on every video change under
+      // Follow. FULL_SENSOR already allows every orientation, so it is the whole
+      // policy; the mask is only needed on iOS, where a geometry request has to
+      // be allowed by the supported mask.
+      final r = recorder();
+      await applyOrientationRequest(
+        requestFor(PlayerOrientation.device),
+        writeMask: r.mask,
+        writeFollow: r.follow,
+        platform: OrientationPlatform.android,
+      );
+      expect(r.order, ['follow:true']);
+    });
+
+    test('an undelivered Follow falls back to the mask', () async {
+      // Android writes no mask before a Follow request, so a host whose native
+      // half is missing (or a channel error) would otherwise leave whatever
+      // narrower mask was in force -- a previous Portrait lock, for one. The
+      // all-four mask is the app's own fallback: it respects the system, which is
+      // what the app did before this strategy existed.
+      final order = <String>[];
+      await applyOrientationRequest(
+        requestFor(PlayerOrientation.device),
+        writeMask: (List<DeviceOrientation> o) async =>
+            order.add('mask:${o.length}'),
+        writeFollow: (bool f) async {
+          order.add('follow:$f');
+          return false;
+        },
+        platform: OrientationPlatform.android,
+      );
+      expect(order, ['follow:true', 'mask:4']);
+    });
+
+    test('the skipped mask applies only to a follow request', () async {
+      // A lock still writes its mask; follow(false) is a no-op on Android, so
+      // the mask is the last word there.
+      final r = recorder();
+      await applyOrientationRequest(
+        requestFor(PlayerOrientation.landscape),
+        writeMask: r.mask,
+        writeFollow: r.follow,
+        platform: OrientationPlatform.android,
       );
       expect(r.order, ['mask:2', 'follow:false']);
     });

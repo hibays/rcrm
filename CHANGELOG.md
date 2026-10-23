@@ -274,3 +274,37 @@ Update report:
 		⑤ banner：`banner.svg` 生成 `brands/out/banner.png`（深色字）与 `banner-dark.png`（奶油字，做法是把 wordmark 的 #2B2D3A 替换为 #F6F1E9），README/README_zh 顶部用 `<picture>` 按 prefers-color-scheme 切换；另出 `brands/out/icon-1024.png` 预览与 `rcrm.icns`；banner 原稿左距 9%、右距 18%（重心偏左），锁排列整体右移 46/1024 改为左右各 13.5%
 		⑥ 验证：Windows release 构建通过（rc.exe 接受该 ico），从 exe 提取 32px 图标确认已嵌入；aapt2 compile + link 通过（含 `<monochrome>`、颜色与全部 mipmap）；Pillow 校验 iOS 尺寸/无 alpha、macOS 尺寸/透明角、Android 各密度尺寸；重跑脚本输出逐字节一致
 		⑦ 未验证：iOS/macOS/Linux 未在本机构建（无 macOS 与 GTK 主机）；真机/真桌面的图标观感未跑，32px 以下盾牌会糊（源图细节所限）
+
+7. 2026.10.23.3.36.AM.Friday
+	*本批为未发布的工作区改动：退出播放器后方向自锁*
+
+	1) 修复：选择 Portrait 后退出播放器，库仍被锁在竖屏（Landscape 同理锁横屏；System/Follow 也会被同一个写者盖掉）
+		① 根因：`_releaseOrientation` 在退出开始时把蒙版写回 all，但它的两个异步写者仍活着——`stream.videoParams` 在整个 pop 期间保持订阅（只有 `_go` 取消），进入全屏时的 700ms 重试也可能已排队。任一在 release 之后再次调用 `_applyOrientation`，就会把视频轴（或显式 Portrait 锁）盖回库的蒙版上。上一批的"相等即忽略"只保护了 Fit：它的记录是视频自身形状；Portrait/Landscape 的请求不携带 `fittedShape`，所以每次上报都被当成 news，pop 期间的那次便把竖屏重新锁上
+		② 修复：新增 `PlayerOrientationSession`（`utils/player_orientation.dart`），把"最后发出的 fittedShape"与"退出闩锁"放在一起；`_releaseOrientation` 先 `release()` 再写库蒙版；`_applyOrientation` 在 released / `_navigating` / `_isRoutePopping` / `_disposed` 时拒绝写；`_onVideoParams` 交给 session 判断是否 news；700ms 重试改为可取消的 `Timer`，`_go` 与 `dispose` 都取消
+		③ 测试：`player_orientation_test.dart` 新增 5 条 session 测试（release 后任何形状都不是 news、Portrait 锁在 pop 期间不再重写、released 后 record 无效、重进全屏重新武装、记录随请求走）；`flutter analyze lib test` 零告警；全量 `flutter test` **689** 全绿
+		④ 未验证：无真机；真机上的触发时序（例如换片加载中按 Home）仍需设备确认
+
+8. 2026.10.23.4.10.AM.Friday
+	*本批为未发布的工作区改动：Follow 模式切片先闪 system*
+
+	1) 修复：Follow 模式全屏切换下一个视频，屏幕先回到 system 方向再跳回手机姿态
+		① 根因有两层。A：`_onVideoParams` 对非 Fit 策略也把视频形状当 news，切片时又重新应用一次 Follow；Follow 的请求在 Android 上是"先四向蒙版（FULL_USER，尊重旋转锁）再 FULL_SENSOR"，中间那一瞬就是 system。B：即便没有重复应用（例如路由步进后的 700ms 重试），这个"先 FULL_USER 再 FULL_SENSOR"的顺序本身也会闪一次
+		② 修复 A：`PlayerOrientationSession.videoShapeIsNews` 增加模式参数；只有 Fit 读取视频形状，System/Follow/两个锁不再因形状上报重写请求
+		③ 修复 B：`applyOrientationRequest` 增加 `writeMaskBeforeFollow`；屏幕只在非 Android 上传 true。Android 的 FULL_SENSOR 本身就是完整策略（允许四向、忽略旋转锁），先写 FULL_USER 只会制造中间态；iOS 仍保持 mask-first（geometry request 必须被 supported mask 允许）
+		④ 测试：新增 3 条（only fit reads a shape、Android Follow 只发 sensor、非 Follow 请求仍写 mask），并同步更新既有 session 断言；`flutter analyze lib test` 零告警；全量 `flutter test` **692** 全绿
+		⑤ 未验证：无真机；Android 上中间帧是否彻底消失、iOS mask-first 是否有可见过渡，仍需设备确认
+
+9. 2026.10.23.4.30.AM.Friday
+	*本批为未发布的工作区改动：OCR 审查与修补（接第 8 条）*
+
+	1) 用 open-code-review v1.13.3（deepseek-flash）审查两份方向改动，并逐条核对回复真实性
+		① 第一轮（4 文件，3 条）：A. 非 Fit 策略切片后只有 700ms 重试会重新应用，startFullscreen 的玩家可能延迟；B. 已发出的 apply 在 await mask 后还会写 follow，release 恰好发生在中间时 iOS 上 follow(true) 会晚于 release 的 follow(false)；C. release 保留 _lockedShape，reenterFullscreen 后在未知形状的 Fill 会 hold 退出前的轴。核对：A 的"默认蒙版 700ms"描述夸大了（正常从窗口进全屏走 _setFullscreen 会立即应用；只有 startFullscreen 路由步进/链式步进暴露），但立即应用仍是正确修法；B、C 成立
+		② 第一轮修补：post-frame 在排 700ms 重试前先 _applyOrientation；writeFollow 闭包在 release 后拒绝第二次写（返回 true，避免 Android fallback 写回）；release() 同时清 _lockedShape，补 reentry 测试
+		③ 第二轮（4 文件，2 条）：D. Android Follow 依赖通道，followDevice 吞错后不再写任何蒙版，坏通道会停在旧锁上；E. _setFullscreen(false) 没有取消 700ms 重试。核对：D、E 成立。修补：followDevice 返回是否送达，Android 未送达时回退写四向蒙版；全屏切换取消重试
+		④ 复核：`flutter analyze lib test` 零告警；全量 `flutter test` **694** 全绿；第三次 OCR 结果见下
+
+	2) 第三轮 OCR（4 文件，8 条）与最终收敛
+		① 采纳并修：平台规则移入 `OrientationPlatform`（调用点不再传 bool）；Android Follow 未送达时回退四向蒙版；release 后 follow/mask 两个写入都由 `PlayerOrientationSession` 守卫（`followThrough`/`maskThrough`，可测）；`followDevice` 的 true/false/unsupported 三支有断言；重复文档与过时理由修正
+		② 采纳冗余判断：即时 apply 之后 700ms 重试不再提供信息量，删除该 Timer 及全部 cancel 点；第 7/8 条正文中的 700ms 描述是中间状态，最终代码没有这个 Timer
+		③ 第三轮第 3 条已过时：它说 `followDevice` 返回值没有测试，但那段断言是在 OCR 取快照之后补的，当前测试覆盖三支
+		④ 最终复验：`flutter analyze lib test` 零告警；全量 `flutter test` **696** 全绿

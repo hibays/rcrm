@@ -49,10 +49,10 @@ void main() {
   test('the request travels as one named flag, each way', () async {
     answerWith((_) async => null);
 
-    await ScreenOrientation.followDevice(true);
+    expect(await ScreenOrientation.followDevice(true), isTrue);
     expect(calls.single.method, 'follow');
 
-    await ScreenOrientation.followDevice(false);
+    expect(await ScreenOrientation.followDevice(false), isTrue);
     expect(calls.last.method, 'release');
     expect(calls.length, 2);
   });
@@ -84,8 +84,8 @@ void main() {
 
     // Best-effort: the caller's mask is what restores the app's own direction, so
     // a missing native half must not become an exception in the player.
-    await ScreenOrientation.followDevice(true);
-    await ScreenOrientation.followDevice(false);
+    expect(await ScreenOrientation.followDevice(true), isFalse);
+    expect(await ScreenOrientation.followDevice(false), isFalse);
     expect(ScreenOrientation.debugFollowing, isFalse);
   });
 
@@ -93,8 +93,8 @@ void main() {
     debugScreenOrientationSupported = false;
     answerWith((_) async => null);
 
-    await ScreenOrientation.followDevice(true);
-    await ScreenOrientation.followDevice(false);
+    expect(await ScreenOrientation.followDevice(true), isFalse);
+    expect(await ScreenOrientation.followDevice(false), isFalse);
 
     expect(
       calls,

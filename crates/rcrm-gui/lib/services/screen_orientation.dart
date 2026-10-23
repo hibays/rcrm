@@ -18,11 +18,13 @@
 // that. Both halves answer to the same two methods.
 //
 // ORDER MATTERS, and ONE place owns it (`utils/player_orientation.dart`,
-// `applyOrientationRequest` / `releaseOrientationRequest`): going IN, the mask is
-// written first and the sensor request second; coming OUT it is the other way
-// round. Both are the same activity property on Android, so the last write is the
-// one that stands, and iOS only honours a geometry request its supported mask
-// already allows.
+// `applyOrientationRequest` / `releaseOrientationRequest`): coming OUT the sensor
+// stops first and the mask second; going IN the mask is written first and the
+// sensor second, EXCEPT on Android, where a Follow request writes no mask at all
+// -- the all-four list is the lock-RESPECTING value there, so writing it before
+// FULL_SENSOR is the "system, then back" flash. FULL_SENSOR is a complete policy
+// on its own; iOS still needs the mask first because it only honours a geometry
+// request its supported mask already allows.
 //
 // The call is deliberately narrow: two methods, no state reported back, and no
 // latch -- the sensor request is re-sent after every mask write precisely because
@@ -68,20 +70,29 @@ class ScreenOrientation {
 
   /// Starts or stops following the phone's real posture.
   ///
-  /// Always asks: the caller must send its `SystemChrome` mask FIRST and this
-  /// second (see `utils/player_orientation.dart` for why, and for the one place
-  /// that owns the order).
+  /// Always asks. On iOS the caller writes its `SystemChrome` mask FIRST and
+  /// this second; on Android it writes no mask for a Follow request, because
+  /// `FULL_SENSOR` already allows every orientation and the all-four mask would
+  /// only flash the system's locked orientation first (see
+  /// `utils/player_orientation.dart`, which owns the order).
   ///
-  /// Best-effort like every other platform call here: a host without the native
-  /// half must not break playback, and the caller's mask is what restores the
-  /// app's own direction either way.
-  static Future<void> followDevice(bool follow) async {
-    if (!supported) return;
+  /// Returns whether the request reached the platform. On Android the Follow
+  /// request carries no mask of its own, so `false` is the caller's cue to write
+  /// the all-four fallback instead of leaving a previous, narrower mask (a
+  /// Portrait lock, for one) in force; on iOS the mask was already written first
+  /// and the answer is ignored. A missing native half still never throws --
+  /// best-effort like every other platform call here.
+  static Future<bool> followDevice(bool follow) async {
+    if (!supported) return false;
     debugFollowing = follow;
     try {
       await channel.invokeMethod<void>(follow ? 'follow' : 'release');
+      return true;
     } catch (_) {
-      // A platform that cannot answer leaves the orientation where it was.
+      // A platform that cannot answer leaves the orientation where it was; the
+      // caller's mask is the best-effort fallback.
+      debugFollowing = false;
+      return false;
     }
   }
 }
