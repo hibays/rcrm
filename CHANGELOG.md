@@ -308,3 +308,11 @@ Update report:
 		② 采纳冗余判断：即时 apply 之后 700ms 重试不再提供信息量，删除该 Timer 及全部 cancel 点；第 7/8 条正文中的 700ms 描述是中间状态，最终代码没有这个 Timer
 		③ 第三轮第 3 条已过时：它说 `followDevice` 返回值没有测试，但那段断言是在 OCR 取快照之后补的，当前测试覆盖三支
 		④ 最终复验：`flutter analyze lib test` 零告警；全量 `flutter test` **696** 全绿
+
+10. 2026.10.23.4.55.AM.Friday
+	*本批为未发布的工作区改动：目录选择即保存*
+
+	1) 修复：FilePicker 选完目录后不持久化，必须按 Save/Start/Skip
+		① 设置 → Managed Directories：`_DirEditor` 的增删/浏览只改本地列表，只有 Save 才调用 `saveServerConfig`；点外面或返回关闭就丢。改为每次增删/浏览后立即写；按钮改为 Done（`barrierDismissible: false`，返回也会先等最后一次写落盘），关闭后按最终列表是否有变化决定是否重启服务器
+		② 首次设置：选目录只进 `_selectedDirs`，只有 Skip 会 `saveServerConfig`；`_connect` 的注释声称持久化，实际没有调用——选完目录直接启动服务器，下次启动就丢。改为 `_pickFolder`/移除即保存，`_connect` 启动前再持久化一次（只写 directories，bind/port 仍用已保存的值，避免把临时的 127.0.0.1:0 写进配置）
+		③ 验证：`flutter analyze lib test` 零告警；全量 `flutter test` **696** 全绿；file_picker 是平台通道，自动化无法点击真实选择器，桌面/手机手动确认未做

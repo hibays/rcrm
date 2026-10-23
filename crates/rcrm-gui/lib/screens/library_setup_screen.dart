@@ -144,11 +144,25 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
     );
   }
 
+  /// Writes the folders the screen is showing to the saved config.
+  ///
+  /// Picking is the save: the list on screen and the list on disk are the same
+  /// thing, so closing the app after choosing a folder does not lose it. The
+  /// caller still presses "Unlock & Enter" to START the server -- that is a
+  /// different decision -- but it never has to remember the folders for us.
+  Future<void> _persistDirs() async {
+    final s = ref.read(settingsServiceProvider);
+    final existing = await s.getServerConfig();
+    await s.saveServerConfig(
+      existing.copyWith(directories: List<String>.from(_selectedDirs)),
+    );
+  }
+
   Future<void> _pickFolder() async {
     final result = await FilePicker.getDirectoryPath();
-    if (result != null && !_selectedDirs.contains(result)) {
-      setState(() => _selectedDirs.add(result));
-    }
+    if (result == null || _selectedDirs.contains(result)) return;
+    setState(() => _selectedDirs.add(result));
+    await _persistDirs();
   }
 
   /// Human-readable folder name from a path or Android SAF content:// tree URI.
@@ -178,8 +192,17 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
     });
     final working = [..._passwords, if (entered.isNotEmpty) entered];
     final existing = await ref.read(settingsServiceProvider).getServerConfig();
+    // The list is already saved on every pick; this writes it once more for the
+    // paths that arrive as initialDirs, and it is the only place that persists
+    // before the server starts. The started config's bind/port are ephemeral
+    // (127.0.0.1:0), so they must NOT be the thing that gets saved.
+    await ref
+        .read(settingsServiceProvider)
+        .saveServerConfig(
+          existing.copyWith(directories: List<String>.from(_selectedDirs)),
+        );
     final config = existing.copyWith(
-      directories: List.from(_selectedDirs),
+      directories: List<String>.from(_selectedDirs),
       bindAddress: '127.0.0.1',
       port: 0,
       passwords: working,
@@ -329,8 +352,10 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
                                   ),
                                   trailing: IconButton(
                                     icon: const Icon(Icons.close, size: 18),
-                                    onPressed: () =>
-                                        setState(() => _selectedDirs.remove(d)),
+                                    onPressed: () async {
+                                      setState(() => _selectedDirs.remove(d));
+                                      await _persistDirs();
+                                    },
                                   ),
                                 ),
                               )

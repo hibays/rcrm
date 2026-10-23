@@ -1,6 +1,7 @@
 // screens/settings_screen.dart
 // RCrm GUI — settings screen
 import 'dart:io';
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
@@ -969,12 +970,28 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final s = ref.read(settingsServiceProvider);
     final c = await s.getServerConfig();
     if (!mounted) return;
+    // The editor persists every add/remove itself — the dialog's button is Done,
+    // not Save. Closing it (button or system back) still lands here, so the
+    // running server is restarted only when the SAVED list really changed.
     final newDirs = await showDialog<List<String>>(
       context: context,
-      builder: (ctx) => _DirEditor(initialDirs: c.directories),
+      // A tap outside must not read as "cancel" after a change has already been
+      // written; Done or back is the way to leave.
+      barrierDismissible: false,
+      builder: (ctx) => _DirEditor(
+        initialDirs: c.directories,
+        onChanged: (dirs) async {
+          // Re-read first: the dialog may stay open long enough for another
+          // setting to change, and this write owns only the directories.
+          final latest = await s.getServerConfig();
+          await s.saveServerConfig(latest.copyWith(directories: dirs));
+        },
+      ),
     );
-    if (newDirs == null || !mounted) return;
-    await s.saveServerConfig(c.copyWith(directories: newDirs));
+    if (!mounted) return;
+    final latest = await s.getServerConfig();
+    final dirs = newDirs ?? latest.directories;
+    if (listEquals(dirs, c.directories)) return;
     final ss = ref.read(serverProvider);
     if (ss.isRunning) {
       await ref.read(serverProvider.notifier).stop();
@@ -986,7 +1003,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
 class _DirEditor extends StatefulWidget {
   final List<String> initialDirs;
-  const _DirEditor({required this.initialDirs});
+
+  /// Persists the list as it is shown. Called after every add/remove/pick, so
+  /// the dialog has no Save step: the view and the stored config never differ.
+  final Future<void> Function(List<String> dirs) onChanged;
+
+  const _DirEditor({required this.initialDirs, required this.onChanged});
   @override
   State<_DirEditor> createState() => _DirEditorState();
 }
@@ -995,6 +1017,14 @@ class _DirEditorState extends State<_DirEditor> {
   late List<String> _dirs;
   final _ctrl = TextEditingController();
   String? _err;
+
+  /// Serialises the auto-saves: two quick taps must not race to write the list,
+  /// and Done/back must be able to wait for the last one.
+  Future<void> _writes = Future<void>.value();
+
+  /// Guards the two exits (Done / system back) from popping the dialog twice
+  /// while the first one is still waiting for the save.
+  bool _finishing = false;
 
   @override
   void initState() {
@@ -1016,7 +1046,36 @@ class _DirEditorState extends State<_DirEditor> {
     return x.split(Platform.pathSeparator).last;
   }
 
+  /// Writes the list exactly as the dialog shows it.
+  ///
+  /// Every mutation goes through here before it is considered done, which is why
+  /// there is no Save button: closing the dialog cannot discard a folder the
+  /// viewer has already seen added, and a crash cannot either.
+  Future<void> _commit() async {
+    // Snapshot at call time: a later tap must not change the payload of a write
+    // that is already queued.
+    final dirs = List<String>.from(_dirs);
+    final write = _writes.then((_) => widget.onChanged(dirs));
+    // Keep the chain alive after a failure, so the next edit is still written.
+    _writes = write.catchError((_) {});
+    try {
+      await write;
+    } catch (e) {
+      if (mounted) setState(() => _err = 'Could not save: $e');
+    }
+  }
+
+  /// Closes the dialog only after the pending save has landed, and hands the
+  /// final list back so the caller can decide whether the server must restart.
+  Future<void> _finish() async {
+    if (_finishing) return;
+    _finishing = true;
+    await _writes.catchError((_) {});
+    if (mounted) Navigator.pop(context, List<String>.from(_dirs));
+  }
+
   Future<void> _add() async {
+    if (_finishing) return;
     final i = _ctrl.text.trim();
     if (i.isEmpty) {
       setState(() => _err = 'Path cannot be empty');
@@ -1032,75 +1091,106 @@ class _DirEditorState extends State<_DirEditor> {
       if (!_dirs.contains(d.path)) _dirs.add(d.path);
       _ctrl.clear();
     });
+    await _commit();
   }
 
-  void _remove(String p) => setState(() => _dirs.remove(p));
+  Future<void> _remove(String p) async {
+    if (_finishing) return;
+    setState(() => _dirs.remove(p));
+    await _commit();
+  }
+
   Future<void> _pick() async {
+    if (_finishing) return;
     final r = await FilePicker.getDirectoryPath();
-    if (r != null && !_dirs.contains(r)) setState(() => _dirs.add(r));
+    if (r == null || _dirs.contains(r)) return;
+    setState(() => _dirs.add(r));
+    await _commit();
   }
 
   @override
-  Widget build(BuildContext ctx) => AlertDialog(
-    title: const Text('Managed Directories'),
-    content: SizedBox(
-      width: double.maxFinite,
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (_dirs.isNotEmpty) ...[
-              ..._dirs.map(
-                (d) => ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.folder),
-                  title: Text(_display(d)),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.close, size: 18),
-                    onPressed: () => _remove(d),
+  Widget build(BuildContext ctx) => PopScope(
+    // Back must land the pending save first too; Done and system back are the
+    // two exits, and both go through _finish.
+    canPop: false,
+    onPopInvokedWithResult: (didPop, _) async {
+      if (didPop) return;
+      await _finish();
+    },
+    child: AlertDialog(
+      title: const Text('Managed Directories'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'Changes are saved as you make them.',
+                  style: Theme.of(
+                    ctx,
+                  ).textTheme.bodySmall?.copyWith(color: RCrmColors.silver),
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (_dirs.isNotEmpty) ...[
+                ..._dirs.map(
+                  (d) => ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.folder),
+                    title: Text(_display(d)),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.close, size: 18),
+                      onPressed: () => _remove(d),
+                    ),
                   ),
                 ),
-              ),
-              const Divider(),
-            ],
-            TextField(
-              controller: _ctrl,
-              decoration: InputDecoration(
-                labelText: 'Add custom path',
-                hintText: '/mnt/media or D:\\Media',
-                hintStyle: _hintSilver,
-                errorText: _err,
-              ),
-              onChanged: (_) {
-                if (_err != null) setState(() => _err = null);
-              },
-              onSubmitted: (_) => _add(),
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                TextButton.icon(
-                  onPressed: _add,
-                  icon: const Icon(Icons.add, size: 16),
-                  label: const Text('Add'),
-                ),
-                const Spacer(),
-                TextButton.icon(
-                  onPressed: _pick,
-                  icon: const Icon(Icons.folder_open, size: 16),
-                  label: const Text('Browse'),
-                ),
+                const Divider(),
               ],
-            ),
-          ],
+              TextField(
+                controller: _ctrl,
+                decoration: InputDecoration(
+                  labelText: 'Add custom path',
+                  hintText: '/mnt/media or D:\\Media',
+                  hintStyle: _hintSilver,
+                  errorText: _err,
+                ),
+                onChanged: (_) {
+                  if (_err != null) setState(() => _err = null);
+                },
+                onSubmitted: (_) => _add(),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  TextButton.icon(
+                    onPressed: _add,
+                    icon: const Icon(Icons.add, size: 16),
+                    label: const Text('Add'),
+                  ),
+                  const Spacer(),
+                  TextButton.icon(
+                    onPressed: _pick,
+                    icon: const Icon(Icons.folder_open, size: 16),
+                    label: const Text('Browse'),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
+      actions: [
+        // Done, not Save: every change above has already been persisted. The
+        // button only closes the dialog (and, back in the settings screen, lets
+        // the running server restart against the new list).
+        TextButton(
+          onPressed: _finish,
+          child: const Text('Done'),
+        ),
+      ],
     ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context, _dirs),
-        child: const Text('Save'),
-      ),
-    ],
   );
 }
