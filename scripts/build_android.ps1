@@ -4,10 +4,14 @@
 #   rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
 #   cargo install cargo-ndk
 #   $env:ANDROID_NDK_HOME = "path/to/ndk"
+# Usage:
+#   .\scripts\build_android.ps1 -Release -SplitAbi
+#   .\scripts\build_android.ps1 -MobileDecode   # on by default; kept for symmetry
 
 param(
     [switch]$Release,
-    [switch]$SplitAbi  # Produce split APKs (smaller)
+    [switch]$SplitAbi,  # Produce split APKs (smaller)
+    [switch]$MobileDecode = $true  # AVIF/JXL/HEIC software decode
 )
 
 $ErrorActionPreference = "Stop"
@@ -77,12 +81,18 @@ $env:CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS = "-L native=$(Join-Path $stdc
 $env:CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS = "-L native=$(Join-Path $stdcxxRoot 'armeabi-v7a') $libcxxFlags"
 $env:CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS = "-L native=$(Join-Path $stdcxxRoot 'x86_64') $libcxxFlags"
 
+$cargoArgs = @("build", "-p", "rcrm-flutter-bridge")
+if ($MobileDecode) {
+    $cargoArgs += @("--features", "mobile-decode")
+}
+$cargoArgs += $cargoFlag
+
 cargo ndk `
     --target aarch64-linux-android `
     --target armv7-linux-androideabi `
     --target x86_64-linux-android `
     -o $jniLibsBase `
-    build -p rcrm-flutter-bridge --features mobile-decode $cargoFlag
+    @cargoArgs
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Rust Android build failed!" -ForegroundColor Red

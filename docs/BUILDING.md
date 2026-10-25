@@ -74,8 +74,11 @@ future versions of Flutter will fail to build" warning no longer appears.
 - CMake + Ninja on PATH. The script points cmake-rs at the per-ABI shims in
   `scripts/cmake/` and adds the static C++ runtime link flags itself — a manual
   `cargo ndk` invocation has to do the same (see the script).
-- The mobile bridge build enables `mobile-decode` (AVIF + JXL + HEIC software
-  decoding). `heic` is a pure-Rust HEVC decoder (`backend-rust`), chosen so no
+- The Android/iOS scripts enable `mobile-decode` (AVIF + JXL + HEIC software
+  decoding) by default. The Windows/Linux/macOS scripts accept the same switch
+  explicitly (`-MobileDecode` / `--mobile-decode`) but default to omitting it;
+  use the switch there only for local decode testing, not for shipping desktop
+  builds. `heic` is a pure-Rust HEVC decoder (`backend-rust`), chosen so no
   platform SDK is involved and cross-compilation keeps working; it is
   AGPL-3.0-only-or-commercial and HEVC/HEIF is patent-encumbered, so read its
   notices before shipping a build.
@@ -128,6 +131,9 @@ Also set `DEFAULT_MAVEN_HOST = "https://storage.flutter-io.cn"` in flutter SDK (
 
 # Debug
 .\scripts\build_windows.ps1
+
+# Optional: include the mobile software decoders for local testing
+.\scripts\build_windows.ps1 -Release -MobileDecode
 ```
 
 Pipeline: cargo build `--release` `-p rcrm-flutter-bridge` (with `RUSTFLAGS=-C target-cpu=native`) → download mpv-dev + ANGLE DLLs → `flutter build windows` → copy DLLs + app.so + flutter_assets to runner output.
@@ -136,6 +142,7 @@ Pipeline: cargo build `--release` `-p rcrm-flutter-bridge` (with `RUSTFLAGS=-C t
 
 ```powershell
 $env:ANDROID_NDK_HOME = "D:\Dev\Android\Sdk\ndk\28.2.13676358"
+# mobile-decode (AVIF/JXL/HEIC) is enabled by default
 .\scripts\build_android.ps1 -Release -SplitAbi
 ```
 
@@ -145,6 +152,7 @@ Pipeline: `cargo-ndk` for 3 ABIs (aarch64, armv7, x86_64; zxing-cpp's C++ core i
 
 ```bash
 ./scripts/build_linux.sh -r
+# Optional: add --mobile-decode for the AVIF/JXL/HEIC Rust decoders
 # Output: build/linux/x64/{debug,release}/bundle/rcrm_gui
 ```
 
@@ -152,12 +160,14 @@ Pipeline: `cargo-ndk` for 3 ABIs (aarch64, armv7, x86_64; zxing-cpp's C++ core i
 
 ```bash
 ./scripts/build_macos.sh -r
+# Optional: add --mobile-decode for the AVIF/JXL/HEIC Rust decoders
 # Output: build/macos/Build/Products/{Debug,Release}/rcrm_gui.app
 ```
 
 ### iOS
 
 ```bash
+# mobile-decode (AVIF/JXL/HEIC) is enabled by default
 ./scripts/build_ios.sh -r --no-codesign
 # Output: build/ios/iphoneos/Runner.app
 ```

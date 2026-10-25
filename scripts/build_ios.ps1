@@ -8,9 +8,11 @@
 #   .\scripts\build_ios.ps1                 # debug (simulator)
 #   .\scripts\build_ios.ps1 -Release        # release (device)
 #   .\scripts\build_ios.ps1 -Release -NoSign # release without codesign
+#   .\scripts\build_ios.ps1 -MobileDecode   # on by default; kept for symmetry
 param(
     [switch]$Release,
-    [switch]$NoSign  # Skip code signing
+    [switch]$NoSign,  # Skip code signing
+    [switch]$MobileDecode = $true  # AVIF/JXL/HEIC software decode
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,14 +39,21 @@ $env:RUSTC_BOOTSTRAP = "rav1d"
 $env:CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios = "$root\scripts\cmake\ios-device.cmake"
 $env:CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios_sim = "$root\scripts\cmake\ios-sim.cmake"
 
-cargo build --release -p rcrm-flutter-bridge --features mobile-decode --target aarch64-apple-ios
+$cargoArgs = @("build", "--release", "-p", "rcrm-flutter-bridge")
+if ($MobileDecode) {
+    $cargoArgs += @("--features", "mobile-decode")
+}
+
+$deviceArgs = $cargoArgs + @("--target", "aarch64-apple-ios")
+& cargo @deviceArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Rust iOS device build failed!" -ForegroundColor Red
     Pop-Location; exit 1
 }
 Write-Host "  -> librcrm_flutter_bridge.a (device)" -ForegroundColor Green
 
-cargo build --release -p rcrm-flutter-bridge --features mobile-decode --target aarch64-apple-ios-sim 2>$null
+$simArgs = $cargoArgs + @("--target", "aarch64-apple-ios-sim")
+& cargo @simArgs 2>$null
 if ($LASTEXITCODE -eq 0) {
     Write-Host "  -> librcrm_flutter_bridge.a (simulator)" -ForegroundColor Green
 }

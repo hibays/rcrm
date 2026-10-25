@@ -3,8 +3,10 @@
 # Usage:
 #   .\scripts\build_windows.ps1             # debug
 #   .\scripts\build_windows.ps1 -Release    # release
+#   .\scripts\build_windows.ps1 -MobileDecode  # include AVIF/JXL/HEIC decode
 param(
-    [switch]$Release
+    [switch]$Release,
+    [switch]$MobileDecode
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,7 +42,13 @@ Write-Host "[1/4] Building Rust bridge (release)..." -ForegroundColor Yellow
 # RUSTC_BOOTSTRAP=rav1d: keep identical to Android/iOS scripts — cargo folds
 # it into the fingerprint config hash; any mismatch forces a full rebuild.
 $env:RUSTC_BOOTSTRAP = "rav1d"
-Push-Location $bridge; cargo build --release; Pop-Location
+$cargoArgs = @("build", "--release")
+if ($MobileDecode) {
+    $cargoArgs += @("--features", "mobile-decode")
+}
+Push-Location $bridge
+& cargo @cargoArgs
+Pop-Location
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: Rust build failed!" -ForegroundColor Red
     exit 1

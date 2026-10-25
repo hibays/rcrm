@@ -9,14 +9,17 @@
 #   ./scripts/build_android.sh              # debug
 #   ./scripts/build_android.sh -r           # release
 #   ./scripts/build_android.sh -r -s        # release + split APKs
+#   ./scripts/build_android.sh --mobile-decode  # on by default; kept for symmetry
 set -euo pipefail
 
 MODE="debug"
 SPLIT=false
+MOBILE_DECODE=true
 while [[ $# -gt 0 ]]; do case "$1" in
   -r|--release) MODE="release"; shift ;;
   -s|--split)   SPLIT=true; shift ;;
-  *) echo "Usage: $0 [-r|--release] [-s|--split]"; exit 1 ;;
+  --mobile-decode) MOBILE_DECODE=true; shift ;;
+  *) echo "Usage: $0 [-r|--release] [-s|--split] [--mobile-decode]"; exit 1 ;;
 esac; done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -74,12 +77,18 @@ export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-L native=$STDCXX_ROOT/arm6
 export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-L native=$STDCXX_ROOT/armeabi-v7a $LIBCXX_FLAGS"
 export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-L native=$STDCXX_ROOT/x86_64 $LIBCXX_FLAGS"
 
+CARGO_ARGS=(build -p rcrm-flutter-bridge)
+if $MOBILE_DECODE; then
+  CARGO_ARGS+=(--features mobile-decode)
+fi
+CARGO_ARGS+=("$CARGO_FLAG")
+
 cargo ndk \
     --target aarch64-linux-android \
     --target armv7-linux-androideabi \
     --target x86_64-linux-android \
     -o "$JNI_LIBS" \
-    build -p rcrm-flutter-bridge --features mobile-decode $CARGO_FLAG
+    "${CARGO_ARGS[@]}"
 
 find "$JNI_LIBS" -name "*.so" -exec echo "  -> {}" \;
 

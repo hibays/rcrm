@@ -3,13 +3,15 @@
 # Full Linux build pipeline: Rust .so → Flutter app bundle
 # Prerequisites:
 #   sudo apt install libgtk-3-dev libmpv-dev mpv  (or equivalent)
-# Usage: ./scripts/build_linux.sh [-r|--release]
+# Usage: ./scripts/build_linux.sh [-r|--release] [--mobile-decode]
 set -euo pipefail
 
 MODE="debug"
+MOBILE_DECODE=false
 while [[ $# -gt 0 ]]; do case "$1" in
   -r|--release) MODE="release"; shift ;;
-  *) echo "Usage: $0 [-r|--release]"; exit 1 ;;
+  --mobile-decode) MOBILE_DECODE=true; shift ;;
+  *) echo "Usage: $0 [-r|--release] [--mobile-decode]"; exit 1 ;;
 esac; done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,11 +26,21 @@ echo " RCrm GUI --- Linux Build ($MODE)"
 echo "========================================"
 echo ""
 
+# rav1d's ARM asm needs this nightly gate on the targets it uses; harmless on
+# x86_64. Only needed when the optional mobile decoders are compiled in.
+if $MOBILE_DECODE; then
+  export RUSTC_BOOTSTRAP=rav1d
+fi
+
 # ── Step 1: Rust bridge (always release) ──────────────────────
 echo "[1/4] Building Rust bridge (release)..."
 (
   cd "$BRIDGE"
-  cargo build $CARGO_FLAG
+  CARGO_ARGS=(build "$CARGO_FLAG")
+  if $MOBILE_DECODE; then
+    CARGO_ARGS+=(--features mobile-decode)
+  fi
+  cargo "${CARGO_ARGS[@]}"
 )
 echo "  -> librcrm_flutter_bridge.so built"
 echo ""

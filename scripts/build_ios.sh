@@ -8,14 +8,17 @@
 #   ./scripts/build_ios.sh              # debug (simulator)
 #   ./scripts/build_ios.sh -r           # release (device)
 #   ./scripts/build_ios.sh -r --no-codesign  # release without signing
+#   ./scripts/build_ios.sh --mobile-decode   # on by default; kept for symmetry
 set -euo pipefail
 
 MODE="debug"
 CODESIGN=true
+MOBILE_DECODE=true
 while [[ $# -gt 0 ]]; do case "$1" in
   -r|--release)     MODE="release"; shift ;;
   --no-codesign)   CODESIGN=false; shift ;;
-  *) echo "Usage: $0 [-r|--release] [--no-codesign]"; exit 1 ;;
+  --mobile-decode) MOBILE_DECODE=true; shift ;;
+  *) echo "Usage: $0 [-r|--release] [--no-codesign] [--mobile-decode]"; exit 1 ;;
 esac; done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -38,8 +41,12 @@ echo "[1/4] Building Rust bridge for iOS..."
   # (a toolchain file turns off cmake-rs's own cross-compile defaults).
   export CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios="$ROOT/scripts/cmake/ios-device.cmake"
   export CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios_sim="$ROOT/scripts/cmake/ios-sim.cmake"
-  cargo build --release -p rcrm-flutter-bridge --features mobile-decode --target aarch64-apple-ios
-  cargo build --release -p rcrm-flutter-bridge --features mobile-decode --target aarch64-apple-ios-sim 2>/dev/null || echo "  (simulator target skipped)"
+  CARGO_ARGS=(build --release -p rcrm-flutter-bridge)
+  if $MOBILE_DECODE; then
+    CARGO_ARGS+=(--features mobile-decode)
+  fi
+  cargo "${CARGO_ARGS[@]}" --target aarch64-apple-ios
+  cargo "${CARGO_ARGS[@]}" --target aarch64-apple-ios-sim 2>/dev/null || echo "  (simulator target skipped)"
 )
 echo "  -> Static libs built"
 echo ""
