@@ -33,7 +33,9 @@ import '../widgets/player_settings_panel.dart';
 import '../widgets/episode_picker_panel.dart';
 import '../utils/format.dart';
 import '../utils/pan_lock.dart';
+import '../utils/playback_open_guard.dart';
 import '../utils/player_eof.dart';
+import '../utils/player_error_text.dart';
 import '../utils/player_exit.dart';
 import '../utils/player_orientation.dart';
 import '../utils/player_panels.dart';
@@ -94,6 +96,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   StreamSubscription? _completedSub;
   StreamSubscription? _volumeSub;
   StreamSubscription? _rateSub;
+
   /// The orientation record and the exit latch
   /// (`utils/player_orientation.dart`, [PlayerOrientationSession]): the shape
   /// the mask in force holds, plus whether the exit has already handed the mask
@@ -105,6 +108,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
 
   StreamSubscription? _bufferingSub;
   StreamSubscription? _shapeSub;
+  StreamSubscription? _errorSub;
+  StreamSubscription? _logSub;
   bool show2x = false;
   bool fullscreen = false;
   Duration _fadeMs = const Duration(milliseconds: 200);
@@ -123,6 +128,36 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// this is a stall the user is sitting through.
   static const _bufferGrace = Duration(milliseconds: 300);
   Timer? _bufferStall;
+
+  /// How long an open may stay silent before the error overlay replaces the
+  /// spinner.
+  ///
+  /// This is not a timeout on the transfer: media_kit's `open()` completes as
+  /// soon as the playlist entry is handed to mpv, long before the file loads,
+  /// and its `stream.error` is not guaranteed to carry an HTTP 404 (media_kit
+  /// only forwards `ffmpeg` errors whose text starts with `tcp:`). Without a
+  /// deadline a dead URL and a slow one look identical — which is exactly how a
+  /// 404 became an endless spinner. 20s is long enough for a cold LAN/cloud
+  /// header read, short enough that the viewer is not left waiting on nothing.
+  static const _openGrace = Duration(seconds: 20);
+  Timer? _openStall;
+
+  /// Which open attempt is current, whether it has produced a first frame, and
+  /// why it failed. The transitions live in a pure value object because the
+  /// screen itself cannot be mounted in a test; the Timer and the overlay stay
+  /// here.
+  final PlaybackOpenGuard _openGuard = PlaybackOpenGuard();
+
+  /// The failed-open message, or null while there is nothing to report.
+  ///
+  /// A ValueNotifier rather than `setState`: stream events drive it, and only
+  /// the overlay needs to repaint.
+  final ValueNotifier<String?> _playbackError = ValueNotifier(null);
+
+  /// A warm player that failed to attach a VideoController must not be reused
+  /// by Retry: its failure is not the file's, and the next attempt gets a fresh
+  /// native player instead.
+  bool _warmPlayerRejected = false;
 
   /// How long the up-next card waits before playing what it is offering.
   ///
@@ -631,96 +666,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       // The route already created one (see `PosterQuietRoute`), so the
       // expensive native init is behind us; otherwise create it here as
       // before. Either way exactly one player, owned by this screen.
-      p = widget.warmPlayer ?? PlayerFactory.playback();
-      vc = VideoController(p!);
-      p!.open(Media(_item.url, httpHeaders: sharedAuthHeader));
-      p!.play();
-      p!.setVolume(_playerGain);
-      if (_disposed && p != null) {
-        // Disposed before the player finished initializing — tear down now.
-        p!.dispose();
-        p = null;
-        vc = null;
-        return;
-      }
-      if (mounted) setState(() {});
-      _posSub = p!.stream.position.listen(_onPosition);
-      _durSub = p!.stream.duration.listen((d) {
-        if (mounted) _miniDur.value = d;
-      });
-      _bufSub = p!.stream.buffer.listen((b) {
-        if (mounted) _miniBuf.value = b;
-      });
-      bool hasBeenPlaying = p!.state.playing;
-      _playing.value = p!.state.playing;
-      _playingSub = p!.stream.playing.listen((isPlaying) {
-        if (isPlaying) hasBeenPlaying = true;
-        if (mounted) _playing.value = isPlaying;
-      });
-      _volumeSub = p!.stream.volume.listen(_onPlayerGain);
-      _bufferingSub = p!.stream.buffering.listen((buffering) {
-        if (!mounted) return;
-        _bufferStall?.cancel();
-        if (!buffering) {
-          // Recovery is immediate: a spinner that lingers after the picture is
-          // moving again is a lie about the state of the player.
-          if (_buffering.value) _buffering.value = false;
-          return;
-        }
-        // Nothing is loading on a finished file: the picture is the last frame
-        // and the viewer is being offered what plays next. A stall reported here
-        // is not a wait this app is in, and a spinner drawn over the frame they
-        // are deliberately sitting on claims "working on it" about nothing.
-        if (_eof.finished) return;
-        _bufferStall = Timer(_bufferGrace, () {
-          if (mounted && !_disposed) _buffering.value = true;
-        });
-      });
-      _rate.value = p!.state.rate;
-      _rateSub = p!.stream.rate.listen((r) {
-        if (mounted) _rate.value = r;
-      });
-      _shapeSub = p!.stream.videoParams.listen(_onVideoParams);
-      _completedSub = p!.stream.completed.listen((completed) {
-        // The VALUE, not just the event: media_kit publishes `completed: false`
-        // every time a file STARTS (`stop()`, which `open()` calls), and running
-        // the end-of-video logic for that offers the next video over one that has
-        // only just begun. Only the race between this screen's un-awaited `open()`
-        // and `play()` kept it quiet -- `play()` publishes `playing: true`
-        // optimistically, so `hasBeenPlaying` can already be true by the time
-        // `open()`'s own `stop()` lands.
-        if (!completed) return;
-        if (!mounted || _disposed || _navigating || _switching) return;
-        if (!hasBeenPlaying) return;
-        // ONE decision per ending: mpv reports the end again after every
-        // take-back, and `loopOne` re-enters this same file immediately, so a
-        // second pass would seek a video the viewer had just dragged back to 0.
-        if (_eof.finished) return;
-        _eof = _eof.ended();
-        final mode = PlaybackMode.fromString(
-          ref.read(uiSettingsProvider).playbackMode,
-        );
-        // Switched on the ENUM rather than on the stored string: a mode added
-        // later then fails to compile here instead of silently behaving like
-        // `pauseAfter`. The stored form is `PlaybackMode.key`.
-        switch (mode) {
-          case PlaybackMode.loopAll:
-          case PlaybackMode.shuffle:
-            // The two modes that lead to another video end here, identically:
-            // which video the card offers is `_offerNext`'s business.
-            _offerNext();
-            break;
-          case PlaybackMode.loopOne:
-            // Rolling again before this returns, so the latch is dropped here --
-            // kept, it would sit over the whole loop and swallow the next ending.
-            _eof = PlayerEof.idle;
-            p!.seek(Duration.zero);
-            p!.play();
-            break;
-          case PlaybackMode.pauseAfter:
-            break;
-        }
-      });
+      _ensurePlayer();
       if (_isMobile && fullscreen) {
         // Apply NOW. A player that STARTS fullscreen (a route step with
         // `startFullscreen: true`) has no `_setFullscreen` call to apply its
@@ -730,6 +676,270 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         _applyOrientation();
       }
     });
+  }
+
+  /// Create the one Player this screen owns and attach every stream once.
+  ///
+  /// Split from the first post-frame callback so a failed open can retry
+  /// without re-subscribing (which would make every event land twice) and a
+  /// failed CONSTRUCTION can be retried too, instead of leaving `vc == null`
+  /// behind a spinner that never ends.
+  void _ensurePlayer() {
+    if (p != null) return;
+    try {
+      p =
+          (!_warmPlayerRejected ? widget.warmPlayer : null) ??
+          PlayerFactory.playback();
+      vc = VideoController(p!);
+    } catch (e) {
+      // A warm player that could not attach is not retried; the factory path is
+      // the one that works when the route's player was the problem.
+      _warmPlayerRejected = true;
+      p?.dispose();
+      p = null;
+      vc = null;
+      _failPlayback(
+        'The video player could not start. ${describePlaybackError(e)}',
+      );
+      return;
+    }
+    _bindPlayer(p!);
+    p!.setVolume(_playerGain);
+    if (_disposed) {
+      // Disposed before the player finished initializing — tear down now.
+      p!.dispose();
+      p = null;
+      vc = null;
+      return;
+    }
+    if (mounted) setState(() {});
+    _openCurrent();
+  }
+
+  /// Attach this screen's listeners to [player] exactly once.
+  void _bindPlayer(Player player) {
+    bool hasBeenPlaying = player.state.playing;
+    _playing.value = player.state.playing;
+    _posSub = player.stream.position.listen(_onPosition);
+    _durSub = player.stream.duration.listen((d) {
+      if (d > Duration.zero) _markOpened();
+      if (mounted) _miniDur.value = d;
+    });
+    _bufSub = player.stream.buffer.listen((b) {
+      if (mounted) _miniBuf.value = b;
+    });
+    _playingSub = player.stream.playing.listen((isPlaying) {
+      if (isPlaying) hasBeenPlaying = true;
+      if (mounted) _playing.value = isPlaying;
+    });
+    _volumeSub = player.stream.volume.listen(_onPlayerGain);
+    _bufferingSub = player.stream.buffering.listen((buffering) {
+      if (!mounted) return;
+      _bufferStall?.cancel();
+      if (!buffering) {
+        // Recovery is immediate: a spinner that lingers after the picture is
+        // moving again is a lie about the state of the player.
+        if (_buffering.value) _buffering.value = false;
+        return;
+      }
+      // Nothing is loading on a finished file: the picture is the last frame
+      // and the viewer is being offered what plays next. A stall reported here
+      // is not a wait this app is in, and a spinner drawn over the frame they
+      // are deliberately sitting on claims "working on it" about nothing.
+      if (_eof.finished) return;
+      _bufferStall = Timer(_bufferGrace, () {
+        if (mounted && !_disposed) _buffering.value = true;
+      });
+    });
+    _rate.value = player.state.rate;
+    _rateSub = player.stream.rate.listen((r) {
+      if (mounted) _rate.value = r;
+    });
+    _shapeSub = player.stream.videoParams.listen(_onVideoParams);
+    _completedSub = player.stream.completed.listen((completed) {
+      // The VALUE, not just the event: media_kit publishes `completed: false`
+      // every time a file STARTS (`stop()`, which `open()` calls), and running
+      // the end-of-video logic for that offers the next video over one that has
+      // only just begun. Only the race between this screen's un-awaited `open()`
+      // and `play()` kept it quiet -- `play()` publishes `playing: true`
+      // optimistically, so `hasBeenPlaying` can already be true by the time
+      // `open()`'s own `stop()` lands.
+      if (!completed) return;
+      if (!mounted || _disposed || _navigating || _switching) return;
+      if (!hasBeenPlaying) return;
+      // ONE decision per ending: mpv reports the end again after every
+      // take-back, and `loopOne` re-enters this same file immediately, so a
+      // second pass would seek a video the viewer had just dragged back to 0.
+      if (_eof.finished) return;
+      _eof = _eof.ended();
+      final mode = PlaybackMode.fromString(
+        ref.read(uiSettingsProvider).playbackMode,
+      );
+      // Switched on the ENUM rather than on the stored string: a mode added
+      // later then fails to compile here instead of silently behaving like
+      // `pauseAfter`. The stored form is `PlaybackMode.key`.
+      switch (mode) {
+        case PlaybackMode.loopAll:
+        case PlaybackMode.shuffle:
+          // The two modes that lead to another video end here, identically:
+          // which video the card offers is `_offerNext`'s business.
+          _offerNext();
+          break;
+        case PlaybackMode.loopOne:
+          // Rolling again before this returns, so the latch is dropped here --
+          // kept, it would sit over the whole loop and swallow the next ending.
+          _eof = PlayerEof.idle;
+          player.seek(Duration.zero);
+          player.play();
+          break;
+        case PlaybackMode.pauseAfter:
+          break;
+      }
+    });
+    // The stream that turns a dead URL into a message instead of a spinner.
+    // Subscribe before the first `open()` (see `_ensurePlayer`) so the failure
+    // of that very load is not missed.
+    _errorSub = player.stream.error.listen(_onPlayerError);
+    // `stream.error` drops ffmpeg's `http:` errors (it only forwards `tcp:`),
+    // so an HTTP 404 would otherwise wait for the watchdog. The log stream still
+    // carries it at error level; use it for the one case media_kit swallows.
+    _logSub = player.stream.log.listen(_onPlayerLog);
+  }
+
+  /// Hand the current [_item] to the player that already owns this screen.
+  ///
+  /// `open` is deliberately not awaited: it resolves when the playlist entry is
+  /// written, not when the file is decoded, so the first-frame proof lives in
+  /// [_markOpened] and the deadline in [_armOpenStall].
+  void _openCurrent() {
+    final player = p;
+    if (player == null) return;
+    final gen = _beginOpen();
+    final opening = player.open(
+      Media(_item.url, httpHeaders: sharedAuthHeader),
+    );
+    unawaited(
+      opening.catchError((Object e) {
+        if (!mounted || _disposed || !_openGuard.isCurrent(gen)) return;
+        _failPlayback(describePlaybackError(e), generation: gen);
+      }),
+    );
+    player.play();
+    _armOpenStall(gen);
+  }
+
+  /// Clear the previous file's error and wait timers; returns the new generation.
+  int _beginOpen() {
+    final gen = _openGuard.begin();
+    _playbackError.value = null;
+    _buffering.value = false;
+    _bufferStall?.cancel();
+    _bufferStall = null;
+    _openStall?.cancel();
+    _openStall = null;
+    _eof = PlayerEof.idle;
+    return gen;
+  }
+
+  void _armOpenStall(int gen) {
+    _openStall = Timer(_openGrace, () {
+      if (!mounted || _disposed || !_openGuard.shouldTimeout(gen)) return;
+      _failPlayback(
+        'Timed out opening this video. The server did not start sending it.',
+        watchdog: true,
+        generation: gen,
+      );
+    });
+  }
+
+  /// The file really opened: withdraw a timeout, but never a decode error.
+  void _markOpened() {
+    final wasTimeout = _openGuard.failure?.watchdog == true;
+    if (!_openGuard.markOpened()) return;
+    _openStall?.cancel();
+    _openStall = null;
+    if (wasTimeout && _playbackError.value != null) {
+      _playbackError.value = null;
+    }
+  }
+
+  void _onPlayerError(Object error) {
+    if (!mounted || _disposed || _navigating) return;
+    // A switch's own open is still in flight; its watchdog/generation will
+    // report the failure instead of an error from the file it is replacing.
+    if (_switching) return;
+    _failPlayback(
+      describePlaybackError(error),
+      generation: _openGuard.generation,
+    );
+  }
+
+  /// media_kit's `stream.error` only forwards ffmpeg messages whose text starts
+  /// with `tcp:` (`real.dart:2092-2098`); an HTTP 404 is logged as `http:` and
+  /// never reaches it. The log stream does carry it, but only while the open is
+  /// still waiting for its first frame: an HTTP error during normal playback
+  /// must not cover a file that is still working.
+  void _onPlayerLog(PlayerLog log) {
+    if (!mounted || _disposed || _navigating || _switching) return;
+    if (!_openGuard.waitingForFirstFrame) return;
+    if (!isFatalHttpLog(log)) return;
+    _failPlayback(
+      describePlaybackError(log.text),
+      generation: _openGuard.generation,
+    );
+  }
+
+  /// Replace the spinner with the reason the file is not playing.
+  ///
+  /// [generation] is the open attempt that failed. A stale attempt cannot
+  /// overwrite the current one; a player error may replace a timeout, but a
+  /// timeout may not replace a player error.
+  void _failPlayback(String message, {bool watchdog = false, int? generation}) {
+    final gen = generation ?? _openGuard.generation;
+    if (!_openGuard.fail(gen, message, watchdog: watchdog)) return;
+    _openStall?.cancel();
+    _openStall = null;
+    _bufferStall?.cancel();
+    _bufferStall = null;
+    _buffering.value = false;
+    _playing.value = false;
+    _playbackError.value = message;
+    // The failed load is over as far as navigation is concerned. If `open()`
+    // itself never returned, `_playInPlace`'s finally has not run either; the
+    // overlay's Back/Retry must not be held hostage by a switch that is no
+    // longer going anywhere.
+    _switching = false;
+    _clearUpNext();
+    // If PiP is the only picture on screen, close it and bring the normal video
+    // area back: its error layer carries the explanation and the Retry/Back
+    // controls, and a failed mini window would otherwise be the only feedback.
+    if (_pip && mounted) {
+      setState(() => _pip = false);
+      _pipDismissed = true;
+      final scroll = _scrollCtrl;
+      if (scroll != null && scroll.hasClients) {
+        scroll.animateTo(
+          0,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOutCubic,
+        );
+      }
+    }
+  }
+
+  void _retryCurrent() {
+    if (_disposed || _navigating || _switching) return;
+    _playbackError.value = null;
+    _openGuard.clearFailure();
+    // A failed construction left no player; a failed load can reuse the one
+    // whose listeners are still attached.
+    if (p == null) {
+      // Give the construction failure a current generation to report against.
+      _openGuard.begin();
+      _ensurePlayer();
+      return;
+    }
+    _openCurrent();
   }
 
   @override
@@ -744,7 +954,10 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _rateSub?.cancel();
     _bufferingSub?.cancel();
     _shapeSub?.cancel();
+    _errorSub?.cancel();
+    _logSub?.cancel();
     _bufferStall?.cancel();
+    _openStall?.cancel();
     _videoTapTimer?.cancel();
     _gOverlayTimer?.cancel();
     _scrollCtrl?.dispose();
@@ -759,6 +972,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _volume.dispose();
     _rate.dispose();
     _buffering.dispose();
+    _playbackError.dispose();
     _hideTimer?.cancel();
     _exitTimer?.cancel();
     p?.stop();
@@ -914,6 +1128,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// default) stayed that way, and swapping to a different-shaped video in place
   /// kept the previous one's lock. Only a change of SHAPE costs anything here.
   void _onVideoParams(_) {
+    if ((p?.state.width ?? 0) > 0 || (p?.state.height ?? 0) > 0) {
+      _markOpened();
+    }
     if (!_isMobile) return;
     final landscape = _landscapeVideo();
     // The session decides what is news: only Fit reads the video at all, no size
@@ -933,6 +1150,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// Deliberately NOT where a take-back is detected: it used to be, and the
   /// position stream cannot answer that question (see `utils/player_eof.dart`).
   void _onPosition(Duration pos) {
+    if (pos > Duration.zero) _markOpened();
     final ms = pos.inMilliseconds;
     if ((ms - _miniLastMs).abs() < 100) return;
     _miniLastMs = ms;
@@ -1437,6 +1655,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     // comes through here too.
     _eof = PlayerEof.idle;
     _switching = true;
+    final gen = _beginOpen();
     try {
       if (!back) ref.read(videoJumpStackProvider.notifier).push(_item);
       setState(() {
@@ -1445,16 +1664,27 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         // and auto-advance can fire while it is open.
         _showEpisodes = false;
       });
-      await player.open(Media(item.url, httpHeaders: sharedAuthHeader));
-      if (_disposed || !mounted) return;
+      final opening = player.open(
+        Media(item.url, httpHeaders: sharedAuthHeader),
+      );
+      // The deadline covers the actual load, which `open` does not wait for.
+      _armOpenStall(gen);
+      await opening;
+      if (!mounted || _disposed || !_openGuard.isCurrent(gen)) return;
       // A fresh load resets what the user set on the player, so the two facts
       // mpv does not carry across are re-applied from this screen's own state —
       // which is the state they were watching in.
       player.setVolume(_playerGain);
       player.setRate(_rate.value);
       player.play();
+    } catch (e) {
+      if (!mounted || _disposed || !_openGuard.isCurrent(gen)) return;
+      _failPlayback(describePlaybackError(e), generation: gen);
     } finally {
-      _switching = false;
+      // A stale attempt must not clear the latch of the attempt that replaced
+      // it: `_failPlayback` already unblocked THIS generation, and the Retry
+      // may have started a new one while this `open` was still in flight.
+      if (_openGuard.isCurrent(gen)) _switching = false;
     }
   }
 
@@ -1497,6 +1727,15 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     _completedSub?.cancel();
     _volumeSub?.cancel();
     _rateSub?.cancel();
+    // Including the error and open-watchdog streams: the outgoing player stays
+    // alive for the transition, and a late 404 from it must not paint an error
+    // over the replacement.
+    _errorSub?.cancel();
+    _logSub?.cancel();
+    _openStall?.cancel();
+    _openStall = null;
+    _bufferStall?.cancel();
+    _bufferStall = null;
     // Including the shape: the outgoing screen's player stays alive for the whole
     // transition, and a `video-params` report from it would re-apply ITS
     // orientation strategy on top of the incoming screen's.
@@ -1736,6 +1975,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                       // about the video, and the bars stay usable while it
                       // shows.
                       _bufferingLayer(),
+                      _errorLayer(),
                       // Top chrome on every platform: back on the left, title,
                       // settings on the right. It used to exist on mobile only —
                       // which is why desktop fullscreen had no way back.
@@ -2007,6 +2247,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                 if (!_showControls && p != null && !_seeking)
                   Positioned(bottom: 0, left: 0, right: 0, child: _miniBar()),
                 _bufferingLayer(),
+                _errorLayer(),
                 _upNextCard(bottom: _barClearance(0)),
               ],
             ),
@@ -2522,6 +2763,25 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       valueListenable: _buffering,
       builder: (_, buffering, _) =>
           PlayerBufferingIndicator(visible: buffering),
+    ),
+  );
+
+  /// The overlay that replaces the spinner when the player has spoken: a failed
+  /// open, a decode error, or a server that never started sending.
+  ///
+  /// Always positioned (never a bare `ValueListenableBuilder` child of the
+  /// Stack) so the error covers the whole picture area; with no error the child
+  /// is an inert zero-size box.
+  Widget _errorLayer() => Positioned.fill(
+    child: ValueListenableBuilder<String?>(
+      valueListenable: _playbackError,
+      builder: (_, message, _) => message == null
+          ? const SizedBox.shrink()
+          : PlayerPlaybackError(
+              message: message,
+              onRetry: _retryCurrent,
+              onBack: _handleBack,
+            ),
     ),
   );
 

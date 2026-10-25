@@ -108,6 +108,74 @@ void main() {
     });
   });
 
+  group('PlayerPlaybackError', () {
+    testWidgets('shows the player message and both exits', (tester) async {
+      var retried = 0;
+      var backed = 0;
+      await tester.pumpWidget(
+        _host(
+          PlayerPlaybackError(
+            message: 'Failed to open: HTTP 404 Not Found',
+            onRetry: () => retried++,
+            onBack: () => backed++,
+          ),
+        ),
+      );
+
+      expect(find.text("Can't play this video"), findsOneWidget);
+      expect(find.text('Failed to open: HTTP 404 Not Found'), findsOneWidget);
+
+      await tester.tap(find.text('Try again'));
+      await tester.pump();
+      expect(retried, 1);
+
+      await tester.tap(find.text('Back'));
+      await tester.pump();
+      expect(backed, 1);
+    });
+
+    testWidgets('bounds a long player message to four lines', (tester) async {
+      final long = 'x' * 1000;
+      await tester.pumpWidget(
+        _host(
+          PlayerPlaybackError(message: long, onRetry: () {}, onBack: () {}),
+        ),
+      );
+
+      final text = tester.widget<Text>(find.text(long));
+      expect(text.maxLines, 4);
+      expect(text.overflow, TextOverflow.ellipsis);
+    });
+
+    testWidgets('a tap on the card does not reach the player underneath', (
+      tester,
+    ) async {
+      var playerTaps = 0;
+      await tester.pumpWidget(
+        _host(
+          Stack(
+            children: [
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => playerTaps++,
+                child: const SizedBox.expand(),
+              ),
+              PlayerPlaybackError(
+                message: 'HTTP 404',
+                onRetry: () {},
+                onBack: () {},
+              ),
+            ],
+          ),
+        ),
+      );
+
+      await tester.tapAt(tester.getCenter(find.byType(PlayerPlaybackError)));
+      await tester.pump();
+      expect(playerTaps, 0);
+    });
+  });
+
   group('PlayerUpNextCard', () {
     const countdown = Duration(seconds: 3);
     const title = 'episode-02.mp4';

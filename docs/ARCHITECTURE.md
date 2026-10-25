@@ -142,6 +142,11 @@ VideoCard tap → Navigator.push(video_player_screen)
   → a stall longer than 300ms raises a spinner over the picture (media_kit reports
     `buffering` for the frames a seek spends refilling, so the grace is what keeps
     it from firing at something that was never a wait)
+  → a failed open is not a forever spinner: `stream.error`, the ffmpeg `http:`
+    log while the open is still waiting for its first frame, and a 20s watchdog
+    all become `PlayerPlaybackError` (Retry / Back). `PlaybackOpenGuard` keeps a
+    generation per open, so a stale watchdog or error cannot cover the file that
+    replaced it; a late first frame withdraws a timeout but never a decode error
   → Jump (the transport bar's prev/next): open the other video IN the player
     that is already playing (`_playInPlace`) — no new route, so fullscreen,
     picture-in-picture with its dragged geometry, the scroll position behind it,

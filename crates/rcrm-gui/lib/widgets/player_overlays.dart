@@ -1,10 +1,12 @@
 // widgets/player_overlays.dart
-// The two things the player paints OVER the picture while something is being
-// waited for: the buffering spinner, and the card that asks what to do next.
+// The three things the player paints OVER the picture while something is being
+// waited for — or has failed: the buffering spinner, the playback-error card,
+// and the card that asks what to do next.
 //
-// Both are pure presentation. Whether the spinner is up, and what the next
-// video is, are the screen's business (`screens/video_player_screen.dart`) —
-// so neither widget here touches a `Player`.
+// All are pure presentation. Whether the spinner is up, what failed, and what
+// the next video is, are the screen's business
+// (`screens/video_player_screen.dart`) — so none of these widgets touches a
+// `Player`.
 
 import 'package:flutter/material.dart';
 
@@ -66,6 +68,96 @@ class PlayerBufferingIndicator extends StatelessWidget {
                   valueColor: const AlwaysStoppedAnimation(RCrmColors.primary),
                   backgroundColor: Colors.white.withValues(alpha: 0.14),
                 ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Playback error ─────────────────────────────────────────────────
+
+/// The overlay for a file the player could not open.
+///
+/// This is not a wait, so it does not use the spinner's fade-in: it has to say
+/// what failed (the player's own message, shortened) and offer the two exits
+/// that make sense — retry the same open, or leave the player. There is no
+/// frame to preserve on a failed open.
+class PlayerPlaybackError extends StatelessWidget {
+  /// The player's own error, already cleaned and bounded by the screen.
+  final String message;
+  final VoidCallback onRetry;
+  final VoidCallback onBack;
+
+  const PlayerPlaybackError({
+    super.key,
+    required this.message,
+    required this.onRetry,
+    required this.onBack,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return GestureDetector(
+      // The overlay covers the gesture map (tap = chrome, swipes = seek/volume).
+      // A tap on the card's background is not a player gesture; the buttons
+      // still receive their own taps.
+      behavior: HitTestBehavior.opaque,
+      onTap: () {},
+      child: ColoredBox(
+        color: Colors.black.withValues(alpha: 0.78),
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.error_outline,
+                    color: RCrmColors.silver,
+                    size: 36,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    "Can't play this video",
+                    textAlign: TextAlign.center,
+                    style: text.titleMedium?.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    message,
+                    textAlign: TextAlign.center,
+                    maxLines: 4,
+                    overflow: TextOverflow.ellipsis,
+                    style: text.bodySmall?.copyWith(color: RCrmColors.silver),
+                  ),
+                  const SizedBox(height: 18),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextButton(
+                        onPressed: onBack,
+                        style: TextButton.styleFrom(
+                          foregroundColor: RCrmColors.silver,
+                        ),
+                        child: const Text('Back'),
+                      ),
+                      const SizedBox(width: 8),
+                      FilledButton.tonal(
+                        onPressed: onRetry,
+                        child: const Text('Try again'),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
