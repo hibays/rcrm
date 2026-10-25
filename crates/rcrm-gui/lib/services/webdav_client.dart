@@ -3,13 +3,17 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show HandshakeException, HttpDate, TlsException;
 import 'dart:typed_data';
+
 import 'bounded_fetch.dart' show kBoundedFetchDeadline, kBoundedFetchStall;
 import 'net.dart';
+
 import 'package:flutter/foundation.dart' show compute;
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart' show IOClient;
 import 'package:xml/xml.dart';
+
 import '../models/media_item.dart';
+import '../utils/media_url.dart';
 
 String _safeDecode(String s) {
   try {
@@ -48,11 +52,20 @@ class WebDavClient {
 
   /// Construct a URL with embedded Basic Auth for tools that need it
   /// (e.g. ffmpeg CLI which only supports URLs).
+  ///
+  /// The path goes through [mediaUrl] like every other URL in the app; the
+  /// credentials are the only part added here, and they are percent-encoded so
+  /// a password containing `@`/`:` cannot split the authority.
   String authenticatedUrl(String path) {
-    if (username == null || password == null) return '$baseUrl$path';
-    final uri = Uri.parse(baseUrl);
-    final port = uri.hasPort ? ':${uri.port}' : '';
-    return '${uri.scheme}://$username:$password@${uri.host}$port$path';
+    final encoded = mediaUrl(baseUrl, path);
+    if (username == null || password == null) return encoded;
+    return Uri.parse(encoded)
+        .replace(
+          userInfo:
+              '${Uri.encodeComponent(username!)}:'
+              '${Uri.encodeComponent(password!)}',
+        )
+        .toString();
   }
 
   WebDavClient({
@@ -76,11 +89,7 @@ class WebDavClient {
     return p;
   }
 
-  Uri _url(String path) {
-    final base = baseUrl.endsWith('/') ? baseUrl : '$baseUrl/';
-    final p = path.startsWith('/') ? path.substring(1) : path;
-    return Uri.parse(Uri.encodeFull('$base$p'));
-  }
+  Uri _url(String path) => Uri.parse(mediaUrl(baseUrl, _normPath(path)));
 
   Future<List<MediaItem>> listDirectory(String path) async {
     final normPath = _normPath(path);

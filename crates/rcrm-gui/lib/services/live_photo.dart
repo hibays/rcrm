@@ -13,9 +13,11 @@
 
 import 'dart:convert';
 import 'dart:typed_data';
-import 'net.dart';
-import 'live_media_server.dart';
+
 import 'package:media_kit/media_kit.dart';
+
+import 'live_media_server.dart';
+import 'net.dart';
 
 // ── Result types ───────────────────────────────────────────────
 
@@ -63,7 +65,7 @@ Future<Uint8List> _rangeFetch(
 }) async {
   final client = createTrustAwareHttpClient();
   try {
-    final req = await client.openUrl('GET', Uri.parse(Uri.encodeFull(url)));
+    final req = await client.openUrl('GET', Uri.parse(url));
     req.headers.set('Range', 'bytes=$start-$end');
     if (headers != null) {
       headers.forEach((k, v) => req.headers.set(k, v));
@@ -82,7 +84,7 @@ Future<Uint8List> _rangeFetch(
 Future<int> _fileSize(String url, {Map<String, String>? headers}) async {
   final client = createTrustAwareHttpClient();
   try {
-    final req = await client.openUrl('HEAD', Uri.parse(Uri.encodeFull(url)));
+    final req = await client.openUrl('HEAD', Uri.parse(url));
     if (headers != null) {
       headers.forEach((k, v) => req.headers.set(k, v));
     }
@@ -120,10 +122,7 @@ Future<bool> _hasMovCompanion(
   final f = (() async {
     final client = createTrustAwareHttpClient();
     try {
-      final req = await client.openUrl(
-        'HEAD',
-        Uri.parse(Uri.encodeFull(movUrl)),
-      );
+      final req = await client.openUrl('HEAD', Uri.parse(movUrl));
       if (headers != null) {
         headers.forEach((k, v) => req.headers.set(k, v));
       }

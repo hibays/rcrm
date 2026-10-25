@@ -211,18 +211,12 @@ Future<NativeFetch> fetchNativeBytes(
     // instead: spaces and non-ASCII still get escaped, while existing `%XX`
     // escapes are preserved and canonicalised.
     //
-    // Two raw-URL caveats this accepts, both of which normally self-heal
-    // through the caller's fallback at the cost of one wasted request: a literal
-    // `%` in a file name followed by two hex digits (`a%41b.jpg`) is read back
-    // as the character that escape denotes, and a literal backslash is not
-    // escaped into `%5C`. The wrong name simply 404s — and only when the
-    // decoded name happens to be a real sibling file can the wrong image show.
-    //
-    // `bounded_fetch.dart:67` carries the same double-encoding, deliberately
-    // NOT changed here: it has no encoded caller today, and there the parse sits
-    // OUTSIDE the try, so its exception contract (a `FormatException` escaping a
-    // call documented to raise `HttpException`/`TimeoutException`) would need
-    // care first. Keep the two files' comment in step if that changes.
+    // `MediaItem.url` is canonical (`utils/media_url.dart`): every decoded path
+    // segment was encoded exactly once there, so a literal `%20` in a file name
+    // arrives here as `%2520`. Encoding again would request `%252520` (a 404).
+    // The media model owns that conversion; a caller that hands over a decoded
+    // path would still lose the distinction between `%20` and a space, which is
+    // why every fetch path takes `MediaItem.url` rather than a path.
     request = await sharedHttpClient
         .getUrl(Uri.parse(url))
         .timeout(remaining());

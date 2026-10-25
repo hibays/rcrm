@@ -1,12 +1,14 @@
 // models/media_item.dart
 // RCrm GUI — media file model (video or image)
 
+import '../utils/media_url.dart';
+
 enum MediaType { video, image, unknown }
 
 class MediaItem {
   final String name;
-  final String path; // WebDAV path
-  final String url; // Full WebDAV URL
+  final String path; // Decoded WebDAV path (display/cast/status)
+  final String url; // Canonical fetch URL (encoded exactly once)
   final MediaType type;
   final int size; // bytes
   final DateTime? modified;
@@ -83,7 +85,10 @@ class MediaItem {
     return MediaItem(
       name: name,
       path: path,
-      url: '$baseUrl$path',
+      // The path is decoded (see [path]); this is the one place it becomes a
+      // URL, so a literal `%20` in a file name is escaped to `%2520` here and
+      // every fetch path can parse the result without re-encoding it.
+      url: mediaUrl(baseUrl, path),
       type: type,
       size: size,
       modified: modified,

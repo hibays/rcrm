@@ -10,12 +10,15 @@ import 'dart:io' show Process;
 import 'dart:isolate';
 import 'dart:typed_data';
 import 'dart:ffi';
+
 import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+
 import '../ffi/rust_bridge.dart';
 import '../utils/ffmpeg_thumb_args.dart';
+import '../utils/media_url.dart';
 import '../utils/poster_queue.dart';
 import 'item_cache_limit.dart';
 import 'player_factory.dart';
@@ -139,17 +142,15 @@ class ThumbnailService {
     }
   }
 
-  // ── Safe URL encoding (desktop ffmpeg) ───────────────────
+  // ── Safe URL for external tools (desktop ffmpeg) ─────────
 
-  /// Encode path segments for ffmpeg URL (auth via -headers, not in URL).
-  static String safeUrl(String raw) {
-    final uri = Uri.parse(raw);
-    final encodedPath = uri.pathSegments
-        .map((s) => Uri.encodeComponent(s))
-        .join('/');
-    final q = uri.query.isNotEmpty ? '?${uri.query}' : '';
-    return '${uri.scheme}://${uri.host}:${uri.port}/$encodedPath$q';
-  }
+  /// [raw] without credentials, ready for ffmpeg's `-i` (auth via `-headers`).
+  ///
+  /// The input is a canonical `MediaItem.url`; its path was encoded exactly once
+  /// by `utils/media_url.dart`. It is carried verbatim — decoding it back into
+  /// segments (`uri.pathSegments`) and re-encoding would turn a literal `%20`
+  /// filename into a request for a file with a space.
+  static String safeUrl(String raw) => withoutUrlCredentials(raw);
 
   // ── Poster ───────────────────────────────────────────────
 

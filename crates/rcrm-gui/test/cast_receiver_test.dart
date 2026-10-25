@@ -447,55 +447,74 @@ void main() {
     // i.e. it asserts the FALLBACK shape, not the URL the app actually fetches.
     // That gap is why the double-encoding shipped: no test ever sent the
     // encoded `?path=` the receiver's own `_handlePlay` builds.
-    test('a fetched proxied path is not double-encoded', () async {
-      final upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-      final served = <String>[];
-      upstream.listen((req) {
-        served.add('${req.method} ${req.uri.path}');
-        req.response.statusCode = HttpStatus.ok;
-        req.response.headers.set('content-length', '64');
-        req.response.write('x' * 64);
-        req.response.close();
-      });
+    test(
+      'a fetched proxied path is not double-encoded and keeps the base prefix',
+      () async {
+        final upstream = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+        final served = <String>[];
+        upstream.listen((req) {
+          served.add('${req.method} ${req.uri.path}');
+          req.response.statusCode = HttpStatus.ok;
+          req.response.headers.set('content-length', '64');
+          req.response.write('x' * 64);
+          req.response.close();
+        });
 
-      final qr = receiver.currentQr()!;
-      final (pairCode, pairText) = await post(
-        CastApi.pathPair,
-        CastApi.pairBody(qr.token),
-      );
-      expect(pairCode, HttpStatus.ok);
-      final session =
-          (jsonDecode(pairText) as Map<String, dynamic>)['session'] as String;
-      final (claimCode, _) = await post(
-        CastApi.pathClaim,
-        CastApi.claimBody(
-          serverUrl: 'http://127.0.0.1:${upstream.port}/',
-          username: 'u',
-          password: 'p',
-          serverSha1: '',
-        ),
-        bearer: session,
-      );
-      expect(claimCode, HttpStatus.ok);
+        final qr = receiver.currentQr()!;
+        final (pairCode, pairText) = await post(
+          CastApi.pathPair,
+          CastApi.pairBody(qr.token),
+        );
+        expect(pairCode, HttpStatus.ok);
+        final session =
+            (jsonDecode(pairText) as Map<String, dynamic>)['session'] as String;
+        final (claimCode, _) = await post(
+          CastApi.pathClaim,
+          CastApi.claimBody(
+            serverUrl: 'http://127.0.0.1:${upstream.port}/dav/',
+            username: 'u',
+            password: 'p',
+            serverSha1: '',
+          ),
+          bearer: session,
+        );
+        expect(claimCode, HttpStatus.ok);
 
-      final fetched = await fetchNativeBytes(
-        'http://127.0.0.1:${receiver.proxyPort}/stream?path=%2Fv%2Fbig.mkv',
-      );
+        final fetched = await fetchNativeBytes(
+          'http://127.0.0.1:${receiver.proxyPort}/stream?path=%2Fv%2Fbig.mkv',
+        );
 
-      await upstream.close(force: true);
-      final bytes = fetched.bytes;
-      expect(
-        bytes,
-        isNotNull,
-        reason: 'the proxy answers 400 when the path arrives double-encoded',
-      );
-      bytes!.free();
-      expect(
-        served.where((s) => s == 'GET /v/big.mkv').length,
-        greaterThanOrEqualTo(1),
-        reason: 'the proxy must forward the path it received',
-      );
-    });
+        // The receiver's own `_handlePlay` encodes the path with
+        // `Uri.encodeQueryComponent`; send that exact shape with a literal `%20`
+        // path (a file genuinely named `foo%20bar.wmv`).
+        final percentPath = Uri.encodeQueryComponent('/v/foo%20bar.wmv');
+        final fetchedPercent = await fetchNativeBytes(
+          'http://127.0.0.1:${receiver.proxyPort}/stream?path=$percentPath',
+        );
+
+        await upstream.close(force: true);
+        final bytes = fetched.bytes;
+        expect(
+          bytes,
+          isNotNull,
+          reason: 'the proxy answers 400 when the path arrives double-encoded',
+        );
+        bytes!.free();
+        final percentBytes = fetchedPercent.bytes;
+        expect(percentBytes, isNotNull);
+        percentBytes!.free();
+        expect(
+          served.where((s) => s == 'GET /dav/v/big.mkv').length,
+          greaterThanOrEqualTo(1),
+          reason: 'the proxy must keep the claim\'s base path',
+        );
+        expect(
+          served.where((s) => s == 'GET /dav/v/foo%2520bar.wmv').length,
+          greaterThanOrEqualTo(1),
+          reason: 'a literal %20 path must reach the upstream as %2520',
+        );
+      },
+    );
 
     test('proxy rejects non-absolute path', () async {
       // Claim a dummy server so the path check (400) runs before the

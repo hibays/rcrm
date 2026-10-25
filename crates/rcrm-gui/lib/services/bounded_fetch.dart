@@ -64,7 +64,13 @@ Future<Uint8List> fetchBoundedBytes(
     return left.isNegative ? Duration.zero : left;
   }
 
-  final uri = Uri.parse(Uri.encodeFull(url));
+  // The URL is canonical by construction (`utils/media_url.dart`): every path
+  // segment was encoded exactly once when the caller built its `MediaItem`.
+  // Parse only — re-encoding here is what made a literal `%20` filename work
+  // through this path while media_kit requested a file with a space. `Uri.parse`
+  // still normalises a raw URL (spaces and non-ASCII) and preserves existing
+  // `%XX`, so an already encoded URL (the cast proxy's `?path=...`) is safe too.
+  final uri = Uri.parse(url);
   final request = await sharedHttpClient.getUrl(uri).timeout(remaining());
   // The map exists but is not guaranteed to carry the key; a missing header must
   // not turn into a null-check throw on the fetch path.

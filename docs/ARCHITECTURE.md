@@ -95,6 +95,25 @@ Server start → generate random user:pass
     → ffmpeg CLI: -headers "Authorization: Basic ..."
 ```
 
+### Media URL Encoding
+
+`MediaItem.path` is the **decoded** WebDAV path (what the UI, the cast protocol
+and status comparisons show). `MediaItem.url` is the canonical fetch URL, and
+`utils/media_url.dart` is the one place it is built.
+
+The PROPFIND `href` is decoded exactly once with `Uri.decodeFull`; when the URL
+is built, every path segment is encoded with `Uri.encodeComponent`:
+
+- `Uri.encodeFull` leaves `#`, `?`, `&` and `+` unencoded, so those names would
+  split the URL into a fragment/query;
+- `Uri.pathSegments` decodes first and would turn a literal `%20` in a file name
+  back into a space, losing the distinction from a file named with a real space.
+
+Every fetch path (Dart `HttpClient`, media_kit/libmpv, ffmpeg, the cast proxy)
+parses the URL once and never re-encodes it. A file literally named
+`foo%20bar.wmv` travels as `foo%2520bar.wmv` and survives one server-side
+decode; a file named `foo bar.wmv` travels as `foo%20bar.wmv`.
+
 ### Video Playback
 
 ```

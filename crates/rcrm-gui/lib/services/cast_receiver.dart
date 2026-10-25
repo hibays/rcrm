@@ -18,6 +18,7 @@ import 'dart:typed_data' show BytesBuilder;
 import 'package:crypto/crypto.dart';
 
 import '../ffi/rust_bridge.dart';
+import '../utils/media_url.dart';
 import 'cast_protocol.dart';
 import 'http_forward.dart';
 
@@ -747,7 +748,11 @@ class CastReceiver {
         return;
       }
       final client = await _upstream();
-      final upstreamUri = Uri.parse(serverUrl).resolve(path);
+      // `path` is decoded on the wire (it travels as a JSON/query value); the
+      // upstream URL is canonical. Resolving the decoded path here is the same
+      // bug media_kit had: `%20` would be read as a space, so a literal `%20`
+      // filename 404s on the TV while it works on the phone.
+      final upstreamUri = Uri.parse(mediaUrl(serverUrl, path));
       await forwardHttpRequest(
         client,
         upstreamUri,

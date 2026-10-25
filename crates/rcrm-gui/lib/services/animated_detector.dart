@@ -11,8 +11,9 @@
 // Detection fetches only the first 4 KB of each file.
 // Results are cached per URL (same pattern as live_photo.dart).
 
-import 'net.dart';
 import 'dart:typed_data';
+
+import 'net.dart';
 
 // ── Result type ─────────────────────────────────────────────────
 
@@ -66,7 +67,7 @@ Future<Uint8List> _headerFetch(
 }) async {
   final client = createTrustAwareHttpClient();
   try {
-    final req = await client.openUrl('GET', Uri.parse(Uri.encodeFull(url)));
+    final req = await client.openUrl('GET', Uri.parse(url));
     req.headers.set('Range', 'bytes=0-${len - 1}');
     if (headers != null) {
       headers.forEach((k, v) => req.headers.set(k, v));

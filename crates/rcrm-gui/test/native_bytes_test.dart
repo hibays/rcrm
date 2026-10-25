@@ -218,6 +218,30 @@ void main() {
     bytes.free();
   });
 
+  test(
+    'a canonical percent sequence in the path is not decoded again',
+    () async {
+      // `MediaItem.url` stores a file literally named `foo%20bar.wmv` as
+      // `foo%2520bar.wmv`. Parsing that URL must NOT turn it back into a
+      // space before the request is sent.
+      String? seenPath;
+      final body = List<int>.generate(128, (i) => i);
+      server.listen((req) async {
+        seenPath = req.uri.path;
+        req.response.statusCode = 200;
+        req.response.contentLength = body.length;
+        req.response.add(body);
+        await req.response.close();
+      });
+
+      final fetched = await fetchNativeBytes(url('foo%2520bar.wmv'));
+      expect(seenPath, '/foo%2520bar.wmv');
+      final bytes = fetched.bytes;
+      expect(bytes, isNotNull);
+      bytes!.free();
+    },
+  );
+
   test('handing the buffer over stops this side freeing it', () async {
     serve(const [1, 2, 3, 4]);
     final fetched = await fetchNativeBytes(url('handover.jpg'));

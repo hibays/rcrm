@@ -68,6 +68,27 @@ void main() {
     });
   }
 
+  test('a canonical url is parsed once, not encoded twice', () async {
+    // `MediaItem.url` is canonical (utils/media_url.dart): a file actually
+    // named `foo%20bar.wmv` arrives here as `foo%2520bar.wmv`. This
+    // path used to `Uri.encodeFull` the whole URL, which made exactly that
+    // file work here while media_kit (which parses only) requested
+    // `foo%20bar.wmv` and the server answered 404. Pin the one-encode rule
+    // at the HTTP boundary, not just in the pure helper.
+    String? seen;
+    server.listen((req) async {
+      seen = req.uri.path;
+      req.response.statusCode = 200;
+      req.response.contentLength = 3;
+      req.response.add(const [1, 2, 3]);
+      await req.response.close();
+    });
+
+    final bytes = await fetchBoundedBytes(url('foo%2520bar.wmv'));
+    expect(bytes.length, 3);
+    expect(seen, '/foo%2520bar.wmv');
+  });
+
   test('a complete body comes back whole', () async {
     final body = List<int>.generate(64 * 1024, (i) => i % 251);
     serve(body);
