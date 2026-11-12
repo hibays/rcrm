@@ -9,7 +9,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../config/theme.dart';
 import '../ffi/rust_bridge.dart';

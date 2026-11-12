@@ -69,7 +69,7 @@
 // shortened the ones nobody had complained about, the plain "open a video, come
 // back". What was wrong was the shape and what each page was DOING.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
 
 import '../services/player_factory.dart';

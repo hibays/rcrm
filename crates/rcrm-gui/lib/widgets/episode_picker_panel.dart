@@ -3,7 +3,7 @@
 // the same "Related" videos shown under the player — poster thumbnail + name
 // per row — so episodes can be switched without leaving fullscreen.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../config/theme.dart';
 import '../models/media_item.dart';

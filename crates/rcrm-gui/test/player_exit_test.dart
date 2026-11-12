@@ -16,7 +16,7 @@
 //    a predicate that matches nothing empties the navigator. The `isFirst` floor
 //    is what makes it total, and the second widget test is that case.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:rcrm_gui/utils/player_exit.dart';

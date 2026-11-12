@@ -7,7 +7,7 @@
 // the "black bar" on the right side of the QR page. The header now shrinks
 // to fit (FittedBox.scaleDown) and these sizes must stay overflow-free.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:rcrm_gui/services/cast_protocol.dart';

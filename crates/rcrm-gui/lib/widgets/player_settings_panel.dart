@@ -9,7 +9,7 @@
 // panel. What is left is what a panel is for: choices you make once and facts
 // you read.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../config/theme.dart';
 import '../utils/player_orientation.dart';

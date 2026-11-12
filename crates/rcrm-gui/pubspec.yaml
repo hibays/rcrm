@@ -4,7 +4,11 @@ publish_to: "none"
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.12.2
+  # Flutter 3.50.0 ships Dart 3.14.0. The Material library moved to the
+  # official `material_ui` package in 3.47+; `dart fix` repointed all 82
+  # `package:flutter/material.dart` imports, so older SDKs cannot build this.
+  sdk: ">=3.14.0 <4.0.0"
+  flutter: ">=3.50.0"
 
 dependencies:
   flutter:
@@ -45,6 +49,7 @@ dependencies:
   camera: ^0.12.1
   camera_windows: ^0.2.6+4
   dynamic_color: ^2.1.0
+  material_ui: ^1.10.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

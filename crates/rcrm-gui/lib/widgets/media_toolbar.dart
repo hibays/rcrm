@@ -5,7 +5,7 @@
 // toggle, extension filter, column-count cycle button, and grid/list layout
 // toggle.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'column_button.dart';
 
 /// The icon for each grouping, for the toolbar's button — the one place that has

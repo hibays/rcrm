@@ -4,7 +4,7 @@
 // Used by AlbumCard (photo page) and album chips (home page) to
 // render a consistent multi-image preview. Handles 1–4 images.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import '../config/theme.dart';
 import 'pooled_image.dart';
 

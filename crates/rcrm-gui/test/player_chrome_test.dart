@@ -3,7 +3,7 @@
 // device size, it keeps the controls that have no alternative, the fullscreen
 // top bar owns back + settings, and the 2x badge's chevrons really animate.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/config/theme.dart';
 import 'package:rcrm_gui/utils/player_playback_mode.dart';

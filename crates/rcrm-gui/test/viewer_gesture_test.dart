@@ -9,7 +9,7 @@
 // down, drift sideways, let go — the viewer either springs back on picture 1
 // or it has quietly turned the page.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/config/theme.dart';

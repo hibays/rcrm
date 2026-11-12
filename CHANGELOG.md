@@ -438,3 +438,18 @@ Update report:
 		⑤ 页面部分**未回退**：`video_player_screen.dart` 的 `_meta()` / `_related()` / Scaffold 仍用语义色，第 16 条修好的白字问题保持
 	3) 验证：`flutter analyze lib test` 零告警；全量 `flutter test` **745 通过 + 1 条环境超时**（`media_metadata_test.dart` 的 30s 超时，单独重跑 19/19 通过；当时并行跑着 analyze + 两次渲染 + 全量测试，C 盘 95%）；重渲染 Day/Night 控制条与设置面板，Day 与 Night 一致（深色渐变 + 白字，无奶油边、无加厚）
 	4) 文档：DESIGN.md 改为「a themed page with fixed dark chrome」，PRODUCT.md 同步
+
+18. 2026.11.13.2.40.AM.Friday
+	*本批为未发布的工作区改动：Flutter 3.50 / Dart 3.14 一次性迁移与版本锁*
+
+	1) 提交顺序：先把暂存区（缩略图缓存修复 + Cargo.lock，8 文件）提交为 `594c867`，再把工作区（主题三层 + 播放器 chrome + 文档，38 文件）提交为 `767e2dc`。两次提交后工作区干净，才开始迁移
+	2) `dart fix --apply`（本机 Flutter 3.50.0 / Dart 3.14.0）
+		① 84 个 fix / 83 文件：82 个 `deprecated_member_use` 把 `package:flutter/material.dart` 换成官方 `package:material_ui/material_ui.dart`——Material 库在 3.47+ 从 Flutter 拆出（包来自 `flutter/packages`，要求 Flutter ≥3.47）；1 个 `missing_dependency` 在 `pubspec.yaml` 加 `material_ui`；1 个 `unnecessary_import` 删掉 `image_grid.dart` 里 `flutter/rendering.dart` 的 `ScrollCacheExtent`
+		② `flutter analyze lib test` 零告警；`flutter pub get` 顺带解析出 4 个依赖升级（test 1.31.1 → 1.32.0 等）
+	3) 版本锁（一次性）
+		① `pubspec.yaml`：`environment.sdk` 从 `^3.12.2` 提到 `">=3.14.0 <4.0.0"`，新增 `flutter: ">=3.50.0"`；`material_ui: any` 收紧为 `^1.10.0`
+		② `pubspec.lock`：`sdks.dart` / `sdks.flutter` 同步为 `">=3.14.0 <4.0.0"` / `">=3.50.0"`
+		③ `docs/BUILDING.md`：版本矩阵改 3.50.0 / Dart 3.14.0；Prerequisites 改 ≥3.50 并写明 material_ui import 规则；Impeller 段改为「3.47+ 包括 3.50」并注明本次未重跑 Windows 解码验证
+		④ 本地 `AGENTS.md`（gitignored，不进版本库）：更新版本约束行、Impeller 描述，以及「`SliderThemeData.padding` 是 3.47-only 而本仓库 floor 是 3.44」这条**已失效的理由**（现在 floor 3.50，改述为几何已单元测试、换 inset 模型会改变映射）
+	4) 验证：`flutter analyze lib test` 零告警；全量 `flutter test` **746/746 全绿**
+	5) 未验证：未跑 Windows / Android 真机构建；Impeller 的 AVIF/JXL/HEIC 解码问题在 3.50 下未重新验证，文档按「仍存在」处理

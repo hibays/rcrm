@@ -6,8 +6,7 @@
 // Both are lazy (only visible cells build) and use PooledImage
 // (throttled decode + LRU) so large albums don't OOM/freeze.
 
-import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollCacheExtent;
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 import '../services/item_cache_limit.dart';
 import '../models/media_item.dart';

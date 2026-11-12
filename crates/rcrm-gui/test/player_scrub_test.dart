@@ -8,7 +8,7 @@
 // tests drive the slider exactly as the widget does and pin the label, the
 // clamp, and the "duration not known yet" behaviour.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/utils/player_playback_mode.dart';
 import 'package:rcrm_gui/widgets/player_controls.dart';

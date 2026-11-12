@@ -4,7 +4,7 @@
 // old Size slider; shared by the video toolbar and the image album view.
 
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 class ColumnButton extends StatelessWidget {
   final int current;

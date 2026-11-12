@@ -5,7 +5,7 @@
 // first contact lands on a DIFFERENT card switches the preview.
 
 import 'dart:io';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// Tracks the initial touch point to decide which card's [activePath] previews.
 class FingerPreviewState {

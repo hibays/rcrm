@@ -5,7 +5,7 @@
 // with extension badges (no network requests). Tapping an image
 // opens the full viewer which loads the image on demand.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 

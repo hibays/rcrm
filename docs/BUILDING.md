@@ -6,8 +6,8 @@ Changing any version independently WILL break the build. All components are inte
 
 | Component | Version | Verified | File |
 |-----------|---------|----------|------|
-| Flutter SDK | **3.47.6** (3.44.2 is the last matrix-verified release) | ⚠️ | `flutter --version` |
-| Dart SDK | **3.13.5** (ships with the above) | ✅ | `dart --version` |
+| Flutter SDK | **3.50.0** — pinned by `pubspec.yaml` (`flutter: ">=3.50.0"`) | ✅ analyze/test | `flutter --version` |
+| Dart SDK | **3.14.0** (ships with the above; `sdk: ">=3.14.0 <4.0.0"`) | ✅ | `dart --version` |
 | Rust | stable ≥ **1.89** | ✅ | `rustup show` — `heic` requires 1.89, edition 2024 everywhere |
 | Gradle | **9.1.0** | ✅ | `android/gradle/wrapper/gradle-wrapper.properties` |
 | AGP | **9.0.1** | ✅ | `android/settings.gradle.kts` |
@@ -47,7 +47,10 @@ future versions of Flutter will fail to build" warning no longer appears.
 
 ### All Platforms
 
-- Flutter 3.47.x with desktop + Android support
+- Flutter **≥ 3.50.0** with desktop + Android support. The Material library now
+  lives in the official `material_ui` package; `package:flutter/material.dart`
+  is deprecated, so every Dart file imports `package:material_ui/material_ui.dart`
+  (migrated with `dart fix --apply`). Do not add new `flutter/material.dart` imports.
 - Rust stable ≥ 1.89: `rustup toolchain install stable`
 - ffmpeg in PATH (video posters/previews) — see Known issues for ffmpeg ≥ 9
 - **CMake ≥ 3.21 and a C++ toolchain**: QR encode/decode is the C++ zxing-cpp,
@@ -243,13 +246,15 @@ app's own server is `http://127.0.0.1:<port>`, so an unconditional flag leaves
 3. Pass `-tls_verify 0` to keep the pre-9 behaviour (the subprocess then accepts
    any certificate; the Dart side still pins).
 
-### Flutter 3.47 makes Impeller the default desktop renderer
+### Flutter 3.47+ (including 3.50) keeps Impeller as the default desktop renderer
 
 Impeller's image decoder (`ImageDecoderImpeller`) handles PNG/JPEG/WebP/GIF/BMP
 but has **no WIC fallback**, so on Windows AVIF/JXL/HEIC fail with
 `Could not decompress image`. Skia (`ImageDecoderSkia` → Windows WIC codecs, i.e.
 the Store's AV1 / JPEG XL / HEIF extensions) decodes them fine, which is why the
-regression appeared with the SDK upgrade (3.44.8 → 3.47.x).
+regression appeared with the SDK upgrade (3.44.8 → 3.47.x). It is still
+assumed present on 3.50.0 — the 3.50 migration verified `flutter analyze`
+and the widget suite, but did not re-run a Windows desktop decode check.
 
 - Verify with: `flutter run -d windows --no-enable-impeller` (all formats decode)
 - Workarounds: ship the app with Impeller disabled

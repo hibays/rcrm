@@ -8,7 +8,7 @@
 // stronger than it was — four modes carry four sentences at once, in the menu,
 // instead of one sentence describing whichever mode happened to be selected.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/config/theme.dart';
 import 'package:rcrm_gui/utils/player_playback_mode.dart';

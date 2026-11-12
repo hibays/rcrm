@@ -6,7 +6,7 @@
 // its tests live with that control (`player_mode_chip_test.dart`). The panel is
 // what a panel is for — choices made once (orientation) and facts you read.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/utils/player_orientation.dart';
 import 'package:rcrm_gui/widgets/player_settings_panel.dart';

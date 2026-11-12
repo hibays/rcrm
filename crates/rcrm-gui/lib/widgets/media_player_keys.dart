@@ -16,7 +16,7 @@
 // callback is null does nothing AND does not swallow the event. While a text
 // field or slider holds focus, the keys a typist needs are left to it.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
 /// What a surface wants the media keys to do.

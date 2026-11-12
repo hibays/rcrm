@@ -14,7 +14,7 @@
 // The plan is built here rather than read off a filesystem, so the rows describe a
 // known grading; `describeAge` itself is covered in the age test file.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/utils/thumb_cache_policy.dart';
 import 'package:rcrm_gui/widgets/thumb_cache_dialog.dart';

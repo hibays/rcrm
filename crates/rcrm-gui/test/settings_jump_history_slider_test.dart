@@ -7,7 +7,7 @@
 // check what the user actually sees and touches: the value beside the label,
 // the travel of the slider, and the write-through to the persisted setting.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';

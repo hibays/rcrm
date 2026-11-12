@@ -6,7 +6,7 @@
 // to keep the focused thumbnail centered when the page changes.
 
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../models/media_item.dart';
 import 'pooled_image.dart';

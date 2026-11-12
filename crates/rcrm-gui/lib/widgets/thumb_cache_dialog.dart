@@ -22,7 +22,7 @@
 
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../services/thumb_cache.dart';
 import '../utils/thumb_cache_policy.dart';

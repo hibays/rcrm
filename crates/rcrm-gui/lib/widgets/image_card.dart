@@ -2,7 +2,7 @@
 // RCrm GUI — image card: PooledImage (throttled+LRU), placeholder on failure,
 // format badge, animated indicator, live-photo badge.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import '../models/media_item.dart';
 import '../services/animated_detector.dart';
 import '../services/live_photo.dart';

@@ -4,7 +4,7 @@
 //
 // Video cards match the home screen's Recent Videos proportions (280×180).
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../config/theme.dart';
 import '../models/album.dart';

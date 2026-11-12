@@ -12,7 +12,7 @@
 // instance's: the video tab passes its own classification in, which is what stops
 // a change made for videos from regrouping the photo tab.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';

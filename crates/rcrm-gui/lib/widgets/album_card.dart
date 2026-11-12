@@ -4,7 +4,7 @@
 // Displays a folder as a card with a 2×2 preview grid of its
 // contents, the album name, and image count.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../models/album.dart';
 import 'album_preview.dart';

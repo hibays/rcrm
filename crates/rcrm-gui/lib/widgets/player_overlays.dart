@@ -8,7 +8,7 @@
 // (`screens/video_player_screen.dart`) — so none of these widgets touches a
 // `Player`.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../config/theme.dart';
 

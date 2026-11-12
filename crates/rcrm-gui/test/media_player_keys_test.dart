@@ -6,7 +6,7 @@
 // "returns false and lets the event through", or a player screen becomes a
 // keyboard trap for the rest of the app.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/widgets/media_player_keys.dart';

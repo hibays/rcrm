@@ -5,8 +5,8 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   dynamic_color
   media_kit_libs_linux
-  media_kit_video
   screen_retriever_linux
+  media_kit_video
   window_manager
 )
 

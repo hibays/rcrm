@@ -21,7 +21,7 @@
 
 import 'dart:io' show Platform;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// Five preset accents, all drawn from the theatre/darkroom world.
 ///

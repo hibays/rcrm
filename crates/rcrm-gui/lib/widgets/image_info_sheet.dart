@@ -11,7 +11,7 @@
 // The camera block is fed by the Rust EXIF parser (services/media_metadata.dart).
 // When the file carries none, the sheet says so instead of inventing fields.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../config/theme.dart';
 import '../models/media_item.dart';

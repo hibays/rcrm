@@ -7,7 +7,7 @@
 // the plan always fits, essentials never disappear, and the volume slider is
 // the first thing to go — keeping its mute button.
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/widgets/player_controls.dart';
 
