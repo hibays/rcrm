@@ -56,6 +56,11 @@ class _VideoPosterState extends State<VideoPoster> {
   /// recycled onto another item, or after the widget went away, must not paint.
   int _gen = 0;
 
+  /// One self-heal per item. A disk entry that decodes badly is dropped and
+  /// regenerated once; without the guard a genuinely undecodable frame would
+  /// spin errorBuilder → reload → errorBuilder forever.
+  bool _retried = false;
+
   @override
   void initState() {
     super.initState();
@@ -77,15 +82,16 @@ class _VideoPosterState extends State<VideoPoster> {
         _poster = null;
         _loading = true;
       });
+      _retried = false;
       _load();
     }
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool refresh = false}) async {
     final gen = ++_gen;
     Uint8List? poster;
     try {
-      poster = await _ts.generatePoster(widget.item.url);
+      poster = await _ts.generatePoster(widget.item.url, refresh: refresh);
     } catch (_) {
       poster = null;
     }
@@ -105,7 +111,19 @@ class _VideoPosterState extends State<VideoPoster> {
         fit: widget.fit,
         cacheWidth: 640,
         gaplessPlayback: true,
-        errorBuilder: (_, _, _) => _fallback(),
+        errorBuilder: (_, _, _) {
+          // The image path heals a corrupt disk entry in DiskThumbImage._load;
+          // the poster path has to do the same here, because ThumbnailService
+          // only returns bytes and cannot know whether the engine decoded them.
+          // Deferred: errorBuilder runs inside build, so setState is illegal.
+          if (!_retried) {
+            _retried = true;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _load(refresh: true);
+            });
+          }
+          return _fallback();
+        },
       );
     }
     if (_loading) {

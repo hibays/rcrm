@@ -104,4 +104,35 @@ void main() {
 
     expect((await ThumbCache.preview(maxBytes: 1)).freshUsedAt, isNotNull);
   });
+
+  test('reads in a session that never opened the cache dialog are persisted',
+      () async {
+    const id = 'https://host/media/poster/three';
+    await ThumbCache.write(id, Uint8List.fromList([1, 2, 3, 4]));
+    final name = cacheDir
+        .listSync()
+        .whereType<File>()
+        .single
+        .uri
+        .pathSegments
+        .last;
+
+    // No preview(), no manage(): the ordinary browsing path. note() flushes
+    // every 64 reads, but flush() used to return immediately because nothing
+    // had called ThumbCacheAccessLog.load() in this process yet.
+    for (var i = 0; i < 64; i++) {
+      await ThumbCache.read(id);
+    }
+
+    final log = File('${temp.path}/._thumbs_used');
+    for (var i = 0; i < 20 && !await log.exists(); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(
+      await log.exists(),
+      isTrue,
+      reason: 'the throttled flush must not depend on the dialog being opened',
+    );
+    expect(await log.readAsString(), contains(name));
+  });
 }

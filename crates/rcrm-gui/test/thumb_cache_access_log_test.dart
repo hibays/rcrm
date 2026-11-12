@@ -86,4 +86,33 @@ void main() {
 
     expect(await logRows(), isEmpty);
   });
+
+  test('a clean-up that deletes entries still flushes the log', () async {
+    await ThumbCache.write('a', Uint8List(3000));
+    await ThumbCache.write('b', Uint8List(3000));
+    await ThumbCache.read('a');
+    await ThumbCache.read('b');
+
+    final plan = await ThumbCache.manage(maxBytes: 1);
+    expect(plan.drop, isNotEmpty, reason: 'this clean-up really deleted files');
+    expect(
+      await logRows(),
+      isNotEmpty,
+      reason: 'manage used to flush only on the path that deleted nothing',
+    );
+  });
+
+  test('clear writes the emptied log back', () async {
+    await ThumbCache.write('only', Uint8List.fromList([1]));
+    await ThumbCache.read('only');
+    await ThumbCache.manage(maxBytes: 1024 * 1024);
+    expect(await logRows(), hasLength(1));
+
+    await ThumbCache.clear();
+    expect(
+      await logRows(),
+      isEmpty,
+      reason: 'rows must not outlive the entries they describe',
+    );
+  });
 }

@@ -316,3 +316,21 @@ Update report:
 		① 设置 → Managed Directories：`_DirEditor` 的增删/浏览只改本地列表，只有 Save 才调用 `saveServerConfig`；点外面或返回关闭就丢。改为每次增删/浏览后立即写；按钮改为 Done（`barrierDismissible: false`，返回也会先等最后一次写落盘），关闭后按最终列表是否有变化决定是否重启服务器
 		② 首次设置：选目录只进 `_selectedDirs`，只有 Skip 会 `saveServerConfig`；`_connect` 的注释声称持久化，实际没有调用——选完目录直接启动服务器，下次启动就丢。改为 `_pickFolder`/移除即保存，`_connect` 启动前再持久化一次（只写 directories，bind/port 仍用已保存的值，避免把临时的 127.0.0.1:0 写进配置）
 		③ 验证：`flutter analyze lib test` 零告警；全量 `flutter test` **696** 全绿；file_picker 是平台通道，自动化无法点击真实选择器，桌面/手机手动确认未做
+
+11. 2026.11.7.10.50.AM.Saturday
+	*本批为未发布的工作区改动：视频缩略图磁盘缓存部分失效*
+
+	1) 修复：访问记录在普通浏览会话里根本不落盘
+		① `ThumbCacheAccessLog.flush()` 在 `_loadedFrom == null` 时直接 return，而 `_loadedFrom` 只在 `load()` 里赋值，唯一调用点是 `ThumbCache.preview()` —— 也就是只有用户打开设置里的缓存对话框才设得上。于是一个只浏览、不清缓存的会话，每 64 次命中触发的节流 flush 全部静默丢弃，评分里权重 3 的「上次使用」轴整段不跨会话；下次 Auto trim 只能按 mtime 分级，会把「生成得早、昨天刚看过」的那批判成 cold 删掉。这正是「部分」封面下次不命中的来源
+		② `_ensureDir()` 在目录就绪时 `await ThumbCacheAccessLog.load(d)`（`load` 幂等且只读），进程里第一次缓存操作就把日志来源设好；`manage()` 把 flush 从「没删任何东西」的分支移到 return 前，两条路径都写回；`clear()` 删除后 `pruneTo({}) + flush()`，不留指向已删条目的行
+	2) 修复：写盘竞态，以及视频海报读路径没有坏条目自愈
+		① 两处 `ThumbCache.write` 都是 fire-and-forget：`thumbnail_service.dart` 的 `_cache` 与 `disk_thumb_image.dart` 的 `_generate`。图片侧命中失败会 `remove` 自愈，于是一个并发格子可能在第一个格子写盘未完成时解码到半写文件、把条目删掉；视频侧更重——`generatePoster` 命中直接把 bytes 塞进内存 LRU 返回，`VideoPoster` 的 errorBuilder 只画灰块，坏条目永久留在磁盘且本次会话被 LRU 短接
+		② `_cache` 改 `Future<void>` 并在两处生成成功点 await；`_generate` 的 write 也 await，且移到 decode gate 的 `try/finally` 之外（写盘不再占慢路径的槽位）；`generatePoster` 加 `refresh` 可选参数，`VideoPoster.errorBuilder` 用一次性守卫在 postFrame 触发 `refresh: true` 重来，与 `DiskThumbImage._load` 已有的「解码失败才删」自愈对齐
+		③ 审查后撤销：一度在 `generatePoster` 的磁盘命中处加过 JPEG 魔数 + 2000 字节下限校验。`ThumbCache` 存的是**不透明字节**（同一目录里既有 JPEG 视频海报、也有 WebP 图片缩略图，只是 key 不同），把「这个 key 一定是 JPEG」写死在单一消费者里，等于靠命名约定而不是靠抽象保证正确性；一次命中还可能删掉自己的条目，读不再幂等，也与图片侧「解码失败才删」不对称。现在读是纯读、格式无关，坏条目只在真正解码失败的地方自愈
+	3) 审查发现与范围
+		① 审查清单里两条候选被生成链路证伪并撤销：`sharedAuthHeader` 未就绪（所有 poster 入口都在 `setSharedAuth` 之后；唯一绕过 `isRunning` 的 Skip 分支下 `mediaLibraryProvider` 为 null，一个 MediaItem 都没有）与 `settingsProvider.load()` 首屏抢跑（`/home` 必经服务器启动 + ping）。`net.dart`、`settings_provider.dart` 一行未动
+		② 桌面默认 OFF 时运行中开开关、已生成在内存 LRU 的封面不回填，以及 `PooledImage` 已挂载格子不切 provider：确认是不影响使用的 gap，按「勿增实体」不处理
+		③ 全批 0 新增文件 / 类 / 设置项 / 模型：`refresh` 是现有方法的一个可选参数，`_retried` 是现有 State 的一个 bool
+	4) 验证与未验证
+		① `flutter analyze lib test` 零告警；相关 5 个测试文件 28/28 全绿（含新增 3 条：未打开对话框的会话自动 flush 能落盘、manage 有删除时仍 flush、clear 写回空日志）；全量 `flutter test` **739/739 全绿**。默认并发在 +640、`--concurrency=1` 在 +276、分批在 +46 都撞上同一个 `flutter_test_listener.*` 删除竞态（全是 `flutter_platform.dart:786` 的环境错误，无断言失败），最后把 `TEMP`/`TMP` 指到独立空目录后一次通过——`C:\ProgramData\Temp` 下已堆 46 个 `flutter_tools.*` 残留，这是绕开残留锁最省事的办法
+		② 未验证：坏条目自愈需要真机或手动构造半写文件；`generatePoster` 依赖 media_kit/ffmpeg 且会 arm 30s 空闲计时器，没有写自动化用例。无真机验证

@@ -154,14 +154,33 @@ class ThumbnailService {
 
   // ── Poster ───────────────────────────────────────────────
 
-  Future<Uint8List?> generatePoster(String videoUrl) async {
+  Future<Uint8List?> generatePoster(
+    String videoUrl, {
+    bool refresh = false,
+  }) async {
     if (suppressPosterGeneration) return null;
-    final cached = _cacheGet(videoUrl);
-    if (cached != null) return cached;
+    final id = ThumbCache.pathId(videoUrl);
+    if (refresh) {
+      // A disk entry decoded badly and VideoPoster is asking again. Drop BOTH
+      // copies: leaving the bytes in the in-memory LRU would answer every
+      // later request with the same bad frame for the rest of the process.
+      _posterCache.remove(videoUrl);
+      await ThumbCache.remove(id);
+    } else {
+      final cached = _cacheGet(videoUrl);
+      if (cached != null) return cached;
+    }
 
     // On-disk cache (when enabled): a hit skips ffmpeg/screenshot entirely.
     // Keyed by the stable file path so it survives new server sessions.
-    final disk = await ThumbCache.read(ThumbCache.pathId(videoUrl));
+    //
+    // A PURE read: ThumbCache stores opaque bytes — JPEG posters and WebP
+    // image thumbnails share one directory under different keys — so a reader
+    // has no business asserting a format, and a hit must never delete its own
+    // entry. A corrupt entry is healed where it is actually detected: just as
+    // DiskThumbImage._load removes an entry its codec rejected, VideoPoster's
+    // errorBuilder asks for one `refresh` after a decode failure.
+    final disk = refresh ? null : await ThumbCache.read(id);
     if (disk != null) {
       _posterCache[videoUrl] = disk;
       return disk;
@@ -264,7 +283,7 @@ class ThumbnailService {
             bytes.isNotEmpty &&
             bytes.length > 2000 &&
             !(await _isBlank(bytes))) {
-          _cache(videoUrl, bytes);
+          await _cache(videoUrl, bytes);
           return bytes;
         }
       }
@@ -451,7 +470,7 @@ class ThumbnailService {
         }
         if (bytes == null || bytes.isEmpty) continue;
         if (bytes.length > 2000 && !(await _isBlank(bytes))) {
-          _cache(videoUrl, bytes);
+          await _cache(videoUrl, bytes);
           result = bytes;
           return result;
         }
@@ -478,12 +497,14 @@ class ThumbnailService {
     return v;
   }
 
-  void _cache(String key, Uint8List bytes) {
+  Future<void> _cache(String key, Uint8List bytes) async {
     if (_posterCache.length >= ItemCacheLimit.videoPosterMemoryCacheMax) {
       _posterCache.remove(_posterCache.keys.first);
     }
     _posterCache[key] = bytes;
-    ThumbCache.write(ThumbCache.pathId(key), bytes);
+    // Awaited: the next cell (or the next process) must never meet a file that
+    // is still being written. `write` is best-effort and never throws.
+    await ThumbCache.write(ThumbCache.pathId(key), bytes);
   }
 
   static Future<bool> _isBlank(Uint8List jpgBytes) async {

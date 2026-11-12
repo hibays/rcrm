@@ -64,6 +64,12 @@ class ThumbCache {
     final d = Directory('${base.path}/._thumbs');
     if (!await d.exists()) await d.create(recursive: true);
     _dir = d;
+    // `flush()` needs the log's provenance, and `load()` is idempotent. It used
+    // to be reached only from `preview()` — i.e. only when the user opened the
+    // cache dialog — so every throttled `note()` flush in an ordinary browsing
+    // session was dropped on the floor. Arming the log alongside the directory
+    // means the first cache operation of the process is enough.
+    await ThumbCacheAccessLog.load(d);
     return d;
   }
 
@@ -181,32 +187,32 @@ class ThumbCache {
       spend: spend,
       dropWholeTiers: dropWholeTiers,
     );
-    if (plan.drop.isEmpty) {
-      // Still flush: managing is the one point where writing is expected, and
-      // without this a session with fewer than `ThumbCacheAccessLog.flushEvery` reads would
-      // record nothing at all — the accesses would exist only in memory and die
-      // with the process.
-      await ThumbCacheAccessLog.flush();
-      return plan;
+    if (plan.drop.isNotEmpty) {
+      try {
+        final d = await _ensureDir();
+        // Unlinks run in bounded batches: `manage` may be asked to drop a third of a
+        // large cache, and awaiting each delete in turn is the slowest honest way to
+        // do it. Bounded, because handing a whole directory's worth of unlinks to the
+        // filesystem at once is its own way to lose.
+        for (var i = 0; i < plan.drop.length; i += _unlinkBatch) {
+          final end = i + _unlinkBatch < plan.drop.length
+              ? i + _unlinkBatch
+              : plan.drop.length;
+          await Future.wait([
+            for (final name in plan.drop.sublist(i, end))
+              File(
+                '${d.path}/$name',
+              ).delete().then<void>((_) {}, onError: (_) {}),
+          ]);
+        }
+      } catch (_) {}
     }
-    try {
-      final d = await _ensureDir();
-      // Unlinks run in bounded batches: `manage` may be asked to drop a third of a
-      // large cache, and awaiting each delete in turn is the slowest honest way to
-      // do it. Bounded, because handing a whole directory's worth of unlinks to the
-      // filesystem at once is its own way to lose.
-      for (var i = 0; i < plan.drop.length; i += _unlinkBatch) {
-        final end = i + _unlinkBatch < plan.drop.length
-            ? i + _unlinkBatch
-            : plan.drop.length;
-        await Future.wait([
-          for (final name in plan.drop.sublist(i, end))
-            File(
-              '${d.path}/$name',
-            ).delete().then<void>((_) {}, onError: (_) {}),
-        ]);
-      }
-    } catch (_) {}
+    // Flush on BOTH paths. `preview` has just pruned the log against the
+    // listing, and the deletes above changed that truth. A session with fewer
+    // than `ThumbCacheAccessLog.flushEvery` reads otherwise records nothing at
+    // all, and a clean-up that actually dropped entries used to write no log
+    // back — leaving rows for files that no longer exist.
+    await ThumbCacheAccessLog.flush();
     return plan;
   }
 
@@ -309,6 +315,10 @@ class ThumbCache {
           } catch (_) {}
         }
       }
+      // Every entry is gone, so every row is an orphan. Write that out now
+      // rather than grading next session against names that no longer exist.
+      ThumbCacheAccessLog.pruneTo(const <String>{});
+      await ThumbCacheAccessLog.flush();
     } catch (_) {}
   }
 

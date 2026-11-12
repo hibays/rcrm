@@ -68,16 +68,21 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
     // cheap disk-hit decode path never reaches here — and no longer waits
     // on the gate at all (PooledImage skips it for DiskThumbImage).
     final token = ImageLoadGate.instance.acquire();
+    Uint8List? thumb;
     try {
       await token.future;
-      final thumb = await _makeThumb(url, width);
-      if (thumb != null && thumb.isNotEmpty) {
-        ThumbCache.write(diskKey, thumb); // persist the SMALL thumbnail only
-      }
-      return thumb;
+      thumb = await _makeThumb(url, width);
     } finally {
       ImageLoadGate.instance.done(token);
     }
+    if (thumb != null && thumb.isNotEmpty) {
+      // Awaited, and OUTSIDE the gate: a second cell asking for the same key
+      // can only see this entry once the write has completed. An unawaited
+      // write let that cell's hit path decode a half-written file and delete
+      // the entry underneath the writer (ThumbCache.remove).
+      await ThumbCache.write(diskKey, thumb); // persist the SMALL thumbnail only
+    }
+    return thumb;
   }
 
   /// Fetch the original, downscale to [width] during decode, and re-encode the
