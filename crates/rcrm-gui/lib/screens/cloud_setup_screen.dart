@@ -1,12 +1,14 @@
 // screens/cloud_setup_screen.dart
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../config/theme.dart';
 import '../models/server_config.dart';
 import '../providers/server_provider.dart';
 import '../services/net.dart';
 import '../widgets/double_back_exit.dart';
 
-const _hintSilver = TextStyle(color: Color(0xFFAAAAAA));
+// A getter, not a const: the hint must follow the current appearance's ink.
+TextStyle get _hintSilver => TextStyle(color: RCrmColors.textSecondary);
 
 class CloudSetupScreen extends ConsumerStatefulWidget {
   const CloudSetupScreen({super.key});
@@ -315,7 +317,7 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
                                   flex: 3,
                                   child: TextField(
                                     controller: _hostCtrl,
-                                    decoration: const InputDecoration(
+                                    decoration: InputDecoration(
                                       labelText: 'Host',
                                       hintText: 'example.com',
                                       hintStyle: _hintSilver,
@@ -344,7 +346,7 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
                             const SizedBox(height: 12),
                             TextField(
                               controller: _userCtrl,
-                              decoration: const InputDecoration(
+                              decoration: InputDecoration(
                                 labelText: 'Username',
                                 hintStyle: _hintSilver,
                                 prefixIcon: Icon(Icons.person),
@@ -355,7 +357,7 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
                             const SizedBox(height: 12),
                             TextField(
                               controller: _passCtrl,
-                              decoration: const InputDecoration(
+                              decoration: InputDecoration(
                                 labelText: 'Password',
                                 hintStyle: _hintSilver,
                                 prefixIcon: Icon(Icons.lock),

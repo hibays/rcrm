@@ -110,7 +110,9 @@ void main() {
   testWidgets('narrow cards stack the label over the slider without overflow', (
     tester,
   ) async {
-    await pumpSettings(tester, size: const Size(360, 1500));
+    // Taller than before: Appearance now sits above Display, and ListView
+    // only builds what is on screen.
+    await pumpSettings(tester, size: const Size(360, 2600));
 
     expect(find.text('Jump History'), findsOneWidget);
     expect(find.byType(Slider), findsOneWidget);

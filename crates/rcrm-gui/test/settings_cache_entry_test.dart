@@ -16,7 +16,10 @@ import 'package:rcrm_gui/screens/settings_screen.dart';
 import 'package:rcrm_gui/services/thumb_cache.dart';
 
 Future<void> _pump(WidgetTester tester) async {
-  await tester.binding.setSurfaceSize(const Size(900, 1400));
+  // The Appearance section added ~2 rows above Cache. ListView builds only
+  // what is on screen, so the fixture has to be tall enough to include the
+  // cache row — the row is still one row, just further down the page.
+  await tester.binding.setSurfaceSize(const Size(900, 2400));
   addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.pumpWidget(
     const ProviderScope(child: MaterialApp(home: SettingsScreen())),

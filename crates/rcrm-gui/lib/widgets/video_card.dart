@@ -8,6 +8,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../widgets/marquee_text.dart';
 import '../services/preview_player.dart';
@@ -37,6 +38,12 @@ class _VideoCardState extends State<VideoCard> {
   bool _disposing = false;
   int _hoverGen = 0;
 
+  /// Whether a real poster is behind the info layer. The dark gradient and
+  /// white labels are an ink layer over MEDIA pixels; on a bare placeholder
+  /// (Day especially) they would read as an unthemed black band, so the
+  /// placeholder gets the page's semantic colours instead.
+  bool _hasPoster = false;
+
   // Shared-preview claim state
   int? _claimToken;
   VideoController? _previewController;
@@ -61,6 +68,7 @@ class _VideoCardState extends State<VideoCard> {
       _hoverGen++;
       _stopPreview();
       _ht?.cancel();
+      _hasPoster = false;
       return;
     }
     if (widget.preview != old.preview) {
@@ -134,7 +142,7 @@ class _VideoCardState extends State<VideoCard> {
   Widget build(BuildContext c) {
     final showDur = widget.item.durationSeconds != null && !widget.compact;
     final card = Card(
-      color: Colors.black,
+      color: RCrmColors.char,
       clipBehavior: Clip.antiAlias,
       child: Stack(
         fit: StackFit.expand,
@@ -186,15 +194,20 @@ class _VideoCardState extends State<VideoCard> {
     // placeholder when there is none.
     return VideoPoster(
       item: widget.item,
+      onPosterChanged: (has) {
+        if (mounted && _hasPoster != has) {
+          setState(() => _hasPoster = has);
+        }
+      },
       loading: Container(
-        color: const Color(0xFF2A2A2A),
-        child: const Center(
+        color: RCrmColors.coal,
+        child: Center(
           child: SizedBox(
             width: 20,
             height: 20,
             child: CircularProgressIndicator(
               strokeWidth: 2,
-              color: Colors.white24,
+              color: RCrmColors.textFaint,
             ),
           ),
         ),
@@ -203,21 +216,27 @@ class _VideoCardState extends State<VideoCard> {
     );
   }
 
-  Widget _dur() => Positioned(
-    bottom: 36,
-    right: 4,
-    child: Container(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-      decoration: BoxDecoration(
-        color: Colors.black87,
-        borderRadius: BorderRadius.circular(4),
+  Widget _dur() {
+    final onMedia = _hasPoster;
+    return Positioned(
+      bottom: 36,
+      right: 4,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        decoration: BoxDecoration(
+          color: onMedia ? Colors.black87 : RCrmColors.char,
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          widget.item.formattedDuration,
+          style: TextStyle(
+            color: onMedia ? Colors.white : RCrmColors.textPrimary,
+            fontSize: 11,
+          ),
+        ),
       ),
-      child: Text(
-        widget.item.formattedDuration,
-        style: const TextStyle(color: Colors.white, fontSize: 11),
-      ),
-    ),
-  );
+    );
+  }
 
   Widget _info() {
     if (widget.compact) return const SizedBox.shrink();
@@ -231,11 +250,17 @@ class _VideoCardState extends State<VideoCard> {
           gradient: LinearGradient(
             begin: Alignment.bottomCenter,
             end: Alignment.topCenter,
-            colors: [
-              Colors.black.withValues(alpha: 0.9),
-              Colors.black.withValues(alpha: 0.3),
-              Colors.transparent,
-            ],
+            colors: _hasPoster
+                ? [
+                    Colors.black.withValues(alpha: 0.9),
+                    Colors.black.withValues(alpha: 0.3),
+                    Colors.transparent,
+                  ]
+                : [
+                    RCrmColors.coal,
+                    RCrmColors.coal.withValues(alpha: 0.55),
+                    Colors.transparent,
+                  ],
           ),
         ),
         child: Column(
@@ -245,7 +270,7 @@ class _VideoCardState extends State<VideoCard> {
             MarqueeText(
               text: widget.item.name,
               style: TextStyle(
-                color: Colors.white,
+                color: _hasPoster ? Colors.white : RCrmColors.textPrimary,
                 fontSize: widget.compact ? 11 : 13,
                 fontWeight: FontWeight.w500,
               ),
@@ -253,7 +278,12 @@ class _VideoCardState extends State<VideoCard> {
             if (!widget.compact)
               Text(
                 '${widget.item.formattedSize} • ${widget.item.extension.toUpperCase()}',
-                style: const TextStyle(color: Colors.white60, fontSize: 10),
+                style: TextStyle(
+                  color: _hasPoster
+                      ? Colors.white60
+                      : RCrmColors.textSecondary,
+                  fontSize: 10,
+                ),
               ),
           ],
         ),
@@ -262,15 +292,15 @@ class _VideoCardState extends State<VideoCard> {
   }
 
   Widget _ph() => Container(
-    color: const Color(0xFF2A2A2A),
+    color: RCrmColors.coal,
     child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        const Icon(Icons.play_circle_outline, size: 48, color: Colors.white38),
+        Icon(Icons.play_circle_outline, size: 48, color: RCrmColors.textFaint),
         const SizedBox(height: 4),
         Text(
           widget.item.extension.toUpperCase(),
-          style: const TextStyle(color: Colors.white38, fontSize: 11),
+          style: TextStyle(color: RCrmColors.textSecondary, fontSize: 11),
         ),
       ],
     ),

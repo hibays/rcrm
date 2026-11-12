@@ -13,6 +13,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../providers/server_provider.dart';
 import '../providers/settings_provider.dart';
@@ -849,7 +850,7 @@ class _State extends ConsumerState<CastRemoteScreen>
               else if (connected && !_ui.dragging)
                 Text(
                   '${formatMs(_ui.status.posMs)} / ${formatMs(_ui.status.durMs)}',
-                  style: const TextStyle(fontSize: 12, color: Colors.white54),
+                  style: TextStyle(fontSize: 12, color: RCrmColors.textSecondary),
                 ),
             ],
           ),
@@ -867,11 +868,11 @@ class _State extends ConsumerState<CastRemoteScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.folder_off, size: 48, color: Colors.white38),
+            Icon(Icons.folder_off, size: 48, color: RCrmColors.textFaint),
             const SizedBox(height: 12),
-            const Text(
+            Text(
               'Failed to load folder',
-              style: TextStyle(color: Colors.white70),
+              style: TextStyle(color: RCrmColors.textSecondary),
             ),
             const SizedBox(height: 8),
             TextButton(
@@ -958,12 +959,12 @@ class _State extends ConsumerState<CastRemoteScreen>
             Icon(
               _showImages ? Icons.photo_outlined : Icons.video_library_outlined,
               size: 48,
-              color: Colors.white38,
+              color: RCrmColors.textFaint,
             ),
             const SizedBox(height: 12),
             Text(
               _showImages ? 'No images here' : 'No videos here',
-              style: const TextStyle(color: Colors.white70),
+              style: TextStyle(color: RCrmColors.textSecondary),
             ),
           ],
         ),
@@ -1002,7 +1003,7 @@ class _State extends ConsumerState<CastRemoteScreen>
                 child: _FolderPreview(
                   dirPath: d,
                   fallback: Container(
-                    color: const Color(0xFF2A2A3E),
+                    color: RCrmColors.coal,
                     child: const Icon(
                       Icons.folder,
                       size: 28,
@@ -1025,7 +1026,7 @@ class _State extends ConsumerState<CastRemoteScreen>
               ),
             ),
             const SizedBox(width: 8),
-            const Icon(Icons.chevron_right, size: 20, color: Colors.white38),
+            Icon(Icons.chevron_right, size: 20, color: RCrmColors.textFaint),
           ],
         ),
       ),
@@ -1057,10 +1058,10 @@ class _State extends ConsumerState<CastRemoteScreen>
                         // default) so the disk/RAM cache is shared.
                         decodeWidth: 400,
                         errorWidget: Container(
-                          color: const Color(0xFF2A2A3E),
-                          child: const Icon(
+                          color: RCrmColors.coal,
+                          child: Icon(
                             Icons.broken_image_outlined,
-                            color: Colors.white38,
+                            color: RCrmColors.textFaint,
                           ),
                         ),
                       )
@@ -1096,7 +1097,7 @@ class _State extends ConsumerState<CastRemoteScreen>
                     ].join(' • '),
                     style: TextStyle(
                       fontSize: 12,
-                      color: Colors.white.withValues(alpha: 0.5),
+                      color: RCrmColors.textSecondary,
                     ),
                   ),
                 ],
@@ -1235,7 +1236,7 @@ class _State extends ConsumerState<CastRemoteScreen>
               children: [
                 Text(
                   formatMs(shownPos.round()),
-                  style: const TextStyle(fontSize: 11, color: Colors.white54),
+                  style: TextStyle(fontSize: 11, color: RCrmColors.textSecondary),
                 ),
                 Expanded(
                   child: SliderTheme(
@@ -1299,7 +1300,7 @@ class _State extends ConsumerState<CastRemoteScreen>
                 ),
                 Text(
                   formatMs(dur),
-                  style: const TextStyle(fontSize: 11, color: Colors.white54),
+                  style: TextStyle(fontSize: 11, color: RCrmColors.textSecondary),
                 ),
               ],
             ),
@@ -1366,7 +1367,7 @@ class _FolderGridCell extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       clipBehavior: Clip.antiAlias,
-      color: const Color(0xFF1E1E30),
+      color: RCrmColors.char,
       child: InkWell(
         onTap: onTap,
         child: Column(
@@ -1375,8 +1376,8 @@ class _FolderGridCell extends StatelessWidget {
             Expanded(
               child: _FolderPreview(
                 dirPath: path,
-                fallback: const ColoredBox(
-                  color: Color(0xFF1E1E30),
+                fallback: ColoredBox(
+                  color: RCrmColors.char,
                   child: Center(
                     child: Icon(
                       Icons.folder,
@@ -1580,7 +1581,7 @@ class _ImageGridCell extends StatelessWidget {
   Widget build(BuildContext context) {
     return Card(
       clipBehavior: Clip.antiAlias,
-      color: const Color(0xFF1E1E30),
+      color: RCrmColors.char,
       child: InkWell(
         onTap: onTap,
         child: Column(
@@ -1593,10 +1594,10 @@ class _ImageGridCell extends StatelessWidget {
                 // Same size as the main image grid so caches are shared.
                 decodeWidth: 400,
                 errorWidget: Container(
-                  color: const Color(0xFF2A2A3E),
-                  child: const Icon(
+                  color: RCrmColors.coal,
+                  child: Icon(
                     Icons.broken_image_outlined,
-                    color: Colors.white38,
+                    color: RCrmColors.textFaint,
                     size: 40,
                   ),
                 ),

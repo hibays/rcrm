@@ -18,7 +18,9 @@ import '../services/thumb_cache.dart';
 import '../utils/thumb_cache_policy.dart';
 import '../widgets/thumb_cache_dialog.dart';
 
-const _hintSilver = TextStyle(color: RCrmColors.silver);
+// A getter, not a `final`: the palette is a runtime snapshot now, and a
+// cached TextStyle would keep yesterday's ink after a Day/Night switch.
+TextStyle get _hintSilver => TextStyle(color: RCrmColors.textSecondary);
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -303,7 +305,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   // red — an unstarted server is a normal state, not an error.
                   color: ss.isRunning
                       ? RCrmColors.primary
-                      : const Color(0xFF8A8A8A),
+                      : RCrmColors.textFaint,
                 ),
                 title: Text(ss.isRunning ? 'Running' : 'Stopped'),
                 subtitle: ss.url != null ? Text(ss.url!) : null,
@@ -414,7 +416,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       builder: (context, constraints) {
                         final host = TextField(
                           controller: _hostCtrl,
-                          decoration: const InputDecoration(
+                          decoration: InputDecoration(
                             labelText: 'Host',
                             hintText: 'example.com',
                             hintStyle: _hintSilver,
@@ -449,7 +451,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     const SizedBox(height: 12),
                     TextField(
                       controller: _userCtrl,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'Username',
                         hintStyle: _hintSilver,
                         prefixIcon: Icon(Icons.person),
@@ -459,7 +461,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     const SizedBox(height: 12),
                     TextField(
                       controller: _passCtrl,
-                      decoration: const InputDecoration(
+                      decoration: InputDecoration(
                         labelText: 'Password',
                         hintStyle: _hintSilver,
                         prefixIcon: Icon(Icons.lock),
@@ -526,6 +528,46 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ]),
           ],
+          const Divider(),
+          _sectionHeader('Appearance'),
+          const SizedBox(height: 8),
+          _group([
+            _seg<String>(
+              title: 'Theme',
+              subtitle: 'Follow the system, or pin Day / Night',
+              selected: {ui.appearanceMode},
+              segments: const [
+                ButtonSegment(
+                  value: 'system',
+                  label: Text('System', maxLines: 1, overflow: TextOverflow.ellipsis),
+                ),
+                ButtonSegment(
+                  value: 'day',
+                  label: Text('Day', maxLines: 1, overflow: TextOverflow.ellipsis),
+                ),
+                ButtonSegment(
+                  value: 'night',
+                  label: Text('Night', maxLines: 1, overflow: TextOverflow.ellipsis),
+                ),
+              ],
+              onChanged: (v) {
+                ref
+                    .read(uiSettingsProvider.notifier)
+                    .setAppearanceMode(v.first);
+              },
+            ),
+          ]),
+          const SizedBox(height: 8),
+          _group([
+            // _group's Column centres shrink-wrapped children; without a full
+            // width the label and swatches drift to the middle of the card on
+            // wide screens, out of line with the Theme row above.
+            SizedBox(
+              width: double.infinity,
+              child: _accentRow(ui.appearanceAccent),
+            ),
+          ]),
+          const SizedBox(height: 8),
           const Divider(),
           _sectionHeader('Display'),
           const SizedBox(height: 8),
@@ -842,12 +884,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ),
                 ],
                 const SizedBox(height: 10),
-                Align(
-                  alignment: Alignment.centerRight,
+                // Fill the row and tighten the segment padding on narrow
+                // screens. Three labels used to be squeezed by the available
+                // width until "System" wrapped onto two lines at 320dp; each
+                // label also pins maxLines as a last guard at large text scale.
+                SizedBox(
+                  width: double.infinity,
                   child: SegmentedButton<T>(
                     segments: segments,
                     selected: selected,
                     onSelectionChanged: onChanged,
+                    // The selected FILL already says which one is active. The
+                    // default check icon steals the width the longest label
+                    // needs on a 320dp phone ("System" became "Sy…").
+                    showSelectedIcon: false,
+                    style: ButtonStyle(
+                      visualDensity: VisualDensity.compact,
+                      padding: const WidgetStatePropertyAll(
+                        EdgeInsets.symmetric(horizontal: 6),
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -864,6 +920,97 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
         );
       },
+    );
+  }
+
+  /// Preset accent row. Colour is never the only carrier of state: every
+  /// swatch carries its name, and the active one also gets a check plus a
+  /// border in the current accent. Wrap keeps all five reachable at 320dp.
+  Widget _accentRow(String selectedKey) {
+    final selected = RCrmAccent.fromKey(selectedKey);
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Accent', style: Theme.of(context).textTheme.bodyLarge),
+          const SizedBox(height: 2),
+          Text(
+            'One accent for the whole library',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final a in RCrmAccent.values)
+                // Material You is offered ONLY where the OS actually supplies
+                // a dynamic scheme. A swatch that cannot act is not shown.
+                if (a != RCrmAccent.materialYou || RCrmColors.hasSystemColor)
+                  _accentChip(a, a == selected, dark),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _accentChip(RCrmAccent accent, bool active, bool dark) {
+    return Semantics(
+      button: true,
+      selected: active,
+      label: '${accent.label} accent',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(RCrmRadii.sm),
+        onTap: () => ref
+            .read(uiSettingsProvider.notifier)
+            .setAppearanceAccent(accent.key),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(RCrmRadii.sm),
+            border: Border.all(
+              // An unselected swatch is still a control boundary: `dim` was
+              // 1.35–1.55:1, below the 3:1 a UI boundary owes.
+              color: active ? RCrmColors.primary : RCrmColors.textFaint,
+              width: active ? 2 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 16,
+                height: 16,
+                decoration: BoxDecoration(
+                  color: RCrmTheme.primaryFor(
+                    accent,
+                    dark ? Brightness.dark : Brightness.light,
+                  ),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                accent.label,
+                style: TextStyle(
+                  color: RCrmColors.textPrimary,
+                  fontSize: 13,
+                  fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                ),
+              ),
+              if (active) ...[
+                const SizedBox(width: 4),
+                Icon(Icons.check, size: 14, color: RCrmColors.primary),
+              ],
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -886,12 +1033,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       '$value',
       style: Theme.of(
         context,
-      ).textTheme.bodyLarge?.copyWith(color: RCrmColors.silver),
+      ).textTheme.bodyLarge?.copyWith(color: RCrmColors.textSecondary),
     );
     final slider = SliderTheme(
       data: SliderTheme.of(context).copyWith(
         activeTrackColor: RCrmColors.primary,
-        inactiveTrackColor: RCrmColors.silverDim,
+        inactiveTrackColor: RCrmColors.textDim,
         thumbColor: RCrmColors.primary,
       ),
       child: Slider(
@@ -959,9 +1106,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     child: Text(
       t,
       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-        // Deeper neutral than the design-system Silver (#AAAAAA reads too
-        // light for section titles). User preference: keep it dark.
-        color: const Color(0xFF8A8A8A),
+        // A step deeper than the body's Silver / ink — but a semantic token,
+        // so Day keeps the same quiet neutral on cream instead of the old
+        // fixed #8A8A8A (which was illegible there).
+        color: RCrmColors.textFaint,
       ),
     ),
   );
@@ -1131,7 +1279,7 @@ class _DirEditorState extends State<_DirEditor> {
                   'Changes are saved as you make them.',
                   style: Theme.of(
                     ctx,
-                  ).textTheme.bodySmall?.copyWith(color: RCrmColors.silver),
+                  ).textTheme.bodySmall?.copyWith(color: RCrmColors.textSecondary),
                 ),
               ),
               const SizedBox(height: 8),

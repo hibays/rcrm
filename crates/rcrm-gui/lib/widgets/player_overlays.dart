@@ -65,8 +65,8 @@ class PlayerBufferingIndicator extends StatelessWidget {
                 height: size * 0.58,
                 child: CircularProgressIndicator(
                   strokeWidth: 2.5,
-                  valueColor: const AlwaysStoppedAnimation(RCrmColors.primary),
-                  backgroundColor: Colors.white.withValues(alpha: 0.14),
+                  valueColor: AlwaysStoppedAnimation(RCrmColors.playerAccent),
+                  backgroundColor: RCrmColors.playerText.withValues(alpha: 0.14),
                 ),
               ),
             ),
@@ -117,9 +117,9 @@ class PlayerPlaybackError extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(
+                  Icon(
                     Icons.error_outline,
-                    color: RCrmColors.silver,
+                    color: RCrmColors.playerTextSecondary,
                     size: 36,
                   ),
                   const SizedBox(height: 12),
@@ -127,7 +127,7 @@ class PlayerPlaybackError extends StatelessWidget {
                     "Can't play this video",
                     textAlign: TextAlign.center,
                     style: text.titleMedium?.copyWith(
-                      color: Colors.white,
+                      color: RCrmColors.playerText,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
@@ -137,7 +137,7 @@ class PlayerPlaybackError extends StatelessWidget {
                     textAlign: TextAlign.center,
                     maxLines: 4,
                     overflow: TextOverflow.ellipsis,
-                    style: text.bodySmall?.copyWith(color: RCrmColors.silver),
+                    style: text.bodySmall?.copyWith(color: RCrmColors.playerTextSecondary),
                   ),
                   const SizedBox(height: 18),
                   Row(
@@ -146,7 +146,7 @@ class PlayerPlaybackError extends StatelessWidget {
                       TextButton(
                         onPressed: onBack,
                         style: TextButton.styleFrom(
-                          foregroundColor: RCrmColors.silver,
+                          foregroundColor: RCrmColors.playerTextSecondary,
                         ),
                         child: const Text('Back'),
                       ),
@@ -256,7 +256,7 @@ class _PlayerUpNextCardState extends State<PlayerUpNextCard>
             constraints: const BoxConstraints(maxWidth: 360),
             child: DecoratedBox(
               decoration: BoxDecoration(
-                color: RCrmColors.ash.withValues(alpha: 0.96),
+                color: RCrmColors.playerSurface.withValues(alpha: 0.96),
                 borderRadius: BorderRadius.circular(RCrmRadii.md),
                 // Allowed where a surface is not at rest: this one appears
                 // over a frame of unknown brightness, and has to be a card
@@ -281,10 +281,10 @@ class _PlayerUpNextCardState extends State<PlayerUpNextCard>
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
+                          Text(
                             'Up next',
                             style: TextStyle(
-                              color: RCrmColors.silver,
+                              color: RCrmColors.playerTextSecondary,
                               fontSize: 11,
                               fontWeight: FontWeight.w600,
                               letterSpacing: 0.02,
@@ -295,8 +295,8 @@ class _PlayerUpNextCardState extends State<PlayerUpNextCard>
                             widget.title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
+                            style: TextStyle(
+                              color: RCrmColors.playerText,
                               fontSize: 13,
                               fontWeight: FontWeight.w600,
                             ),
@@ -307,12 +307,12 @@ class _PlayerUpNextCardState extends State<PlayerUpNextCard>
                               widget.subtitle,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 // The card's one line of context — size,
                                 // format, and now "Random pick". White38 read
                                 // at 3.6:1 on the card's dark surface; the
                                 // system's secondary token is Silver.
-                                color: RCrmColors.silver,
+                                color: RCrmColors.playerTextSecondary,
                                 fontSize: 11,
                               ),
                             ),
@@ -324,7 +324,7 @@ class _PlayerUpNextCardState extends State<PlayerUpNextCard>
                     TextButton(
                       onPressed: widget.onAdvance,
                       style: TextButton.styleFrom(
-                        foregroundColor: RCrmColors.primary,
+                        foregroundColor: RCrmColors.playerAccent,
                         padding: const EdgeInsets.symmetric(horizontal: 10),
                         minimumSize: const Size(0, 34),
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -338,10 +338,10 @@ class _PlayerUpNextCardState extends State<PlayerUpNextCard>
                       ),
                     ),
                     IconButton(
-                      icon: const Icon(
+                      icon: Icon(
                         Icons.close,
                         size: 16,
-                        color: Colors.white54,
+                        color: RCrmColors.playerTextFaint,
                       ),
                       onPressed: widget.onDismiss,
                       tooltip: 'Stay on this video',
@@ -381,11 +381,11 @@ class _PlayerUpNextCardState extends State<PlayerUpNextCard>
                 // Drains: full at the moment the card appeared.
                 value: 1 - _count.value,
                 strokeWidth: 2.5,
-                valueColor: const AlwaysStoppedAnimation(RCrmColors.primary),
-                backgroundColor: Colors.white.withValues(alpha: 0.12),
+                valueColor: AlwaysStoppedAnimation(RCrmColors.playerAccent),
+                backgroundColor: RCrmColors.playerText.withValues(alpha: 0.12),
               ),
             ),
-            const Icon(Icons.skip_next, size: 15, color: Colors.white70),
+            Icon(Icons.skip_next, size: 15, color: RCrmColors.playerTextSecondary),
           ],
         ),
       ),

@@ -11,6 +11,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../config/theme.dart';
 import '../ffi/rust_bridge.dart';
 import '../services/cast_protocol.dart';
 
@@ -399,16 +400,27 @@ class CastReceiverQrView extends StatelessWidget {
     // No AppBar: the gradient covers the ENTIRE screen edge to edge.
     // When showBack is set, a back button is drawn inside the gradient
     // over the SafeArea instead.
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Color(0xFF101428), Color(0xFF1A1030), Color(0xFF0B0B14)],
+    // This whole page is a fixed deep-blue/purple brand world with a white QR
+    // card — it is NOT a page surface and must not follow Day/Night. Pin the
+    // inherited text/icon colours to the dark world so Day's ink never lands
+    // on the gradient. The QR card's own text is explicitly white already.
+    return Theme(
+      data: Theme.of(context).copyWith(
+        textTheme: RCrmTheme.dark.textTheme,
+        primaryTextTheme: RCrmTheme.dark.textTheme,
+        iconTheme: RCrmTheme.dark.iconTheme,
+        primaryIconTheme: RCrmTheme.dark.iconTheme,
+      ),
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Color(0xFF101428), Color(0xFF1A1030), Color(0xFF0B0B14)],
+            ),
           ),
-        ),
         child: SafeArea(
           child: Stack(
             children: [
@@ -446,6 +458,7 @@ class CastReceiverQrView extends StatelessWidget {
             ],
           ),
         ),
+      ),
       ),
     );
   }

@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
+import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'config/theme.dart';
@@ -65,32 +66,74 @@ class _RcrmAppState extends ConsumerState<RcrmApp> {
   @override
   Widget build(BuildContext context) {
     final isCloud = _deployMode == DeployMode.cloud;
+    // Only the two appearance fields: watching the whole SettingsState would
+    // rebuild this shell (and re-create both ThemeData objects) every time an
+    // image column or a cache switch changed.
+    final appearance = ref.watch(
+      uiSettingsProvider.select((s) => (s.appearanceMode, s.appearanceAccent)),
+    );
+    final accent = RCrmAccent.fromKey(appearance.$2);
+    final themeMode = switch (appearance.$1) {
+      'day' => ThemeMode.light,
+      'night' => ThemeMode.dark,
+      _ => ThemeMode.system,
+    };
 
-    return MaterialApp(
-      title: 'RCrm Media Library',
-      navigatorKey: _navigatorKey,
-      theme: RCrmTheme.dark,
-      debugShowCheckedModeBanner: false,
-      builder: (context, child) {
-        if (Platform.isAndroid || Platform.isIOS) return child!;
-        return TitleBarShell(child: child!);
-      },
-      home: _deployMode == null
-          ? const DoubleBackExit(
-              child: Scaffold(body: Center(child: CircularProgressIndicator())),
-            )
-          : _isTv
-          ? const CastReceiverScreen()
-          : isCloud
-          ? const CloudSetupScreen()
-          : LibrarySetupScreen(initialDirs: _savedDirs),
-      routes: {
-        '/setup': (context) => LibrarySetupScreen(initialDirs: _savedDirs),
-        '/cloud-setup': (context) => const CloudSetupScreen(),
-        '/home': (context) => const HomeScreen(),
-        '/settings': (context) => const SettingsScreen(),
-        '/cast-scan': (context) => const CastScanScreen(),
-        '/cast-receiver': (context) => const CastReceiverScreen(showBack: true),
+    // Android 12+ wallpaper colours arrive asynchronously. Recording them
+    // before the two ThemeData builds means Material You can be an accent like
+    // any other; on every other platform both schemes are null and the swatch
+    // is simply not offered.
+    return DynamicColorBuilder(
+      builder: (lightDynamic, darkDynamic) {
+        RCrmColors.setSystemColors(
+          light: lightDynamic?.primary,
+          dark: darkDynamic?.primary,
+        );
+        return MaterialApp(
+          title: 'RCrm Media Library',
+          navigatorKey: _navigatorKey,
+          // Both are PURE builds. Which one Flutter picks (themeMode may be
+          // system) is only known inside the builder below, where the runtime
+          // RCrmColors snapshot is applied once.
+          theme: RCrmTheme.build(accent: accent, brightness: Brightness.light),
+          darkTheme: RCrmTheme.build(
+            accent: accent,
+            brightness: Brightness.dark,
+          ),
+          themeMode: themeMode,
+          // AnimatedTheme lerps ThemeData over 200ms, and ColorScheme.lerp flips
+          // `brightness` at the halfway point — while `RCrmColors` is a single
+          // snapshot that can only hold one world. Mid-transition the page would
+          // be half-cream with white ink (or half-dark with ink). An appearance
+          // switch is a state change, not an animation: make it atomic.
+          themeAnimationDuration: Duration.zero,
+          debugShowCheckedModeBanner: false,
+          builder: (context, child) {
+            RCrmTheme.applyToContext(context, accent);
+            if (Platform.isAndroid || Platform.isIOS) return child!;
+            return TitleBarShell(child: child!);
+          },
+          home: _deployMode == null
+              ? const DoubleBackExit(
+                  child: Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  ),
+                )
+              : _isTv
+              ? const CastReceiverScreen()
+              : isCloud
+              ? const CloudSetupScreen()
+              : LibrarySetupScreen(initialDirs: _savedDirs),
+          routes: {
+            '/setup': (context) => LibrarySetupScreen(initialDirs: _savedDirs),
+            '/cloud-setup': (context) => const CloudSetupScreen(),
+            '/home': (context) => const HomeScreen(),
+            '/settings': (context) => const SettingsScreen(),
+            '/cast-scan': (context) => const CastScanScreen(),
+            '/cast-receiver': (context) =>
+                const CastReceiverScreen(showBack: true),
+          },
+        );
       },
     );
   }

@@ -17,6 +17,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../config/theme.dart';
 import '../models/album.dart';
 import '../models/media_item.dart';
 import 'video_poster.dart';
@@ -35,7 +36,7 @@ class VideoFolderCard extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Card(
-        color: Colors.black,
+        color: RCrmColors.char,
         clipBehavior: Clip.antiAlias,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -107,13 +108,13 @@ class VideoFolderCard extends StatelessWidget {
   /// same flat cell at this size — the folder's name and count are what the card
   /// is read for.
   Widget _empty({bool icon = false}) => ColoredBox(
-    color: const Color(0xFF2A2A2A),
+    color: RCrmColors.coal,
     child: icon
-        ? const Center(
+        ? Center(
             child: Icon(
               Icons.play_circle_outline,
               size: 20,
-              color: Colors.white24,
+              color: RCrmColors.textFaint,
             ),
           )
         : const SizedBox.expand(),

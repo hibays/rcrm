@@ -56,7 +56,7 @@ class PlayerSettingsPanel extends StatelessWidget {
     this.showShortcuts = false,
   });
 
-  static const _accent = RCrmColors.primary;
+  static Color get _accent => RCrmColors.playerAccent;
 
   /// The keys `widgets/media_player_keys.dart` answers to. Kept as one line of
   /// text rather than a table: it is a reminder for someone who already knows
@@ -88,7 +88,7 @@ class PlayerSettingsPanel extends StatelessWidget {
                 margin: const EdgeInsets.symmetric(horizontal: 24),
                 padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
                 decoration: BoxDecoration(
-                  color: RCrmColors.ash,
+                  color: RCrmColors.playerSurface,
                   borderRadius: BorderRadius.circular(RCrmRadii.md + 4),
                 ),
                 child: SingleChildScrollView(
@@ -110,12 +110,12 @@ class PlayerSettingsPanel extends StatelessWidget {
                         const SizedBox(height: 8),
                         Text(
                           orientationNote(orientation.policy),
-                          style: const TextStyle(
+                          style: TextStyle(
                             // Silver, not white38: 11dp at 3.6:1 is an
                             // explanation for a dim room that the dim room
                             // cannot read. The mode menu's notes use the same
                             // token for the same reason.
-                            color: RCrmColors.silver,
+                            color: RCrmColors.playerTextSecondary,
                             fontSize: 11,
                             height: 1.4,
                           ),
@@ -135,11 +135,11 @@ class PlayerSettingsPanel extends StatelessWidget {
                         const SizedBox(height: 22),
                         _label('Keyboard'),
                         const SizedBox(height: 8),
-                        const Text(
+                        Text(
                           _shortcutLine,
                           style: TextStyle(
                             // See the orientation note: the same 11dp line.
-                            color: RCrmColors.silver,
+                            color: RCrmColors.playerTextSecondary,
                             fontSize: 11,
                             height: 1.6,
                           ),
@@ -159,19 +159,19 @@ class PlayerSettingsPanel extends StatelessWidget {
   Widget _header() {
     return Row(
       children: [
-        const Icon(Icons.settings, color: Colors.white54, size: 18),
+        Icon(Icons.settings, color: RCrmColors.playerTextFaint, size: 18),
         const SizedBox(width: 8),
-        const Text(
+        Text(
           'Playback Settings',
           style: TextStyle(
-            color: Colors.white,
+            color: RCrmColors.playerText,
             fontSize: 15,
             fontWeight: FontWeight.w600,
           ),
         ),
         const Spacer(),
         IconButton(
-          icon: const Icon(Icons.close, color: Colors.white38, size: 18),
+          icon: Icon(Icons.close, color: RCrmColors.playerTextFaint, size: 18),
           onPressed: onDismiss,
           tooltip: 'Close',
           visualDensity: VisualDensity.compact,
@@ -184,8 +184,8 @@ class PlayerSettingsPanel extends StatelessWidget {
 
   Widget _label(String t) => Text(
     t,
-    style: const TextStyle(
-      color: RCrmColors.silver,
+    style: TextStyle(
+      color: RCrmColors.playerTextSecondary,
       fontSize: 12,
       fontWeight: FontWeight.w600,
       letterSpacing: 0.02,
@@ -268,12 +268,12 @@ class PlayerSettingsPanel extends StatelessWidget {
     backgroundColor: WidgetStateProperty.resolveWith(
       (states) => states.contains(WidgetState.selected)
           ? _accent
-          : Colors.white.withValues(alpha: 0.06),
+          : RCrmColors.playerText.withValues(alpha: 0.06),
     ),
     foregroundColor: WidgetStateProperty.resolveWith(
       (states) => states.contains(WidgetState.selected)
-          ? Colors.black
-          : Colors.white54,
+          ? RCrmColors.darkPitch
+          : RCrmColors.playerTextFaint,
     ),
     textStyle: WidgetStateProperty.all(
       (Theme.of(context).textTheme.labelLarge ??
@@ -304,8 +304,8 @@ class PlayerSettingsPanel extends StatelessWidget {
                   width: 116,
                   child: Text(
                     f.label,
-                    style: const TextStyle(
-                      color: RCrmColors.silver,
+                    style: TextStyle(
+                      color: RCrmColors.playerTextSecondary,
                       fontSize: 12,
                     ),
                   ),
@@ -313,8 +313,8 @@ class PlayerSettingsPanel extends StatelessWidget {
                 Expanded(
                   child: Text(
                     f.value,
-                    style: const TextStyle(
-                      color: Colors.white,
+                    style: TextStyle(
+                      color: RCrmColors.playerText,
                       fontSize: 12,
                       // Numbers that do not shuffle as the row updates.
                       fontFeatures: [FontFeature.tabularFigures()],

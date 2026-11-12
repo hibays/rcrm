@@ -51,12 +51,15 @@ class ImageInfoSheet extends StatelessWidget {
     this.onActualSize,
   });
 
-  static const _hairline = Color(0x14FFFFFF);
+  // A hairline has to be ink-on-cream in Day and white-on-ash in Night, so it
+  // cannot be a compile-time constant any more. It also stays 8% — `textDim`
+  // (20%) turned a divider into a rule.
+  static Color get _hairline => RCrmColors.hairline;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: RCrmColors.ash,
         borderRadius: BorderRadius.vertical(top: Radius.circular(14)),
         border: Border(top: BorderSide(color: _hairline)),
@@ -107,7 +110,7 @@ class ImageInfoSheet extends StatelessWidget {
               width: 36,
               height: 4,
               decoration: BoxDecoration(
-                color: Colors.white24,
+                color: RCrmColors.textFaint,
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -122,7 +125,7 @@ class ImageInfoSheet extends StatelessWidget {
                 child: Text(
                   captured == null ? item.name : _formatDate(captured),
                   style: TextStyle(
-                    color: RCrmColors.white,
+                    color: RCrmColors.textPrimary,
                     fontSize: captured == null ? 18 : 21,
                     fontWeight: FontWeight.w600,
                     height: 1.2,
@@ -141,8 +144,8 @@ class ImageInfoSheet extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               item.name,
-              style: const TextStyle(
-                color: RCrmColors.silver,
+              style: TextStyle(
+                color: RCrmColors.textSecondary,
                 fontSize: 13,
                 height: 1.35,
               ),
@@ -166,8 +169,8 @@ class ImageInfoSheet extends StatelessWidget {
           ],
           Text(
             _technicalLine(exif),
-            style: const TextStyle(
-              color: RCrmColors.silver,
+            style: TextStyle(
+              color: RCrmColors.textSecondary,
               fontSize: 13,
               height: 1.4,
             ),
@@ -203,10 +206,10 @@ class ImageInfoSheet extends StatelessWidget {
     // established.
     if (!meta.parsed) return const [];
     if (exif == null || !exif.hasCamera) {
-      return const [
+      return [
         Text(
           'No camera information',
-          style: TextStyle(color: RCrmColors.silver, fontSize: 13),
+          style: TextStyle(color: RCrmColors.textSecondary, fontSize: 13),
         ),
         SizedBox(height: 6),
       ];
@@ -216,8 +219,8 @@ class ImageInfoSheet extends StatelessWidget {
       if (exif.cameraName != null)
         Text(
           exif.cameraName!,
-          style: const TextStyle(
-            color: RCrmColors.white,
+          style: TextStyle(
+            color: RCrmColors.textPrimary,
             fontSize: 14,
             fontWeight: FontWeight.w500,
             height: 1.3,
@@ -229,8 +232,8 @@ class ImageInfoSheet extends StatelessWidget {
         const SizedBox(height: 3),
         Text(
           exif.lens!,
-          style: const TextStyle(
-            color: RCrmColors.silver,
+          style: TextStyle(
+            color: RCrmColors.textSecondary,
             fontSize: 13,
             height: 1.3,
           ),
@@ -242,8 +245,8 @@ class ImageInfoSheet extends StatelessWidget {
         const SizedBox(height: 3),
         Text(
           exposure,
-          style: const TextStyle(
-            color: RCrmColors.silver,
+          style: TextStyle(
+            color: RCrmColors.textSecondary,
             fontSize: 13,
             height: 1.3,
           ),
@@ -264,8 +267,8 @@ class ImageInfoSheet extends StatelessWidget {
       if (track.make != null || track.model != null)
         Text(
           [track.make, track.model].whereType<String>().join(' '),
-          style: const TextStyle(
-            color: RCrmColors.white,
+          style: TextStyle(
+            color: RCrmColors.textPrimary,
             fontSize: 14,
             fontWeight: FontWeight.w500,
           ),
@@ -276,7 +279,7 @@ class ImageInfoSheet extends StatelessWidget {
         const SizedBox(height: 3),
         Text(
           parts.join(' • '),
-          style: const TextStyle(color: RCrmColors.silver, fontSize: 13),
+          style: TextStyle(color: RCrmColors.textSecondary, fontSize: 13),
         ),
       ],
       const SizedBox(height: 6),
@@ -428,13 +431,13 @@ class _LocationLine extends StatelessWidget {
     if (lat != null && lon != null) {
       return Row(
         children: [
-          const Icon(Icons.place_outlined, size: 16, color: RCrmColors.silver),
+          Icon(Icons.place_outlined, size: 16, color: RCrmColors.textSecondary),
           const SizedBox(width: 6),
           Expanded(
             child: Text(
               '${lat.abs().toStringAsFixed(4)}° ${lat >= 0 ? 'N' : 'S'}, '
               '${lon.abs().toStringAsFixed(4)}° ${lon >= 0 ? 'E' : 'W'}',
-              style: const TextStyle(color: RCrmColors.white, fontSize: 13),
+              style: TextStyle(color: RCrmColors.textPrimary, fontSize: 13),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
@@ -443,9 +446,9 @@ class _LocationLine extends StatelessWidget {
       );
     }
     if (!known) return const SizedBox.shrink();
-    return const Text(
+    return Text(
       'No location information',
-      style: TextStyle(color: Colors.white38, fontSize: 13),
+      style: TextStyle(color: RCrmColors.textSecondary, fontSize: 13),
     );
   }
 }
@@ -454,8 +457,8 @@ class _Rule extends StatelessWidget {
   const _Rule();
 
   @override
-  Widget build(BuildContext context) => const Padding(
-    padding: EdgeInsets.symmetric(vertical: 14),
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 14),
     child: Divider(height: 1, thickness: 1, color: ImageInfoSheet._hairline),
   );
 }
@@ -477,7 +480,7 @@ class _MetaSkeleton extends StatelessWidget {
       child: Container(
         height: height,
         decoration: BoxDecoration(
-          color: Colors.white10,
+          color: RCrmColors.textDim,
           borderRadius: BorderRadius.circular(4),
         ),
       ),
@@ -503,13 +506,13 @@ class _Row extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 7),
       child: Row(
         children: [
-          Icon(icon, size: 19, color: Colors.white54),
+          Icon(icon, size: 19, color: RCrmColors.textSecondary),
           const SizedBox(width: 14),
           Expanded(
             child: Text(
               label,
-              style: const TextStyle(
-                color: RCrmColors.white,
+              style: TextStyle(
+                color: RCrmColors.textPrimary,
                 fontSize: 14,
                 height: 1.3,
               ),
@@ -524,7 +527,7 @@ class _Row extends StatelessWidget {
             Flexible(
               child: Text(
                 value!,
-                style: const TextStyle(color: RCrmColors.silver, fontSize: 13),
+                style: TextStyle(color: RCrmColors.textSecondary, fontSize: 13),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 textAlign: TextAlign.end,
@@ -556,7 +559,7 @@ class _Chip extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
           child: Text(
             label,
-            style: const TextStyle(
+            style: TextStyle(
               color: RCrmColors.primary,
               fontSize: 13,
               fontWeight: FontWeight.w600,

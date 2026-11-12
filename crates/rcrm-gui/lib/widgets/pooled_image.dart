@@ -4,6 +4,7 @@
 
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../config/theme.dart';
 import '../services/image_load_gate.dart';
 import 'auth_image.dart';
 import 'disk_thumb_image.dart';
@@ -230,22 +231,22 @@ class _PooledImageState extends State<PooledImage> {
   }
 
   Widget _spinner() => Container(
-    color: const Color(0xFF2A2A2A),
-    child: const Center(
+    color: RCrmColors.coal,
+    child: Center(
       child: SizedBox(
         width: 18,
         height: 18,
-        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white24),
+        child: CircularProgressIndicator(strokeWidth: 2, color: RCrmColors.textFaint),
       ),
     ),
   );
 
-  Widget _dark() => Container(color: const Color(0xFF2A2A2A));
+  Widget _dark() => Container(color: RCrmColors.coal);
 
   Widget _defaultError() => Container(
-    color: const Color(0xFF2A2A2A),
-    child: const Center(
-      child: Icon(Icons.broken_image, color: Colors.white24, size: 28),
+    color: RCrmColors.coal,
+    child: Center(
+      child: Icon(Icons.broken_image, color: RCrmColors.textFaint, size: 28),
     ),
   );
 

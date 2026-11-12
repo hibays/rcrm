@@ -44,6 +44,7 @@ dependencies:
   # Camera — cast pairing scan (mobile; camera_windows provides the Windows impl)
   camera: ^0.12.1
   camera_windows: ^0.2.6+4
+  dynamic_color: ^2.1.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

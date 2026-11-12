@@ -356,8 +356,10 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
                 children: [
                   Text(
                     widget.items[_currentIndex].name,
-                    style: const TextStyle(
-                      color: RCrmColors.white,
+                    // This bar floats on a black scrim over the photo, so it
+                    // is media chrome: always white, never Day's ink.
+                    style: TextStyle(
+                      color: RCrmColors.mediaText,
                       fontSize: 14,
                       fontWeight: FontWeight.w500,
                     ),
@@ -367,8 +369,8 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
                   const SizedBox(height: 2),
                   Text(
                     '${_currentIndex + 1} / ${widget.items.length}',
-                    style: const TextStyle(
-                      color: RCrmColors.silver,
+                    style: TextStyle(
+                      color: RCrmColors.mediaTextSecondary,
                       fontSize: 12,
                     ),
                   ),

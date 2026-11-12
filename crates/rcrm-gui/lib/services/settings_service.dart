@@ -53,6 +53,8 @@ class SettingsService {
   static const _keyPreviewEnabled = 'preview_enabled';
   static const _keyThumbCache = 'thumb_cache_enabled';
   static const _keyThumbCacheLimit = 'thumb_cache_limit_mb';
+  static const _keyAppearanceMode = 'appearance_mode';
+  static const _keyAppearanceAccent = 'appearance_accent';
   static const _keyPipEnabled = 'pip_enabled';
   static const _keyPipSize = 'pip_size'; // 'normal' or 'small'
   static const _keyPlaybackMode =
@@ -231,6 +233,38 @@ class SettingsService {
   Future<void> setPreviewEnabled(bool enabled) async {
     final p = await prefs;
     await p.setBool(_keyPreviewEnabled, enabled);
+  }
+
+  // ── Appearance ────────────────────────────────────
+  // Two independent strings: the appearance (System / Day / Night) and the
+  // preset accent key. Both are read back through a whitelist / fallback so a
+  // preference file this build did not write cannot invent a new appearance.
+  // Default SYSTEM: the app follows the OS from the first launch.
+
+  Future<String> getAppearanceMode() async {
+    final p = await prefs;
+    final v = p.getString(_keyAppearanceMode);
+    return switch (v) {
+      'day' || 'night' => v!,
+      _ => 'system',
+    };
+  }
+
+  Future<void> setAppearanceMode(String mode) async {
+    final p = await prefs;
+    await p.setString(_keyAppearanceMode, mode);
+  }
+
+  /// The preset accent's stable [key]. Unknown values are resolved by
+  /// `RCrmAccent.fromKey` at the consumer, which falls back to Marquee Orange.
+  Future<String> getAppearanceAccent() async {
+    final p = await prefs;
+    return p.getString(_keyAppearanceAccent) ?? 'marquee';
+  }
+
+  Future<void> setAppearanceAccent(String key) async {
+    final p = await prefs;
+    await p.setString(_keyAppearanceAccent, key);
   }
 
   // ── Thumbnail cache ──────────────────────────────

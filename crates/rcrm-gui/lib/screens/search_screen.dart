@@ -6,6 +6,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../config/theme.dart';
 import '../models/album.dart';
 import '../models/media_item.dart';
 import '../providers/library_provider.dart';
@@ -103,8 +104,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
       canPop: true,
       child: Scaffold(
         appBar: AppBar(
-          backgroundColor: const Color(0xFF1A1A1A),
-          foregroundColor: Colors.white,
+          backgroundColor: RCrmColors.ash,
+          foregroundColor: RCrmColors.textPrimary,
           elevation: 0,
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
@@ -113,10 +114,10 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
           title: TextField(
             controller: _controller,
             focusNode: _focusNode,
-            style: const TextStyle(color: Colors.white),
-            decoration: const InputDecoration(
+            style: TextStyle(color: RCrmColors.textPrimary),
+            decoration: InputDecoration(
               hintText: 'Search name or type (mp4, jpg...)',
-              hintStyle: TextStyle(color: Color(0xFFAAAAAA)),
+              hintStyle: TextStyle(color: RCrmColors.textSecondary),
               border: InputBorder.none,
             ),
           ),
@@ -235,7 +236,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                     Text(
                       total == 1 ? '1 result' : '$total results',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        color: Colors.white,
+                        color: RCrmColors.textPrimary,
                         fontWeight: FontWeight.w600,
                       ),
                     ),

@@ -389,7 +389,7 @@ class _PlayerScrubBarState extends State<PlayerScrubBar>
                         ),
                         activeTrackColor: widget.activeColor,
                         inactiveTrackColor:
-                            widget.inactiveColor ?? RCrmColors.silverDim,
+                            widget.inactiveColor ?? RCrmColors.playerTrack,
                         secondaryActiveTrackColor:
                             widget.bufferColor ?? const Color(0x59FFFFFF),
                         thumbColor: widget.thumbColor,
@@ -402,7 +402,7 @@ class _PlayerScrubBarState extends State<PlayerScrubBar>
                           alpha: 0.38,
                         ),
                         disabledInactiveTrackColor:
-                            widget.inactiveColor ?? RCrmColors.silverDim,
+                            widget.inactiveColor ?? RCrmColors.playerTrack,
                         disabledSecondaryActiveTrackColor:
                             widget.bufferColor ?? const Color(0x59FFFFFF),
                         disabledThumbColor: widget.thumbColor.withValues(
@@ -448,9 +448,9 @@ class _PlayerScrubBarState extends State<PlayerScrubBar>
                         child: IgnorePointer(
                           child: Opacity(
                             opacity: tipT * 0.45,
-                            child: const SizedBox(
+                            child: SizedBox(
                               width: 1,
-                              child: ColoredBox(color: Colors.white),
+                              child: ColoredBox(color: RCrmColors.playerText),
                             ),
                           ),
                         ),
@@ -576,8 +576,8 @@ class _Tooltip extends StatelessWidget {
           text,
           maxLines: 1,
           softWrap: false,
-          style: const TextStyle(
-            color: Colors.white,
+          style: TextStyle(
+            color: RCrmColors.playerText,
             fontSize: 11.5,
             fontWeight: FontWeight.w500,
             // Digits that keep their width, so the tooltip does not twitch as

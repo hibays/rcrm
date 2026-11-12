@@ -1925,7 +1925,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
             _handleBack();
           },
           child: Scaffold(
-            backgroundColor: Colors.black,
+            // The player is a PAGE, not a floating badge: its letterbox follows
+          // the appearance (Night near-black, Day cream) like any other screen.
+          backgroundColor: RCrmColors.pitch,
             body: MouseRegion(
               onHover: (_) => _poke(),
               onEnter: (_) => _show(),
@@ -2062,16 +2064,16 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                   Container(
                     width: 4,
                     height: 4,
-                    decoration: const BoxDecoration(
-                      color: Color(0xFFFF6B00),
+                    decoration: BoxDecoration(
+                      color: RCrmColors.primary,
                       shape: BoxShape.circle,
                     ),
                   ),
                   const SizedBox(width: 8),
-                  const Text(
+                  Text(
                     'Related',
                     style: TextStyle(
-                      color: Colors.white70,
+                      color: RCrmColors.textPrimary,
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
                     ),
@@ -2126,7 +2128,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           _handleBack();
         },
         child: Scaffold(
-          backgroundColor: Colors.black,
+          // The player is a PAGE, not a floating badge: its letterbox follows
+          // the appearance (Night near-black, Day cream) like any other screen.
+          backgroundColor: RCrmColors.pitch,
           body: SafeArea(
             child: Stack(
               children: [
@@ -2493,7 +2497,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
             value: pct,
             minHeight: 4,
             backgroundColor: const Color(0x33FFFFFF),
-            valueColor: const AlwaysStoppedAnimation(Color(0xFFFF6B00)),
+            valueColor: AlwaysStoppedAnimation(RCrmColors.primary),
           ),
           const SizedBox(height: 10),
         ],
@@ -2529,7 +2533,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
               value: pct,
               minHeight: 2,
               backgroundColor: Colors.transparent,
-              valueColor: const AlwaysStoppedAnimation(RCrmColors.primary),
+              valueColor: AlwaysStoppedAnimation(RCrmColors.primary),
             ),
           ],
         ),
@@ -2557,7 +2561,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
               value: pct,
               minHeight: 3,
               backgroundColor: const Color(0x33FFFFFF),
-              valueColor: const AlwaysStoppedAnimation(Color(0xFFFF6B00)),
+              valueColor: AlwaysStoppedAnimation(RCrmColors.primary),
             ),
           ),
         ],
@@ -2877,8 +2881,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       children: [
         Text(
           _item.name,
-          style: const TextStyle(
-            color: Colors.white,
+          style: TextStyle(
+            color: RCrmColors.textPrimary,
             fontSize: 20,
             fontWeight: FontWeight.w600,
           ),
@@ -2889,27 +2893,27 @@ class _State extends ConsumerState<VideoPlayerScreen> {
             if (_item.durationSeconds != null) ...[
               Text(
                 _item.formattedDuration,
-                style: const TextStyle(color: Colors.white54, fontSize: 13),
+                style: TextStyle(color: RCrmColors.textSecondary, fontSize: 13),
               ),
               const SizedBox(width: 8),
-              const Text('•', style: TextStyle(color: Colors.white54)),
+              Text('•', style: TextStyle(color: RCrmColors.textSecondary)),
             ],
             const SizedBox(width: 8),
             Text(
               _item.formattedSize,
-              style: const TextStyle(color: Colors.white54, fontSize: 13),
+              style: TextStyle(color: RCrmColors.textSecondary, fontSize: 13),
             ),
             const SizedBox(width: 8),
-            const Text('•', style: TextStyle(color: Colors.white54)),
+            Text('•', style: TextStyle(color: RCrmColors.textSecondary)),
             const SizedBox(width: 8),
             Text(
               _item.extension.toUpperCase(),
-              style: const TextStyle(color: Colors.white54, fontSize: 13),
+              style: TextStyle(color: RCrmColors.textSecondary, fontSize: 13),
             ),
           ],
         ),
         const SizedBox(height: 12),
-        const Divider(color: Colors.white12),
+        Divider(color: RCrmColors.hairline),
       ],
     ),
   );
@@ -2924,16 +2928,16 @@ class _State extends ConsumerState<VideoPlayerScreen> {
               Container(
                 width: 4,
                 height: 4,
-                decoration: const BoxDecoration(
-                  color: Color(0xFFFF6B00),
+                decoration: BoxDecoration(
+                  color: RCrmColors.primary,
                   shape: BoxShape.circle,
                 ),
               ),
               const SizedBox(width: 8),
-              const Text(
+              Text(
                 'Related',
                 style: TextStyle(
-                  color: Colors.white70,
+                  color: RCrmColors.textPrimary,
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
                 ),
@@ -2987,12 +2991,12 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                     item.name,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    style: TextStyle(color: RCrmColors.textPrimary, fontSize: 13),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     '${item.formattedSize} • ${item.extension.toUpperCase()}',
-                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+                    style: TextStyle(color: RCrmColors.textSecondary, fontSize: 11),
                   ),
                 ],
               ),

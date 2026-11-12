@@ -1,6 +1,6 @@
 ---
 name: RCrm Media Library
-description: Encrypted media library browser — bold dark UI with orange accent
+description: Encrypted media library browser — The Midnight Gallery (Night) and its cream Daylight extension, one saturated accent
 colors:
   primary: "#FF6B00"
   primary-warm: "#FF9900"
@@ -11,6 +11,13 @@ colors:
   shimmer-highlight: "#3A3A3A"
   text-white: "#FFFFFF"
   text-silver: "#AAAAAA"
+  day-pitch: "#F6F1E9"
+  day-surface-ash: "#EDE7DC"
+  day-card-char: "#E3DCCD"
+  day-placeholder-coal: "#D6CEBE"
+  day-shimmer-highlight: "#C4BBA8"
+  day-text-ink: "#1A1613"
+  day-text-silver: "#5C5348"
 typography:
   display:
     fontFamily: "Roboto, system-ui, sans-serif"
@@ -87,6 +94,8 @@ This system has no use for shadows, gradient text, glass blurs, or side-stripe b
 
 The design rejects SaaS minimalism, sterile media-player chrome, and any palette that apologises for what this product is. It is unapologetic, smooth, and built for late-night browsing in dim environments.
 
+> **Two appearances, one world.** Night is the dark room described above. Day (added 2026-11-07) keeps the same five-step tonal layering, the same accent family and the same rarity rule, inverted onto the app icon's cream `#F6F1E9` — not a white/blue SaaS reskin. The default is **System**, so a new install follows the OS. Media overlays are the one deliberate exception; see §2A.
+
 **Key Characteristics:**
 
 - Dark tonal layering, not shadows
@@ -124,6 +133,57 @@ A warm orange on deep, warm-tinted black. The palette is deliberately narrow —
 ### The Rarity Rule
 
 Marquee Orange is used on ≤10% of any given screen. When orange appears, it means *action* or *focus*. Overuse dilutes its signal; the default state of every element is neutral.
+
+## 2A. Appearances & Accents
+
+### Two appearances
+
+| | Night (the original) | Day |
+|---|---|---|
+| Canvas (pitch) | `#0E0E0E` | `#F6F1E9` — the app icon's cream |
+| Surface (ash) | `#1A1A1A` | `#EDE7DC` |
+| Card (char) | `#222222` | `#E3DCCD` |
+| Placeholder (coal) | `#2A2A2A` | `#D6CEBE` |
+| Divider / highlight (dim) | `#3A3A3A` | `#C4BBA8` |
+| Primary text | `#FFFFFF` | `#1A1613` |
+| Secondary text | `#AAAAAA` (8.3:1) | `#5C5348` (6.7:1) |
+
+Both ramps are the **same five tonal steps in the same order**; only the ramp inverts. Depth is still tone, never shadows. "Silver is silver, not ash" applies to Day too — a washed-out gray that merely passes AA is banned, and Day's secondary ink keeps ≥4.8:1 even on the lightest placeholder.
+
+### Six accents: five brand presets + Material You
+
+| Preset | Night accent | Day accent (deepened) | Night nav variant |
+|---|---|---|---|
+| Marquee (default) | `#FF6B00` | `#9E3E00` | `#FF9900` |
+| Safelight | `#FF4D4D` | `#B01F1F` | `#FF7070` |
+| Projector | `#FFB800` | `#7A4F00` | `#FFC933` |
+| Footlight | `#B57BFF` | `#5F30A8` | `#C99BFF` |
+| Neon | `#00D9C0` | `#006A61` | `#33E8D6` |
+| Device (Android 12+) | wallpaper `darkDynamic.primary` | wallpaper `lightDynamic.primary` | same as primary |
+
+Measured with `Color.computeLuminance()` (WCAG): the five Night accents run 5.9–11.1:1 on pitch; the Day accents 4.8–7.6:1 on cream and ≥4.7:1 on the card surface. A saturated accent that cannot be read on cream is **not** used as text there — Day deepens it, and `onPrimary` flips from near-black to white. **The rarity rule is unchanged**: ≤10% of any screen, in either appearance, whichever accent is active.
+
+**Material You** (`dynamic_color`) is a sixth swatch named **Device**, built from the Android 12+ wallpaper primary rather than a constant. Its `onPrimary` is measured from the colour's luminance, not assumed, because a wallpaper hue has no known lightness. It is offered **only** when the platform supplies both dynamic schemes; on desktop, iOS and older Android the swatch is hidden entirely — a control that cannot act is not shown. The preset colours remain the reference even when Device is active.
+
+### Where the choice lives
+
+Settings → **Appearance**, above Display (it changes the whole app, so it outranks per-view options). One three-way segmented row (System / Day / Night) and one row of five or six swatches. Each swatch carries its **name**, and the active one also gets a check plus a border in the current accent — colour is never the only carrier of state. The change applies on the same frame: no restart, no confirmation, no second door to the same setting. Both values persist as whitelisted strings; an unknown value falls back to System / Marquee.
+
+**Narrow screens:** a segmented row fills the available width and drops the selected-state check icon, whose width used to squeeze "System" into a two-line wrap (or an ellipsis) at 320dp. Labels pin `maxLines: 1`. The selected **fill** is already the state signal, so the icon is redundant. Check icons stay on the accent swatches, where they do not compete with a word.
+
+### The video player: a themed page with fixed dark chrome
+
+**The page follows the appearance; the floating controls do not.** The scaffold/letterbox (`pitch`), the large file title, its meta row, and the Related heading and rows use the page's semantic ink. Everything that floats ON the picture — the two gradients above (fullscreen header) and below (transport bar) the frame, the speed/playback-mode menus, the playback-settings panel and the episode sheet — keeps the **original dark treatment in both appearances**. Those edges are not a page surface; a cream bar over a video frame reads as a UI frame, and that is not what this player is.
+
+They read the fixed `player*` tokens: `playerScrim` `0x80000000`, `playerScrimStrong` `0xB3000000`, `playerSurface` = `darkAsh`, `playerText` / `playerTextSecondary` / `playerTextFaint` = white / silver / dim silver, `playerTrack` = 20% white, `playerHairline` = 8% white. **No cream bars, and nothing added to the gradients' length or width** — the scrims are the same two stops they always were. `playerAccent` still carries the chosen theme colour, but always its bright Night variant, so a deepened Day accent never lands on black.
+
+**One gradient rule.** The end stop must be the SAME colour at zero alpha (`playerScrim.withValues(alpha: 0)`), never `Colors.transparent`: that is black-transparent and would interpolate through a dark band halfway up the bar. No mid stop, no held plateau — the control row simply sits on the dark gradient it always sat on.
+
+**Every word on the player page is page chrome.** `video_player_screen.dart` owns the large file title, its meta row, and the Related heading and rows — all of them sit on the page canvas, not on the picture. They use `textPrimary` / `textSecondary` / `hairline` like any other screen. A white title on cream is the single most obvious way to break Day; the player's own widget files are not the only place to check.
+
+**The photo viewer and the QR page keep white.** The image viewer's top bar floats on a black scrim over a photo, which is always the subject; the QR pairing page is a fixed deep-blue brand world. White icons and text are correct there in both appearances, so those two read `RCrmColors.mediaText` / `mediaTextSecondary`. (There is no `mediaSurface`/`mediaAccent`/`mediaTrack` any more — the player no longer needs them.)
+
+**An ink layer needs media behind it.** A video card with no poster is a bare placeholder, not media: its bottom info strip and duration chip switch to the page's semantic colours (a light tonal wash with ink text in Day) instead of painting a black band over cream. `VideoPoster` reports whether a real poster is being shown; only then does the card draw the dark media overlay.
 
 ## 3. Typography
 
@@ -266,8 +326,8 @@ Surfaces are flat at rest. Shadows appear only as a response to state — hover,
 
 ### Info Dialogs
 
-- **Style:** Standard Material `AlertDialog` with dark theme default
-- **Background:** Surface-level gray (inherited from theme)
+- **Style:** Standard Material `AlertDialog`, following the current appearance
+- **Background:** Ash surface in Night, cream ash in Day (from `dialogTheme`)
 - **OK button:** Standard text button
 
 ### Format Badges (Image Cards)
@@ -281,7 +341,9 @@ Surfaces are flat at rest. Shadows appear only as a response to state — hover,
 
 ### Do
 
-- **Do** use Marquee Orange sparingly — on ≤10% of any screen. When it appears, the user should feel it means something.
+- **Do** use the active accent sparingly — on ≤10% of any screen, in Day as in Night. When it appears, the user should feel it means something.
+- **Do** let a page surface follow the appearance through `RCrmColors.*`, never a fixed hex. The five-step ramp inverts; the layout does not change.
+- **Do** keep the accent swatch's name visible and the active state backed by a check — colour alone cannot carry state.
 - **Do** use tonal layering (pitch → ash → char → coal) for hierarchy instead of shadows or borders.
 - **Do** let content breathe — generous spacing in grids (4px), auto-hiding chrome, transparent overlays.
 - **Do** use `text-wrap: balance` on headings and `text-wrap: pretty` on body text (when CSS control is available).
@@ -297,7 +359,9 @@ Surfaces are flat at rest. Shadows appear only as a response to state — hover,
 - **Don't** use side-stripe borders (`border-left` > 1px as a colored accent). Use full fills or nothing.
 - **Don't** use numbered section markers (01/02/03) or tiny uppercase tracked eyebrows above sections — that's AI grammar, not this brand's voice.
 - **Don't** lift cards at rest. Flat by default, elevated only on interaction.
-- **Don't** use generic SaaS/enterprise colors (blue-primary, white backgrounds, clean corporate minimalism). This is not a dashboard.
+- **Don't** use generic SaaS/enterprise colors (blue-primary, white backgrounds, clean corporate minimalism). Day is warm cream with the same tonal layering, not a white reskin.
+- **Don't** make media overlays follow the page appearance. A scrim over a bright frame has to stay dark; that is a legibility rule, not a theme inconsistency.
+- **Don't** hardcode a dark hex on a page surface "because it looked right at night" — that is exactly the pale-screen-with-a-charcoal-block defect Day was added to avoid.
 - **Don't** embed credentials in URLs. Use the Authorization header pattern — it's a security guarantee, not a convenience choice.
 - **Don't** display `"Encrypted!"` badges or security warning icons. The encryption is invisible by design.
 - **Don't** use bounce or elastic easing in animations. Use ease-out exponential curves (quart/quint/expo). Respect `prefers-reduced-motion` with crossfade alternatives.

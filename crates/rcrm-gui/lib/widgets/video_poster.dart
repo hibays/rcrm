@@ -18,6 +18,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../services/thumbnail_service.dart';
 
@@ -35,12 +36,18 @@ class VideoPoster extends StatefulWidget {
   /// has not answered yet.
   final Widget? fallback;
 
+  /// Reports whether a real poster (not the placeholder) is being painted.
+  /// A parent that draws an overlay on top of the poster needs this: the dark
+  /// ink layer belongs over unknown media pixels, NOT over a light placeholder.
+  final ValueChanged<bool>? onPosterChanged;
+
   const VideoPoster({
     super.key,
     required this.item,
     this.fit = BoxFit.cover,
     this.loading,
     this.fallback,
+    this.onPosterChanged,
   });
 
   @override
@@ -83,8 +90,25 @@ class _VideoPosterState extends State<VideoPoster> {
         _loading = true;
       });
       _retried = false;
+      // _load() bumps `_gen` synchronously, so this `false` and the answer
+      // that follows both belong to the NEW item. A stale `true` from the
+      // previous item can never land on the recycled element.
       _load();
+      _notify(false);
     }
+  }
+
+  /// Deferred: a parent's setState must never run inside this widget's build
+  /// (didUpdateWidget) or inside its own setState.
+  void _notify(bool hasPoster) {
+    final gen = _gen;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // The element may have been recycled onto another video before this
+      // frame lands; a generation mismatch means the answer is about a poster
+      // that is no longer ours.
+      if (!mounted || _gen != gen) return;
+      widget.onPosterChanged?.call(hasPoster);
+    });
   }
 
   Future<void> _load({bool refresh = false}) async {
@@ -100,6 +124,7 @@ class _VideoPosterState extends State<VideoPoster> {
       _poster = poster;
       _loading = false;
     });
+    _notify(poster != null);
   }
 
   @override
@@ -127,20 +152,20 @@ class _VideoPosterState extends State<VideoPoster> {
       );
     }
     if (_loading) {
-      return widget.loading ?? const ColoredBox(color: Color(0xFF2A2A2A));
+      return widget.loading ?? ColoredBox(color: RCrmColors.coal);
     }
     return _fallback();
   }
 
   Widget _fallback() =>
       widget.fallback ??
-      const ColoredBox(
-        color: Color(0xFF2A2A2A),
+      ColoredBox(
+        color: RCrmColors.coal,
         child: Center(
           child: Icon(
             Icons.play_circle_outline,
             size: 32,
-            color: Colors.white38,
+            color: RCrmColors.textFaint,
           ),
         ),
       );

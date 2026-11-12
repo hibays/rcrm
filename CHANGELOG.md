@@ -334,3 +334,107 @@ Update report:
 	4) 验证与未验证
 		① `flutter analyze lib test` 零告警；相关 5 个测试文件 28/28 全绿（含新增 3 条：未打开对话框的会话自动 flush 能落盘、manage 有删除时仍 flush、clear 写回空日志）；全量 `flutter test` **739/739 全绿**。默认并发在 +640、`--concurrency=1` 在 +276、分批在 +46 都撞上同一个 `flutter_test_listener.*` 删除竞态（全是 `flutter_platform.dart:786` 的环境错误，无断言失败），最后把 `TEMP`/`TMP` 指到独立空目录后一次通过——`C:\ProgramData\Temp` 下已堆 46 个 `flutter_tools.*` 残留，这是绕开残留锁最省事的办法
 		② 未验证：坏条目自愈需要真机或手动构造半写文件；`generatePoster` 依赖 media_kit/ffmpeg 且会 arm 30s 空闲计时器，没有写自动化用例。无真机验证
+
+12. 2026.11.7.12.50.PM.Saturday
+	*本批为未发布的工作区改动：主题色 / 主题切换 / 系统·日间·夜间*
+
+	1) 设计世界的扩展：一个世界，两种外观
+		① 用户拍板「全量浅色」。原 `config/theme.dart` 明写 "Dark-only by design"，`DESIGN.md` 的 North Star 是 The Midnight Gallery，`PRODUCT.md` 把 clean white/blue 列为反参考。所以 Day 不是白色 SaaS 换皮：沿用 app icon 的奶油 `#F6F1E9` 作画布，五级 tonal ramp 原序反相（pitch/ash/char/coal/dim），主文字改近黑 `#1A1613`、次级 `#5C5348`（6.7:1），无阴影分层与强调色稀有度全部不变
+		② 5 个预设强调色（Marquee 默认 / Safelight / Projector / Footlight / Neon），取自剧院·暗房·胶片世界。Night 用饱和原色（5.9–11.1:1 on pitch），Day 用加深变体（4.8–7.6:1 on cream，卡片表面 ≥4.7:1），`onPrimary` 随之从近黑翻白。数值用 `Color.computeLuminance()` 实测
+		③ 默认 **System**：新装跟随 OS，Day / Night 可钉住。两个值各自持久化，读侧白名单兜底（不认识的值回落 System / Marquee）
+	2) 实现
+		① `config/theme.dart`：新增 `RCrmAccent`（key/label/dark/light/warm + `fromKey`）与 `RCrmAppearance`；`RCrmColors` 从 `static const` 改成运行时 getter（固定品牌常量仍保留 const），由 `RCrmColors.apply` 单点写入。`RCrmTheme.build(accent, brightness)` 是纯函数，`applyToContext` 在 `MaterialApp.builder` 里按 Flutter **实际选中**的 brightness 应用一次——`theme` 与 `darkTheme` 都是纯构建，不会互相覆盖全局快照
+		② 没有用 ThemeExtension / 逐处 `Theme.of(context)`：`RCrmColors` 已有 71 行调用点，其中多处是静态方法与 const 表达式；可变快照与仓库既有的 `ThumbCache.enabled` / `PreviewPlayer.enabled` 同构，改动面最小。代价是约 40 处 `const` 表达式必须去 const（编译期常量无法运行时变色），已逐处处理，没有改任何颜色值
+		③ `app.dart`：`ref.watch(uiSettingsProvider)` 挂 `theme` / `darkTheme` / `themeMode`；`settings_service.dart` + `settings_provider.dart` 加 `appearance_mode` / `appearance_accent` 两个字符串 key 与 setter；`settings_screen.dart` 在 Display 之前新增 Appearance 分组：一行三态 `_seg`，一行 5 个色板 chip（每个带名字，选中态另有勾与当前强调色边框，窄屏 Wrap 换行），点选同帧生效、无重启无确认
+		④ 页面级硬编码颜色全量主题化：10 个文件的深灰占位 / 面板 / AppBar / 空状态底色改读 token，其上的白色图标改墨色 token；`cloud_setup` 的 hint、`image_info_sheet` 的 hairline、标题栏 hover wash 等边界一并收掉
+	3) 媒体 overlay 是唯一例外（已写进 DESIGN.md）
+		① 播放器 chrome 渐变、查看器 scrim、filmstrip、卡片上盖在 poster/thumbnail 像素上的 badge 与时长标签，两种外观下都保持深色体系 + 白图标：它们是盖在未知画面上的墨层，不是页面表面，浅色控件在亮帧上会消失。QR 配对页是固定深蓝品牌世界，用 `Theme` 把继承的文字/图标钉回深色主题
+	4) 文档与验证
+		① `PRODUCT.md`：删废弃 `## Register`、补 schema stamp 与 Platform / Positioning / Operating Context / Capabilities / Brand Commitments / Evidence on Hand / Product Principles，更新因本功能过时的「只在昏暗环境」与「橙+深底是唯一选择」；只重组已确认事实，明确写出没有证言 / 定价 / 第三方基准
+		② `DESIGN.md`：frontmatter 补 Day ramp，新增 §2A Appearances & Accents（双 ramp 表、5 色矩阵与对比度、入口与交互、媒体 overlay 例外），Overview / Info Dialogs / Do·Don't 同步
+		③ 测试：`test/settings_appearance_test.dart` 新增 6 条（持久化往返与兜底、5 色唯一、两套 ThemeData、快照翻转、设置行写穿）；`settings_cache_entry_test.dart` / `settings_jump_history_slider_test.dart` 的视口高度加大——Appearance 把 Cache / Jump History 推到 ListView 折叠线外，是布局变化不是逻辑回归
+		④ 门禁：`flutter analyze lib test` 零告警；全量 `flutter test` **745/745 全绿**（739 基线 + 6 条新增）。另按仓库惯例渲染 5 张 golden（Night / Day × 桌面 / 手机、换色、滚动到下半页）做成批视觉验收，发现并修掉「宽屏下色板被 `_group` 的 Column 居中、与上方 Theme 行不对齐」这一处，重渲染确认后停止打磨
+		⑤ 未验证：无真机，Day 的真实屏幕观感与系统亮度实时切换未跑设备；`RCrmColors` 是进程级快照，若将来出现同进程内多 Theme 子树，需要改成 ThemeExtension
+
+13. 2026.11.7.7.30.PM.Saturday
+	*本批为未发布的工作区改动：视频页 Day 适配 / 窄屏三格按钮 / Material You 取色*
+
+	1) 视频页的日间模式：媒体墨层必须有媒体垫底
+		① 渲染证据（`.local_backup/render_out/video_day_grid.png`）：Day 下每张视频卡片底部是一条**黑渐变 + 白字**的信息带，右下角还有黑底白字的时长标签。它们本来是盖在海报像素上保证可读的 overlay，但海报未生成时盖在浅奶油占位块上，就成了「浅色卡片底部一条黑带」——这正是「视频页没适配日间模式」的来源
+		② `VideoPoster` 新增 `onPosterChanged` 回调（postFrame 里通知，避免在子 widget 的 build / setState 中触发父级 setState）；`VideoCard` 用 `_hasPoster` 决定配色：有海报才画深色墨层 + 白字，占位时用 `RCrmColors.coal` 淡渐变 + `textPrimary` / `textSecondary` 文字，时长标签改用 `char` 底 + 主文字色。`didUpdateWidget` 换片时重置状态
+		③ 设计原则写进 `DESIGN.md`：dark-on-content 是盖在**未知画面**上的墨层，不是页面表面；没有媒体时它没有理由存在。播放器 / 查看器的 overlay 仍按原例外保留
+	2) 窄屏三格按钮换行
+		① 320dp 渲染证据（`.local_backup/render_out/appearance_day_320.png`）：选中态默认的 ✓ 图标挤占 label 宽度，"System" 被压成两行；只撑满宽度 + `maxLines: 1` 会变成 "Sy…"，仍不完整
+		② 窄屏 `_seg` 改为填满行宽、`VisualDensity.compact` + 6dp 水平内边距、关闭 `showSelectedIcon`（选中填充色本身已是状态信号），三个 label 加 `maxLines: 1` 兜底大型字号。重渲染确认 System / Day / Night 三个词都完整单行
+	3) Android 12+ Material 3 系统取色
+		① `pubspec.yaml` 加 `dynamic_color: ^2.1.0`（唯一新增依赖，传递引入 `material_color_utilities` 等）。`RcrmApp` 用 `DynamicColorBuilder` 包住 `MaterialApp`，在两次 ThemeData 构建前把 `lightDynamic.primary` / `darkDynamic.primary` 记进 `RCrmColors.setSystemColors`
+		② `RCrmAccent` 增加第六个 `materialYou`（label `Device`），`RCrmTheme.primaryFor` 是 ThemeData 与运行时快照共用的唯一取值口；`onPrimaryFor` 按 `computeLuminance()` 实测决定黑/白文字，因为壁纸色没有已知明度
+		③ **不能动作的控件不显示**：`Settings` 的色板只在 `RCrmColors.hasSystemColor`（两套动态 scheme 都在）时出现 Device，桌面 / iOS / 旧 Android 一律隐藏；取不到色时回落中性灰而不是凭空造一个主题色。PRODUCT.md 里原先「dynamic color 明确 out of scope」已改为已实现
+	4) 验证与未验证
+		① `flutter analyze lib test` 零告警；全量 `flutter test` **746/746 全绿**（745 + Material You 新增 1 条）；`settings_appearance_test.dart` 同步改为六预设并补系统色往返 / `onPrimary` 亮度判定
+		② 视觉验收共渲染 6 张 appearance golden（新增 320dp）+ 3 张视频页 golden（Night / Day 网格 / Day 文件夹），一轮修完三项后重渲染确认
+		③ 未验证：**没有 Android 12+ 真机**，Device 色板在真实壁纸色下的观感、系统亮度实时切换、以及 `DynamicColorBuilder` 首次异步返回 null 到带值之间是否有一帧回落，均需设备确认；桌面 / iOS 上该选项按设计隐藏，未做平台通道实测
+
+14. 2026.11.8.2.10.AM.Sunday
+	*本批为未发布的工作区改动：代码审查与修复（接第 12/13 条）*
+
+	1) 审查方式与结论
+		① 两个独立只读审查（主题架构与时序 / 页面主题化与媒体 overlay 例外）+ 自核对比度；共 5 条严重、6 条中等。架构本身成立（纯 ThemeData + builder 单点写入），真正的问题是**媒体世界误用了页面 token**：`RCrmColors` 全部自动跟随之后，播放器面板/菜单/Up next 卡片的底色 `ash`、进度轨道 `textDim`、强调色 `primary` 在 Day 下分别变成奶油、20% 黑、深橙——白字压在奶油面板上 1.23:1，轨道压在黑帧上 1.53:1
+	2) 修复
+		① 新增一组**固定媒体 token**（不随外观）：`mediaSurface`（面板/菜单/剧集 sheet）、`mediaAccent`（当前 accent 的 **Night** 变体，Day 的深变体在黑帧上太暗）、`mediaTrack`（20% 白）、`mediaText` / `mediaTextSecondary`、`mediaHairline`。播放器四个文件 + 剧集面板 + 查看器顶栏全部切过去
+		② 查看器顶栏是**确定误改**（浮在黑 scrim 上的文件名用了 Day 墨色，1.17:1），回到 `mediaText` / `mediaTextSecondary`
+		③ `hairline` 新 token（Night 8% 白 / Day 8% 墨）：`desktop_title_bar` 与 `image_info_sheet` 之前被换成 `textDim`（20%），细线变粗线
+		④ 状态色 `ok` / `warn` / `bad`（Night 用 Material 绿/橙/红 500，Day 用 `#1B5E20` / `#8A5A00` / `#C62828`）：`doctor_panel` 原来的 `Colors.green/orange/red` 在奶油底上只有 1.7–3.0:1
+		⑤ `outline` 从 `dim`（1.35–1.55:1）改为 `textFaint`（4.9–5.0:1）；accent chip 未选中边框、服务器停止态圆点同样改 `textFaint`
+		⑥ **`hasSystemColor` 加 `Platform.isAndroid`**：`dynamic_color` 的包文档明写 macOS / Windows / Linux 也会用系统强调色构造 scheme，原实现会让桌面出现 Device 色板、甚至把品牌色换成系统蓝，与「只在 Android 提供」不符
+		⑦ `RcrmApp` 的 `ref.watch` 收窄为 `select((s) => (s.appearanceMode, s.appearanceAccent))`（原写法任何设置变更都会重造两份 ThemeData）；`themeAnimationDuration: Duration.zero`——`AnimatedTheme` 的 200ms 插值会在中点翻转 `ColorScheme.brightness`，而 `RCrmColors` 只能持有一个世界，中点会出现「半奶油底 + 白字」
+		⑧ `VideoPoster._notify` 捕获 `_gen` 再比对（元素复用到另一条视频后，上一代的 `true` 不会落到新元素上）；`didUpdateWidget` 改为先 `_load()`（同步递增 `_gen`）再通知 `false`
+	3) 验证与未验证
+		① `flutter analyze lib test` 零告警；全量 `flutter test` **746/746 全绿**（未新增用例；`settings_appearance_test.dart` 改了一条断言——`hasSystemColor` 现在有 Android 门，桌面测试宿主上恒为 false，恰好证明平台限制生效）
+		② 未修（记录在案）：`hasSystemColor` 无通知机制——Android 上动态色回包时若当前不是 Device，设置页不会自动长出 Device 色板（下次重建才出现）；存了 Device 但平台不提供动态色时回落中性灰且色板无选中项；`_hasPoster` 在海报到达前有一帧浅色信息带（Night 从纯黑变成 coal）；`dynamic_color` 传递引入 `intl` 等 4 个包
+
+15. 2026.11.8.5.10.AM.Sunday
+	*本批为未发布的工作区改动：视频播放页跟随外观（修正第 14 条的判断）*
+
+	1) 判断纠正：播放页不是浮层，是页面
+		① 第 14 条把播放器归入「固定深色媒体世界」，用户明确否决：「视频播放页要跟随日间主体，不能依旧黑」。该归类是错的——播放器占满整条路由、用户在其中停留很久，它不是盖在内容上的徽标
+		② 渲染证据：Day 下 `Scaffold(backgroundColor: Colors.black)` 让页面四周仍是黑边，控制条渐变仍是黑，面板又刚被改成固定深色，与浅色库完全割裂
+	2) 实现
+		① `video_player_screen`：两处 `Scaffold(backgroundColor: Colors.black)` → `RCrmColors.pitch`
+		② 播放器 4 个文件 + 剧集面板：前景 `Colors.white*` 全改语义（`textPrimary` / `textSecondary` / `textFaint`），底色 `mediaSurface` → `ash`，accent 改 `primary`，轨道改 `textDim`，hairline 改 `hairline`，分段选中文字 `Colors.black` → `onPrimary`
+		③ 新增 `playerScrim` / `playerScrimStrong`（随外观：Night `0x80000000` / `0xB3000000`，Day `0xCCF6F1E9` / `0xE6F6F1E9`）。**渐变终点必须是同色零透明** `playerScrim.withValues(alpha: 0)`，不能用 `Colors.transparent`——后者是黑色透明，奶油起点会经过深灰插值，墨字正好落在暗带上；首轮渲染就是这么错的，看图才发现
+		④ 删除已无使用者的 `mediaSurface` / `mediaAccent` / `mediaTrack` / `mediaHairline`；只保留 `mediaText` / `mediaTextSecondary` 给图片查看器顶栏（白字压在照片的黑 scrim 上）
+		⑤ `_iconButton` 的 `Color color = RCrmColors.textFaint` 默认值改成 `Color? color` + 内部 `?? textFaint`（可选参数默认值必须是编译期常量）
+		⑥ 其余压在画面上的表面一并跟随：缓冲 spinner 圆底、设置面板 backdrop、剧集 sheet backdrop、手势 2x chip、Up next scrim 改 `pitch` / `char` 语义色
+	3) 验证与未验证
+		① `flutter analyze lib test` 零告警；全量 `flutter test` **746/746 全绿**
+		② 渲染验收：控制条 Day/Night、播放设置面板 Day/Night（面板在 Day 下浅底墨字、分段选中深橙底白字、图标可见）；控制条 Day 下浅渐变 + 深色图标与时间 + 橙色进度
+		③ 未验证：无真机；剧集 sheet 的独立渲染探针因布局异常未出图，但该面板只做了配色替换，构建由全量测试覆盖；PiP 浮窗仍保持黑底（它是视频容器，浮在库页面之上，不属于播放页）
+
+16. 2026.11.8.11.30.AM.Sunday
+	*本批为未发布的工作区改动：播放页可见性修复（用户真机截图反馈）*
+
+	1) 用户截图指出：Related 列表的文件名、播放器下方的大号视频标题全是白字压奶油底，控制条时间发灰，「完全背景和字体不可视」。第 15 条的验收图只覆盖了独立的控制条与设置面板，没覆盖这个整页，属于验收盲区
+	2) 根因：第 15 条只检查并改了 `widgets/player_*` 四个文件，**漏了 `screens/video_player_screen.dart` 自身**。它的 `_meta()`（标题 / 时长 / 大小 / 扩展名 / Divider）、`_related()` 的标题与每个列表项、以及窗口与全屏两套 Related 标题，共 13 处仍是 `Colors.white / white54 / white70 / white12`；另有 2 处 `Color(0xFFFF6B00)` 与 2 处手势 HUD 进度色写死
+	3) 修复
+		① 13 处页面级前景改 `textPrimary` / `textSecondary` / `hairline`，4 处硬编码橙改 `RCrmColors.primary`；对应 `const` 逐处去掉
+		② Day 的 `playerScrim` 从 80% 提到 96%：控件位于渐变约 1/3 处，80% 起点到那里只剩约 56% 奶油，墨字压在中灰上发灰。新增 `playerScrimMid`（Night 40% 黑 / Day 92% 奶油）配合 `stops [0, 0.65, 1]`，让控件行整段保持实色
+		③ 对比度实测（Day）：`textPrimary` on pitch 15.99:1、`textSecondary` 6.70:1、`textPrimary` on 96% scrim 15.57:1
+	4) 保留：全屏顶栏三个 `white70` 图标（叠在视频画面上、没有页面底）、手势 seek HUD 的白字与 20% 白轨道、PiP 浮窗黑底
+	5) 验证：`flutter analyze lib test` 零告警；全量 `flutter test` **746/746 全绿**；重渲染控制条 Day/Night，Day 为浅奶油底 + 深墨图标时间 + 橙色进度
+	6) 未验证：无真机，未复现用户截图的完整播放页（`_meta` / `_related` 是私有方法，widget 探针只覆盖了控制条与面板）；全屏顶栏白图标在亮画面上的可读性仍需设备确认
+
+17. 2026.11.8.11.50.AM.Sunday
+	*本批为未发布的工作区改动：播放器控件上下渐变恢复固定暗色（用户第二次截图纠正）*
+
+	1) 用户明确：「视频播放器控件上下的白边不要跟日夜间模式走，就原来那样的（默认的暗色模式的），也不要补充白边的长宽」
+		① 第 15 条把控制条与顶栏渐变改成奶油色，第 16 条又为可读性把不透明度 80%→96% 并加 `playerScrimMid` + `stops [0, 0.65, 1]`，等于给白边加厚——两个决定都否掉
+		② 正确边界：**播放页的页面部分跟随外观**（Scaffold / 大标题 / meta / Related），**浮在画面上的控件不跟随**（上下渐变、倍速与模式菜单、播放设置面板、剧集 sheet）
+	2) 实现
+		① `config/theme.dart`：`playerScrim` / `playerScrimStrong` 回到固定 `0x80000000` / `0xB3000000`，删除 `playerScrimMid` 与所有 appearance 分支；新增固定的 `playerText` / `playerTextSecondary` / `playerTextFaint` / `playerTrack` / `playerHairline` / `playerSurface` / `playerAccent`
+		② `playerAccent` 仍跟主题色，但取所选色的 **Night（亮）变体**，压在黑底上可读；取不到才回落 Marquee
+		③ 五个播放器 widget 文件批量切回固定 token；手势 chip、backdrop、缓冲圆底、未选中段底恢复原来的黑色半透明，选中段文字恢复近黑
+		④ 渐变恢复**两色无 stops**，不补任何长度或宽度；终点仍是同色零透明（避免 `Colors.transparent` 的黑插值）
+		⑤ 页面部分**未回退**：`video_player_screen.dart` 的 `_meta()` / `_related()` / Scaffold 仍用语义色，第 16 条修好的白字问题保持
+	3) 验证：`flutter analyze lib test` 零告警；全量 `flutter test` **745 通过 + 1 条环境超时**（`media_metadata_test.dart` 的 30s 超时，单独重跑 19/19 通过；当时并行跑着 analyze + 两次渲染 + 全量测试，C 盘 95%）；重渲染 Day/Night 控制条与设置面板，Day 与 Night 一致（深色渐变 + 白字，无奶油边、无加厚）
+	4) 文档：DESIGN.md 改为「a themed page with fixed dark chrome」，PRODUCT.md 同步

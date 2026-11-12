@@ -14,6 +14,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../providers/server_provider.dart';
 
@@ -149,7 +150,7 @@ class _DoctorPanelState extends ConsumerState<DoctorPanel> {
               hasResult
                   ? (_allOk ? Icons.check_circle : Icons.warning)
                   : Icons.health_and_safety,
-              color: hasResult ? (_allOk ? Colors.green : Colors.orange) : null,
+              color: hasResult ? (_allOk ? RCrmColors.ok : RCrmColors.warn) : null,
             ),
             title: const Text('Library Health Check'),
             subtitle: hasResult
@@ -207,7 +208,7 @@ class _DoctorPanelState extends ConsumerState<DoctorPanel> {
                   Icon(
                     c.ok ? Icons.check : Icons.close,
                     size: 16,
-                    color: c.ok ? Colors.green : Colors.red,
+                    color: c.ok ? RCrmColors.ok : RCrmColors.bad,
                   ),
                   const SizedBox(width: 8),
                   Expanded(
@@ -216,15 +217,15 @@ class _DoctorPanelState extends ConsumerState<DoctorPanel> {
                         children: [
                           TextSpan(
                             text: '${c.label}: ',
-                            style: const TextStyle(
-                              color: Colors.white70,
+                            style: TextStyle(
+                              color: RCrmColors.textSecondary,
                               fontSize: 12,
                             ),
                           ),
                           TextSpan(
                             text: c.detail,
                             style: TextStyle(
-                              color: c.ok ? Colors.white54 : Colors.red,
+                              color: c.ok ? RCrmColors.textSecondary : RCrmColors.bad,
                               fontSize: 12,
                             ),
                           ),

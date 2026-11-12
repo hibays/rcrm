@@ -172,7 +172,7 @@ class PlayerChromeMetrics {
   }
 
   TextStyle get timeStyle => TextStyle(
-    color: Colors.white,
+    color: RCrmColors.playerText,
     fontSize: font,
     // Digits of one width, so a running clock does not shuffle the row it
     // shares with the skip buttons and the volume slider.
@@ -180,7 +180,7 @@ class PlayerChromeMetrics {
   );
 
   TextStyle get durationStyle => TextStyle(
-    color: Colors.white60,
+    color: RCrmColors.playerTextSecondary,
     fontSize: font,
     fontFeatures: const [FontFeature.tabularFigures()],
   );
@@ -189,7 +189,7 @@ class PlayerChromeMetrics {
   /// budget that measures a different weight than it paints is how a bar that
   /// "fits" overflows.
   TextStyle get chipStyle => TextStyle(
-    color: Colors.white70,
+    color: RCrmColors.playerTextSecondary,
     fontSize: font,
     fontWeight: FontWeight.w500,
   );
@@ -767,11 +767,19 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
             : null;
 
         return Container(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.bottomCenter,
               end: Alignment.topCenter,
-              colors: [Color(0x80000000), Color(0x00000000)],
+              // Player chrome keeps the ORIGINAL dark treatment in both
+              // appearances — no cream bar over the picture, and nothing
+              // added to the gradient's length or width. The end stop is the
+              // same colour at zero alpha (not `Colors.transparent`, which is
+              // black-transparent and would interpolate through a dark band).
+              colors: [
+                RCrmColors.playerScrim,
+                RCrmColors.playerScrim.withValues(alpha: 0),
+              ],
             ),
           ),
           padding: EdgeInsets.fromLTRB(
@@ -789,9 +797,9 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                   value: played.clamp(0.0, 1.0),
                   buffer: buffered,
                   style: m.scrub,
-                  activeColor: RCrmColors.primary,
-                  thumbColor: RCrmColors.primary,
-                  inactiveColor: RCrmColors.silverDim,
+                  activeColor: RCrmColors.playerAccent,
+                  thumbColor: RCrmColors.playerAccent,
+                  inactiveColor: RCrmColors.playerTrack,
                   semanticsLabel: 'Playback position',
                   // No duration, no reading: a tooltip that counts to an
                   // unknown end would be inventing one.
@@ -829,7 +837,7 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                     onPressed: widget.onPlayPause,
                     // The largest mark in the bar and the only control with no
                     // alternative path: it is painted, not hinted at.
-                    color: Colors.white,
+                    color: RCrmColors.playerText,
                     size: m.icon + 5,
                     tooltip: widget.playing ? 'Pause' : 'Play',
                   ),
@@ -928,11 +936,13 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
     required IconData icon,
     required VoidCallback? onPressed,
     String? tooltip,
-    Color color = Colors.white54,
+    Color? color,
     double? size,
   }) {
     return IconButton(
-      icon: Icon(icon, color: color, size: size ?? m.icon),
+      // `color` used to default to a compile-time colour; it is a runtime
+      // token now, so the fallback moved into the body.
+      icon: Icon(icon, color: color ?? RCrmColors.playerTextFaint, size: size ?? m.icon),
       onPressed: onPressed,
       tooltip: tooltip,
       padding: EdgeInsets.zero,
@@ -999,9 +1009,9 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                 // The accent belongs to the media's progress, not to the
                 // volume: a second orange bar two controls away would spend the
                 // Rarity Rule on a setting.
-                activeColor: Colors.white70,
-                thumbColor: Colors.white,
-                inactiveColor: RCrmColors.silverDim,
+                activeColor: RCrmColors.playerTextSecondary,
+                thumbColor: RCrmColors.playerText,
+                inactiveColor: RCrmColors.playerTrack,
                 semanticsLabel: 'Volume',
                 label: (v) => '${v.round()}%',
                 // Announced the same way as the seek bar: a two-second drag
@@ -1089,7 +1099,7 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
       offset: Offset(0, -(_speedItemHeight * _speeds.length + _menuPadding)),
       // The Ash surface and a hairline of elevation, instead of Material's
       // default menu tint — over video, a menu is a surface of THIS app.
-      color: RCrmColors.ash,
+      color: RCrmColors.playerSurface,
       surfaceTintColor: Colors.transparent,
       elevation: 8,
       shape: RoundedRectangleBorder(
@@ -1109,8 +1119,8 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                     formatSpeed(s),
                     style: TextStyle(
                       color: widget.speed == s
-                          ? RCrmColors.primary
-                          : Colors.white70,
+                          ? RCrmColors.playerAccent
+                          : RCrmColors.playerTextSecondary,
                       fontSize: 13,
                       fontWeight: widget.speed == s
                           ? FontWeight.w600
@@ -1119,10 +1129,10 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                   ),
                   if (widget.speed == s) ...[
                     const SizedBox(width: 8),
-                    const Icon(
+                    Icon(
                       Icons.check,
                       size: 15,
-                      color: RCrmColors.primary,
+                      color: RCrmColors.playerAccent,
                     ),
                   ],
                 ],
@@ -1134,14 +1144,14 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
         padding: EdgeInsets.symmetric(horizontal: m.gap * 2, vertical: 3),
         decoration: BoxDecoration(
           color: altered
-              ? RCrmColors.primary.withValues(alpha: 0.16)
-              : Colors.white.withValues(alpha: 0.08),
+              ? RCrmColors.playerAccent.withValues(alpha: 0.16)
+              : RCrmColors.playerText.withValues(alpha: 0.08),
           borderRadius: BorderRadius.circular(RCrmRadii.sm),
         ),
         child: Text(
           text,
           style: altered
-              ? m.chipStyle.copyWith(color: RCrmColors.primary)
+              ? m.chipStyle.copyWith(color: RCrmColors.playerAccent)
               : m.chipStyle,
         ),
       ),
@@ -1227,10 +1237,10 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
   /// is below AA for an 11dp line and is exactly the washed-out gray the system
   /// bans: an explanation nobody can read in a dim room is not an explanation,
   /// and these four sentences are the whole reason the menu carries text at all.
-  static const TextStyle _modeNoteStyle = TextStyle(
+  static TextStyle get _modeNoteStyle => TextStyle(
     fontSize: 11,
     height: 1.35,
-    color: RCrmColors.silver,
+    color: RCrmColors.playerTextSecondary,
   );
 
   /// The height one mode row really paints, at the width it will really get.
@@ -1322,14 +1332,14 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
           padding: EdgeInsets.symmetric(horizontal: m.gap * 2, vertical: 2),
           decoration: BoxDecoration(
             color: altered
-                ? RCrmColors.primary.withValues(alpha: 0.16)
-                : Colors.white.withValues(alpha: 0.08),
+                ? RCrmColors.playerAccent.withValues(alpha: 0.16)
+                : RCrmColors.playerText.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(RCrmRadii.sm),
           ),
           child: _modeGlyph(
             widget.mode,
             size: m.chipIcon,
-            color: altered ? RCrmColors.primary : Colors.white70,
+            color: altered ? RCrmColors.playerAccent : RCrmColors.playerTextSecondary,
           ),
         ),
       ),
@@ -1356,7 +1366,7 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
       // Open upward, clear of the bar, sized to the menu it will really show.
       // The height is measured, not `_modeItemHeight × 4`: see [_modeMenuHeight].
       offset: Offset(0, -_modeMenuHeight(context)),
-      color: RCrmColors.ash,
+      color: RCrmColors.playerSurface,
       surfaceTintColor: Colors.transparent,
       elevation: 8,
       shape: RoundedRectangleBorder(
@@ -1380,8 +1390,8 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                     mode,
                     size: 18,
                     color: widget.mode == mode
-                        ? RCrmColors.primary
-                        : Colors.white70,
+                        ? RCrmColors.playerAccent
+                        : RCrmColors.playerTextSecondary,
                   ),
                   const SizedBox(width: 12),
                   // The sentence wraps inside the menu's own max width instead
@@ -1400,8 +1410,8 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                                       : _modeLabelStyle)
                                   .copyWith(
                                     color: widget.mode == mode
-                                        ? RCrmColors.primary
-                                        : Colors.white70,
+                                        ? RCrmColors.playerAccent
+                                        : RCrmColors.playerTextSecondary,
                                   ),
                         ),
                         const SizedBox(height: _modeLabelGap),
@@ -1411,10 +1421,10 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                   ),
                   if (widget.mode == mode) ...[
                     const SizedBox(width: 8),
-                    const Icon(
+                    Icon(
                       Icons.check,
                       size: 15,
-                      color: RCrmColors.primary,
+                      color: RCrmColors.playerAccent,
                     ),
                   ],
                 ],
@@ -1541,17 +1551,20 @@ class PlayerTopBar extends StatelessWidget {
         m.pad / 2 + safe.right,
         m.pad,
       ),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Color(0xB3000000), Color(0x00000000)],
+          colors: [
+            RCrmColors.playerScrimStrong,
+            RCrmColors.playerScrimStrong.withValues(alpha: 0),
+          ],
         ),
       ),
       child: Row(
         children: [
           IconButton(
-            icon: Icon(Icons.arrow_back, color: Colors.white, size: m.icon),
+            icon: Icon(Icons.arrow_back, color: RCrmColors.playerText, size: m.icon),
             onPressed: onBack,
             tooltip: 'Back',
             padding: EdgeInsets.zero,
@@ -1561,7 +1574,7 @@ class PlayerTopBar extends StatelessWidget {
           ),
           if (onHome != null)
             IconButton(
-              icon: Icon(Icons.home, color: Colors.white, size: m.icon),
+              icon: Icon(Icons.home, color: RCrmColors.playerText, size: m.icon),
               onPressed: onHome,
               tooltip: 'Home',
               padding: EdgeInsets.zero,
@@ -1575,8 +1588,8 @@ class PlayerTopBar extends StatelessWidget {
               title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
+              style: TextStyle(
+                color: RCrmColors.playerText,
                 fontSize: 15,
                 fontWeight: FontWeight.w500,
               ),
@@ -1584,7 +1597,7 @@ class PlayerTopBar extends StatelessWidget {
           ),
           if (onSettings != null)
             IconButton(
-              icon: Icon(Icons.settings, color: Colors.white, size: m.icon),
+              icon: Icon(Icons.settings, color: RCrmColors.playerText, size: m.icon),
               onPressed: onSettings,
               tooltip: 'Playback settings',
               padding: EdgeInsets.zero,
@@ -1643,7 +1656,7 @@ class _PlayerSpeedBadgeState extends State<PlayerSpeedBadge>
     super.dispose();
   }
 
-  static const _accent = RCrmColors.primary;
+  static Color get _accent => RCrmColors.playerAccent;
 
   /// One chevron of the running-chevrons mark, its opacity offset by [phase].
   Widget _chevron(double phase) {
@@ -1691,7 +1704,7 @@ class _PlayerSpeedBadgeState extends State<PlayerSpeedBadge>
                     ),
                   ),
                   const SizedBox(width: 6),
-                  const Text(
+                  Text(
                     '2x',
                     style: TextStyle(
                       color: _accent,
@@ -1775,7 +1788,7 @@ class _PlayerGestureChipState extends State<PlayerGestureChip> {
                 children: [
                   Icon(
                     _lastBrightness ? Icons.brightness_6 : Icons.volume_up,
-                    color: Colors.white,
+                    color: RCrmColors.playerText,
                     size: 28,
                   ),
                   const SizedBox(height: 8),
@@ -1784,18 +1797,18 @@ class _PlayerGestureChipState extends State<PlayerGestureChip> {
                     child: LinearProgressIndicator(
                       value: pct,
                       minHeight: 4,
-                      backgroundColor: RCrmColors.silverDim,
+                      backgroundColor: RCrmColors.playerTrack,
                       valueColor: AlwaysStoppedAnimation(
                         _lastBrightness
                             ? const Color(0xFFFFD600)
-                            : RCrmColors.primary,
+                            : RCrmColors.playerAccent,
                       ),
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     '$_last%',
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    style: TextStyle(color: RCrmColors.playerText, fontSize: 13),
                   ),
                 ],
               ),

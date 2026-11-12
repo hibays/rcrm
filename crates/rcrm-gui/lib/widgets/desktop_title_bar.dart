@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:window_manager/window_manager.dart';
+import '../config/theme.dart';
 import '../providers/window_chrome_provider.dart';
 import '../services/window_drag.dart';
 
@@ -162,9 +163,9 @@ class _DesktopTitleBarState extends ConsumerState<_DesktopTitleBar>
     final immersive = ref.watch(immersiveModeProvider);
     return Container(
       height: 36,
-      decoration: const BoxDecoration(
-        color: Color(0xFF1A1A1A),
-        border: Border(bottom: BorderSide(color: Color(0x14FFFFFF))),
+      decoration: BoxDecoration(
+        color: RCrmColors.ash,
+        border: Border(bottom: BorderSide(color: RCrmColors.hairline)),
       ),
       child: SelectionContainer.disabled(
         child: Row(
@@ -238,10 +239,13 @@ class _TbBtnState extends State<_TbBtn> {
 
   @override
   Widget build(BuildContext context) {
+    // Hover/press wash follows the current ink: a white wash disappears on a
+    // cream title bar in Day.
     final bg = _pressed
-        ? Colors.white.withValues(alpha: 0.15)
+        ? RCrmColors.textPrimary.withValues(alpha: 0.15)
         : _hovered
-        ? (widget.hoverBg ?? Colors.white.withValues(alpha: 0.10))
+        ? (widget.hoverBg ??
+            RCrmColors.textPrimary.withValues(alpha: 0.10))
         : Colors.transparent;
 
     return MouseRegion(
@@ -257,7 +261,7 @@ class _TbBtnState extends State<_TbBtn> {
           height: 36,
           color: bg,
           alignment: Alignment.center,
-          child: Icon(widget.icon, color: Colors.white70, size: 16),
+          child: Icon(widget.icon, color: RCrmColors.textFaint, size: 16),
         ),
       ),
     );

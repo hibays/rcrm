@@ -27,6 +27,15 @@ class SettingsState {
   final bool previewEnabled;
   final bool thumbCacheEnabled;
 
+  /// Appearance: 'system' follows the platform brightness, 'day' / 'night'
+  /// pin one. Default SYSTEM. Persisted as strings so this provider stays free
+  /// of `config/theme.dart`'s types; the app shell converts once.
+  final String appearanceMode;
+
+  /// One of [RCrmAccent.key]'s values. An unknown key resolves to Marquee at
+  /// the consumer, so a stale preference cannot become a whole new accent.
+  final String appearanceAccent;
+
   /// See `SettingsService.getThumbCacheLimitMb`: `0` platform default, `>0` that
   /// many MB — the size the manual clean-up trims to. Mirrored into
   /// `ThumbCache.limitMb`.
@@ -82,6 +91,8 @@ class SettingsState {
     this.imageSortAsc = true,
     this.previewEnabled = true,
     this.thumbCacheEnabled = true,
+    this.appearanceMode = 'system',
+    this.appearanceAccent = 'marquee',
     this.thumbCacheLimitMb = 0,
     this.videoLayout = 'grid',
     this.imageClassification = 'folder',
@@ -103,6 +114,8 @@ class SettingsState {
     bool? imageSortAsc,
     bool? previewEnabled,
     bool? thumbCacheEnabled,
+    String? appearanceMode,
+    String? appearanceAccent,
     int? thumbCacheLimitMb,
     String? videoLayout,
     String? imageClassification,
@@ -123,6 +136,8 @@ class SettingsState {
       imageSortAsc: imageSortAsc ?? this.imageSortAsc,
       previewEnabled: previewEnabled ?? this.previewEnabled,
       thumbCacheEnabled: thumbCacheEnabled ?? this.thumbCacheEnabled,
+      appearanceMode: appearanceMode ?? this.appearanceMode,
+      appearanceAccent: appearanceAccent ?? this.appearanceAccent,
       thumbCacheLimitMb: thumbCacheLimitMb ?? this.thumbCacheLimitMb,
       videoLayout: videoLayout ?? this.videoLayout,
       imageClassification: imageClassification ?? this.imageClassification,
@@ -157,6 +172,8 @@ class SettingsNotifier extends Notifier<SettingsState> {
     PreviewPlayer.enabled = previewEnabled;
     final thumbCacheEnabled = await _service.getThumbCacheEnabled();
     ThumbCache.enabled = thumbCacheEnabled;
+    final appearanceMode = await _service.getAppearanceMode();
+    final appearanceAccent = await _service.getAppearanceAccent();
     final thumbCacheLimitMb = await _service.getThumbCacheLimitMb();
     ThumbCache.limitMb = thumbCacheLimitMb;
     final videoLayout = await _service.getVideoLayout();
@@ -209,6 +226,8 @@ class SettingsNotifier extends Notifier<SettingsState> {
       imageSortAsc: imageSortAsc,
       previewEnabled: previewEnabled,
       thumbCacheEnabled: thumbCacheEnabled,
+      appearanceMode: appearanceMode,
+      appearanceAccent: appearanceAccent,
       thumbCacheLimitMb: thumbCacheLimitMb,
       videoLayout: videoLayout,
       imageClassification: imageClassification,
@@ -291,6 +310,19 @@ class SettingsNotifier extends Notifier<SettingsState> {
     state = state.copyWith(previewEnabled: enabled);
     PreviewPlayer.enabled = enabled;
     await _service.setPreviewEnabled(enabled);
+  }
+
+  /// Both appearance setters only change state + persistence. The app shell
+  /// watches this provider, so the whole tree rebuilds on the same frame —
+  /// no restart, no confirmation, no second door to the same setting.
+  Future<void> setAppearanceMode(String mode) async {
+    state = state.copyWith(appearanceMode: mode);
+    await _service.setAppearanceMode(mode);
+  }
+
+  Future<void> setAppearanceAccent(String key) async {
+    state = state.copyWith(appearanceAccent: key);
+    await _service.setAppearanceAccent(key);
   }
 
   Future<void> setThumbCacheEnabled(bool enabled) async {

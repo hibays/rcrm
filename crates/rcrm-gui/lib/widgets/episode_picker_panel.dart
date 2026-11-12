@@ -5,6 +5,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../widgets/finger_preview_listener.dart';
 import '../widgets/video_card.dart';
@@ -159,7 +160,7 @@ class _EpisodePickerPanelState extends State<EpisodePickerPanel>
                     item.name,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.white, fontSize: 13),
+                    style: TextStyle(color: RCrmColors.playerText, fontSize: 13),
                   ),
                   const SizedBox(height: 4),
                   Text(
@@ -168,7 +169,7 @@ class _EpisodePickerPanelState extends State<EpisodePickerPanel>
                       item.formattedSize,
                       item.extension.toUpperCase(),
                     ].join(' • '),
-                    style: const TextStyle(color: Colors.white54, fontSize: 11),
+                    style: TextStyle(color: RCrmColors.playerTextSecondary, fontSize: 11),
                   ),
                 ],
               ),
@@ -213,13 +214,15 @@ class _EpisodePickerPanelState extends State<EpisodePickerPanel>
           ? null
           : BoxConstraints(maxHeight: size.height / 2),
       decoration: BoxDecoration(
-        color: const Color(0xFF1A1A1A),
+        // The episode sheet lives inside the player, over the video frame: a
+        // fixed media surface, not the page's ash (which turns cream in Day).
+        color: RCrmColors.playerSurface,
         borderRadius: landscape
             ? const BorderRadius.horizontal(left: Radius.circular(14))
             : const BorderRadius.vertical(top: Radius.circular(14)),
         border: landscape
-            ? const Border(left: BorderSide(color: Color(0x14FFFFFF)))
-            : const Border(top: BorderSide(color: Color(0x14FFFFFF))),
+            ? Border(left: BorderSide(color: RCrmColors.playerHairline))
+            : Border(top: BorderSide(color: RCrmColors.playerHairline)),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
@@ -229,16 +232,16 @@ class _EpisodePickerPanelState extends State<EpisodePickerPanel>
             padding: const EdgeInsets.fromLTRB(20, 14, 8, 6),
             child: Row(
               children: [
-                const Icon(
+                Icon(
                   Icons.playlist_play,
-                  color: Colors.white54,
+                  color: RCrmColors.playerTextSecondary,
                   size: 20,
                 ),
                 const SizedBox(width: 8),
-                const Text(
+                Text(
                   'Episodes',
                   style: TextStyle(
-                    color: Colors.white,
+                    color: RCrmColors.playerText,
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
                   ),
@@ -246,13 +249,13 @@ class _EpisodePickerPanelState extends State<EpisodePickerPanel>
                 const SizedBox(width: 8),
                 Text(
                   '${widget.items.length}',
-                  style: const TextStyle(color: Colors.white38, fontSize: 13),
+                  style: TextStyle(color: RCrmColors.playerTextFaint, fontSize: 13),
                 ),
                 const Spacer(),
                 IconButton(
-                  icon: const Icon(
+                  icon: Icon(
                     Icons.close,
-                    color: Colors.white38,
+                    color: RCrmColors.playerTextFaint,
                     size: 18,
                   ),
                   onPressed: _startClosing,
@@ -263,7 +266,7 @@ class _EpisodePickerPanelState extends State<EpisodePickerPanel>
               ],
             ),
           ),
-          const Divider(height: 1, color: Color(0x10FFFFFF)),
+          Divider(height: 1, color: RCrmColors.playerHairline),
           if (landscape) Expanded(child: listBody) else Flexible(child: listBody),
         ],
       ),

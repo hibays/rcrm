@@ -5,6 +5,7 @@
 // render a consistent multi-image preview. Handles 1–4 images.
 
 import 'package:flutter/material.dart';
+import '../config/theme.dart';
 import 'pooled_image.dart';
 
 class AlbumPreview extends StatelessWidget {
@@ -16,9 +17,9 @@ class AlbumPreview extends StatelessWidget {
   Widget build(BuildContext context) {
     if (urls.isEmpty) {
       return Container(
-        color: const Color(0xFF2A2A2A),
-        child: const Center(
-          child: Icon(Icons.folder, size: 48, color: Colors.white38),
+        color: RCrmColors.coal,
+        child: Center(
+          child: Icon(Icons.folder, size: 48, color: RCrmColors.textFaint),
         ),
       );
     }
@@ -59,10 +60,10 @@ class AlbumPreview extends StatelessWidget {
       url: url,
       fit: BoxFit.cover,
       decodeWidth: 400,
-      placeholder: Container(color: const Color(0xFF2A2A2A)),
+      placeholder: Container(color: RCrmColors.coal),
       errorWidget: Container(
-        color: const Color(0xFF2A2A2A),
-        child: const Icon(Icons.image, color: Colors.white24),
+        color: RCrmColors.coal,
+        child: Icon(Icons.image, color: RCrmColors.textFaint),
       ),
     );
   }

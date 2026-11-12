@@ -210,7 +210,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
             IconButton(
               icon: _isRefreshing
-                  ? const SizedBox(
+                  ? SizedBox(
                       width: 18,
                       height: 18,
                       child: CircularProgressIndicator(
@@ -225,7 +225,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
             IconButton(
               icon: _castBusy
-                  ? const SizedBox(
+                  ? SizedBox(
                       width: 18,
                       height: 18,
                       child: CircularProgressIndicator(
