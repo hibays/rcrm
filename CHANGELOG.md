@@ -453,3 +453,48 @@ Update report:
 		④ 本地 `AGENTS.md`（gitignored，不进版本库）：更新版本约束行、Impeller 描述，以及「`SliderThemeData.padding` 是 3.47-only 而本仓库 floor 是 3.44」这条**已失效的理由**（现在 floor 3.50，改述为几何已单元测试、换 inset 模型会改变映射）
 	4) 验证：`flutter analyze lib test` 零告警；全量 `flutter test` **746/746 全绿**
 	5) 未验证：未跑 Windows / Android 真机构建；Impeller 的 AVIF/JXL/HEIC 解码问题在 3.50 下未重新验证，文档按「仍存在」处理
+
+19. 2026.11.13.3.5.AM.Friday
+	*本批为未发布的工作区改动：Flutter 3.50 Android 构建链修复、Linux 回归审查、window_manager 升级决策*
+
+	1) 触发：`flutter build apk` 在 `app/build.gradle.kts:1` 应用 `dev.flutter.flutter-gradle-plugin` 时硬失败 —— Gradle 9.1.0 低于 Flutter 最低 9.3.1。第 18 条只迁移了 Dart 侧（`dart fix` + 版本锁），Android 模板未同步，这是留下的缺口
+	2) 取证（版本不从二手文档抄，读本机 SDK 源码）
+		① `D:\Dev\flutter\packages\flutter_tools\gradle\src\main\kotlin\DependencyVersionChecker.kt`：error 阈值 Gradle 9.3.1 / AGP 9.1.1 / KGP 2.4.10 / Java 17 / minSdk 23；warn 阈值 9.5.0 / 9.3.1 / 2.4.20
+		② `gradle_utils.dart` `validateGradleAndAgp`：AGP 9.1.x 需 Gradle ≥9.3.1（9.2.x ≥9.4.1，9.3.x ≥9.5.0），三者必须联动
+		③ Flutter 自带 included build 的 `compileOnly` 目标正是 AGP 9.1.1 / KGP 2.4.10，因此取「最低值」比模板默认（9.5.0 / 9.3.1 / 2.4.20）更稳
+		④ 镜像预检：腾讯 `gradle-9.3.1-all.zip` 200（234,893,460 B）、阿里云 AGP 9.1.1 POM 200、KGP 2.4.10 marker POM 200
+	3) 修改
+		① `android/gradle/wrapper/gradle-wrapper.properties` 9.1.0 → 9.3.1（保留腾讯镜像 URL）；`android/settings.gradle.kts` AGP 9.0.1 → 9.1.1、KGP 2.3.20 → 2.4.10；两处都加注释说明联动关系
+		② 不用 `--android-skip-build-dependency-validation`：那只是绕过检查，不是修复
+		③ 核实 `injectGradleWrapperIfNeeded` 仅在 properties 缺失时写入，手改的镜像 URL 不会被 SDK 覆盖
+	4) Android 验证
+		① `android/gradlew :app:tasks --no-daemon` 从零下载 Gradle 9.3.1 后 **BUILD SUCCESSFUL in 2m 12s**，原报错的配置阶段已通过
+		② 复跑 `gradlew help` 捕获 3 条预期 warn：Gradle ≥9.5.0 / AGP ≥9.3.1 / Kotlin ≥2.4.20 的「will soon be dropped」，均非致命（BUILD SUCCESSFUL in 35s）。文档写明不要把 warn 当错误，也不为消 warn 冒进模板默认版
+	5) Linux 3.50 C++ 异常回归（用户点名的硬性阻碍）排查结论
+		① 回归内容：引擎导出 `_Unwind_*`，Linux 插件中的 C++ `try/catch` 捕获不到异常 → SIGABRT；典型受害是 `flutter_secure_storage_linux`，3.47.9 无此问题
+		② 静态审查本机 pub cache：`generated_plugin_registrant.cc` 注册的 5 个 Linux 原生插件（dynamic_color / media_kit_libs_linux / media_kit_video / screen_retriever_linux / window_manager 0.5.2）的 `linux/` 源码 **0 处 try/catch**；`pubspec.lock` 无 flutter_secure_storage；`linux/runner/*.cc` 无 C++ 异常。**当前不受影响**
+		③ 未验证：Rust bridge 静态链接的 zxing-cpp（C++）在 Linux 是否有跨边界抛异常、media_kit_libs_linux 的预编译 libmpv .so —— 本机为 Windows，无 Linux 构建环境，须在 Linux 分支实测启动
+		④ 保留规则：新增/升级 Linux 插件前先 grep 其 `linux/` 的 C++ `try`/`catch`，命中就在 Linux 分支验证 3.50 启动；Windows CI 全绿不能证明 unwind 正常
+	6) `window_manager` 0.7.0：评估后**不升级**（`flutter pub outdated` 仍会提示 0.7.0 available，属预期）
+		① 0.6/0.7 是破坏性重写：0.5.x API 移到 `package:window_manager/legacy.dart` 且全部 `@Deprecated`（会破坏 analyze 零告警门禁）；新 API 为 `WindowManager.instance.getCurrent()` + 事件流，约 30 处调用点要改
+		② 更关键：它删掉全部平台插件代码，改由 `nativeapi` / `cnativeapi` 一个 C++ core（Dart build hook 从源码编进 Linux app）。`cnativeapi` 0.6.0 约 70 个 C++ 文件用 try/catch，含 `src/platform/linux/secure_storage_linux.cpp` 与全部 C-ABI wrapper —— **升级等于主动引入第 5 条那个回归**
+		③ 另需 material_ui ^1.11.0、nativeapi(–flutter) ^0.6.0、Linux 构建机 GTK3/X11/Xi 开发头（`scripts/build_linux.sh` 未装）
+		④ `^0.5.2` 本就排除 0.6+/0.7+，`flutter pub upgrade` 不会误带入；在 `pubspec.yaml` 写明故意停留的原因，并在 BUILDING.md 留四步迁移清单
+	7) 文档：`docs/BUILDING.md` 版本矩阵改 9.3.1 / 9.1.1 / 2.4.10，新增 3.50 error/warn 阈值表、再次升级步骤（含镜像预检）、新章「Flutter 3.50 Linux regression」、Android 排错表新增该报错；`AGENTS.md`（gitignored，本地）同步版本 pins 与两条新约束
+	8) 门禁：`flutter analyze lib test` 零告警；`flutter test` **746/746 全绿**（清代理 + 新 TEMP）；`cargo build --locked` 通过；`cargo test -- --skip compare_` 全绿
+	9) 未验证：未跑 Android 真机 / APK 打包（只验到 Gradle 配置阶段，未编译 Kotlin 与 JNI 产物）；未跑 Windows / Linux 桌面构建；Linux 回归缺实机启动验证；`pubspec.lock` 沿用第 18 条遗留下的未提交依赖解析，`flutter pub get` 后保持 `dart >=3.14.0 <4.0.0` / `flutter >=3.50.0`
+
+20. 2026.11.13.3.12.AM.Friday
+	*本批为对第 19 条配置期警告的追问与实测（无构建配置改动）*
+
+	1) 用户跑 `./gradlew help` 后质疑「这不对吧」：输出里有 3 条 Flutter `will soon be dropped`（还带 `--android-skip-build-dependency-validation` 与 "Potential fix"）、2 条 AGP 的 `android.builtInKotlin=false` / `android.newDsl=false` deprecated、1 条 KGP 的 `org.jetbrains.kotlin.android` 不再需要；而且「请把 Kotlin 升到 2.4.20」和「不需要 KGP 插件」并排出现，看着自相矛盾
+	2) 查证结论（**全是警告，配置阶段 BUILD SUCCESSFUL**）
+		① `DependencyVersionChecker.kt` 里 `getWarnMessage` 与 `getErrorMessage` **共用同一段模板串**，所以 warn 也带 bypass flag 与 Potential fix —— 纯文案误导，不是错误，更不该加那个 flag。我们停在 error 阈值（9.3.1 / 9.1.1 / 2.4.10），warn 阈值高一档（9.5.0 / 9.3.1 / 2.4.20），是 Flutter 提前一个版本的预告
+		② **Flutter 3.50 官方模板 `templates/app/android.tmpl/gradle.properties.tmpl` 第 3–6 行自己就写 `android.newDsl=false` + `android.builtInKotlin=false`**，`settings.gradle.kts.tmpl` 第 23 行仍声明 KGP 插件。不是 3.44/3.47 遗留，也不是版本升级改坏的；Flutter 的 AGP 9 newDsl / 内置 Kotlin 迁移仍在进行（flutter/flutter#180137）
+		③ 矛盾来源：`FlutterPluginUtils.isBuiltInKotlinEnabled` 读 `android.builtInKotlin`，显式 false 让 Flutter 判定「未启用内置 Kotlin」→ 仍按独立 KGP 检查版本并打 warn；AGP/KGP 那边则说独立 KGP 已废弃。两套机制各说各的
+	3) 实测（不改文件，命令行覆盖：`./gradlew help --no-daemon -Pandroid.builtInKotlin=true -Pandroid.newDsl=true`）
+		① **BUILD SUCCESSFUL in 45s**；2 条 AGP deprecated、1 条 KGP obsolete、1 条 KGP 版本 warn 全部消失，只剩 2 条 Flutter 版本 warn；另冒出 `screen_brightness_android` 的 2 条 `srcDirs` deprecated
+		② 但 `help` 只做配置，不编译 Kotlin、不打包 APK。`android_file_picker` 2.1.6 的 `build.gradle.kts` 明确为 `android.newDsl=false` 项目保留 AGP 8.5.2 / KGP 1.8.22 的 buildscript classpath，注释写明「等上游迁移落地、不再需要 `android.newDsl=false` 时再删」——**保留模板开关**，不为了消警告动它
+		③ 升到 warn 阈值可消掉剩余 2 条，但 AGP 9.3.1 高于 included build 的 `compileOnly` 目标 9.1.1，三件套要一起动；而且**消不掉**那 2 条 AGP deprecated（它们来自 `gradle.properties`，与版本号无关）
+	4) 文档：`docs/BUILDING.md` 新增「Configuration-time warnings under Flutter 3.50」章节（三类来源表、文案误导说明、实测记录、不要动 flag 的理由）；`AGENTS.md` 同步一行速查
+	5) 本批**未改动任何构建配置文件**。未跑 `assembleDebug` / APK 打包，内置 Kotlin 下的 Kotlin 编译链仍未验证；若将来要迁，需先跑一次完整 assemble 再动 `gradle.properties`

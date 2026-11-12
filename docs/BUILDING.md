@@ -2,16 +2,16 @@
 
 ## Version Matrix (MUST MATCH)
 
-Changing any version independently WILL break the build. All components are interlocked.
+Move the Android toolchain versions together; verify a release APK, not just `gradlew help`.
 
 | Component | Version | Verified | File |
 |-----------|---------|----------|------|
 | Flutter SDK | **3.50.0** — pinned by `pubspec.yaml` (`flutter: ">=3.50.0"`) | ✅ analyze/test | `flutter --version` |
 | Dart SDK | **3.14.0** (ships with the above; `sdk: ">=3.14.0 <4.0.0"`) | ✅ | `dart --version` |
 | Rust | stable ≥ **1.89** | ✅ | `rustup show` — `heic` requires 1.89, edition 2024 everywhere |
-| Gradle | **9.1.0** | ✅ | `android/gradle/wrapper/gradle-wrapper.properties` |
-| AGP | **9.0.1** | ✅ | `android/settings.gradle.kts` |
-| Kotlin | **2.3.20** | ✅ | `android/settings.gradle.kts` |
+| Gradle | **9.9.1** | ✅ release APK | `android/gradle/wrapper/gradle-wrapper.properties` |
+| AGP | **9.3.1** | ✅ release APK | `android/settings.gradle.kts` |
+| Kotlin (KGP) | **2.4.21** | ✅ release APK | `android/settings.gradle.kts` |
 | NDK | **28.2.13676358** | ✅ | `$env:ANDROID_NDK_HOME` |
 | Compile SDK | **36** | ✅ | `android/app/build.gradle.kts` |
 | Min SDK | **24** | ✅ | `android/app/build.gradle.kts` |
@@ -28,20 +28,74 @@ Changing any version independently WILL break the build. All components are inte
 every Android plugin has to cope with Kotlin being applied on its behalf. 13.x does: its Android
 module declares its own buildscript classpath and applies KGP only when built-in Kotlin is off, and
 the Windows implementation is Dart-only (`windows_file_picker`, `win32` FFI), so it needs no native
-module. The 11.x line was unusable here — its Android build applied KGP in a way Kotlin 2.3.20
-rejects. The 12.0 federated rewrite also split the plugin into per-platform packages
+module. The 11.x line was unusable here — its Android build applied KGP in a way the
+then-current Kotlin 2.3.20 rejected. The 12.0 federated rewrite also split the plugin into per-platform packages
 (`android_file_picker`, `windows_file_picker`, `file_picker_darwin/linux/web`) and made the API
 **static**: `FilePicker.getDirectoryPath()`, never `FilePicker.platform.*` (that accessor is gone,
 not deprecated). With this set (file_picker 13.1.0, package_info_plus 10.2.2, wakelock_plus 1.8.1)
 **no Android plugin declares KGP any more**, so Flutter's "plugins that apply Kotlin Gradle Plugin —
 future versions of Flutter will fail to build" warning no longer appears.
 
-**If Gradle/AGP/Kotlin must be upgraded:**
+**Flutter 3.50's Android floors.** Thresholds live in
+`DependencyVersionChecker.kt`; `checkDependencyVersions` checks lower bounds
+only, so crossing the warn threshold silences `will soon be dropped`:
 
-1. Match the version groups in `D:\Dev\flutter\packages\flutter_tools\lib\src\android\gradle_utils.dart`
-2. Update all three (Gradle, AGP, Kotlin) simultaneously
-3. The Flutter SDK included build must be compatible (see `D:\Dev\flutter\packages\flutter_tools\gradle\build.gradle.kts`)
-4. `checkAarMetadata` must be removed from `android/build.gradle.kts` (AGP 9.0 incompatible)
+| Check | Error | Warn | Current |
+|---|---|---|---|
+| Gradle | 9.3.1 | 9.5.0 | **9.9.1** |
+| AGP | 9.1.1 | 9.3.1 | **9.3.1** |
+| KGP | 2.4.10 | 2.4.20 | **2.4.21** |
+| Java | 17 | 17 | 17 |
+| minSdk | 23 | 24 | 24 |
+
+On 2026-11-13 the set moved from 9.3.1 / 9.1.1 / 2.4.10 to
+**9.9.1 / 9.3.1 / 2.4.21** in one step; all three version warnings are gone.
+AGP 9.3.1 is the 3.50 template default and the top of KGP 2.4.20–2.4.21's
+fully-supported AGP range (8.5.2–9.3.1); AGP 9.5.0 was skipped (two minors
+past the Flutter included build's `compileOnly` AGP 9.1.1 / KGP 2.4.10).
+Kotlin fully supports Gradle ≤ 9.7.0 for those KGP versions and allows newer
+Gradle with deprecation warnings. The Tencent Gradle zip and Aliyun AGP/KGP POMs were verified HTTP
+200. All three steps were verified with full `flutter build apk --release`
+builds (125.7MB), not just `gradlew help`.
+
+`flutter analyze --suggestions` still prints one
+`Incompatible Gradle/AGP versions` line: `validateGradleAndAgp` caps AGP 9.3.x
+at Gradle 9.5.0. That validator feeds only the suggestions report (SDK: "does
+not imply broader Flutter support"); `flutter analyze lib test` and the APK
+build are green.
+KGP 2.4.21 also removes the `Incompatible KGP/Gradle versions` line that
+2.4.20 produced, because `validateGradleAndKGP` treats any KGP strictly newer
+than `maxKnownAndSupportedKgpVersion = 2.4.20` as valid — diagnostic only,
+2.4.20 and 2.4.21 share the same real compatibility band. Never use
+`--android-skip-build-dependency-validation`.
+
+**Upgrading again:** move all three together (AGP 9.1 → Gradle 9.3.1, 9.2 →
+9.4.1, 9.3 → 9.5.0, 9.4/9.5 → 9.6.0); check Kotlin's
+`gradle-configure-project.html` table for the KGP band, keep the Flutter
+included build's `compileOnly` versions in mind, and pre-check the Tencent
+Gradle zip / Aliyun AGP+KGP POMs. `injectGradleWrapperIfNeeded` only writes
+`gradle-wrapper.properties` when missing, so our mirror URL is safe.
+
+### Configuration-time warnings under Flutter 3.50 (expected; don't "fix" the flags)
+
+On 9.9.1 / 9.3.1 / 2.4.21 the three version warnings are gone.
+`./gradlew help --no-daemon` still ends `BUILD SUCCESSFUL in 1m 9s` with
+non-fatal warnings that no version bump will remove:
+
+| Message | Source | Why |
+|---|---|---|
+| `android.builtInKotlin=false` / `android.newDsl=false` deprecated; `applicationVariants` / `testVariants` / `unitTestVariants` / `libraryVariants` obsolete | AGP 9.3.1 | **Flutter 3.50's template writes both flags as `false`**; the Variant API warnings are new in 9.3.1. Both belong to the unfinished upstream migration (flutter/flutter#180137). |
+| `org.jetbrains.kotlin.android` no longer required | KGP | Template still declares the separate plugin; `isBuiltInKotlinEnabled` reads `false`, so Flutter keeps validating it too. |
+| `w:` lines, `Deprecated Gradle features … incompatible with Gradle 10`, javac `source/target value 8 is obsolete` | Gradle 9.9 / plugins | Gradle 9.9 recompiles all Kotlin DSL scripts; the APK build adds javac warnings. |
+
+Keep the template flags: `android_file_picker` 2.1.6 still pins an AGP 8.5.2 /
+KGP 1.8.22 classpath for `android.newDsl=false`, and a green `help` does not
+compile Kotlin. Historically (on 9.3.1 / 9.1.1 / 2.4.10) overriding
+`-Pandroid.builtInKotlin=true -Pandroid.newDsl=true` silenced four warnings in
+45s but only configures; that set's `will soon be dropped` message came from
+`getWarnMessage` sharing `getErrorMessage`'s template, so its bypass flag and
+"Potential fix" were boilerplate. The only known cost of the current set is the
+single `--suggestions` diagnostic described above.
 
 ## Prerequisites
 
@@ -262,6 +316,65 @@ and the widget suite, but did not re-run a Windows desktop decode check.
   `windows/runner/main.cpp`), or decode these formats through the Rust bridge —
   which the **Android** build already does (`mobile-decode`).
 
+### Flutter 3.50 Linux regression: engine exports `_Unwind_*` and breaks C++ exceptions in plugins
+
+Flutter 3.50's Linux engine started exporting `_Unwind_*` symbols. A Linux
+plugin that throws and catches C++ exceptions can then fail to unwind and abort
+with `SIGABRT`; the reported case is `flutter_secure_storage_linux` starting on
+a machine with an unlocked keyring. Flutter 3.47.9 was unaffected. This is an
+engine/plugin interaction, **not** an error in our code, and it cannot be
+reproduced from this Windows host.
+
+**Audit of the current dependency set** (static source audit of the pub cache,
+2026-11-13). `linux/flutter/generated_plugin_registrant.cc` registers exactly
+five native Linux plugins: `dynamic_color`, `media_kit_libs_linux`,
+`media_kit_video`, `screen_retriever_linux`, `window_manager` 0.5.2. All five
+are C-style GTK/GLib plugin code — **zero `try {` / `catch (` in any `linux/`
+source**. `flutter_secure_storage` is not in `pubspec.lock`, and
+`linux/runner/*.cc` uses no C++ exceptions. **Conclusion: no current exposure**,
+so the Linux build is not blocked by this regression today.
+
+Unverified edges: `librcrm_flutter_bridge.so` statically links zxing-cpp
+(C++, `bundled`) on desktop too, and `media_kit_libs_linux` ships a prebuilt
+libmpv `.so` — neither is covered by a source audit. Whether a QR path throws
+across the C++ boundary on Linux must be checked on a real Linux build.
+
+**Guard rule before adding or upgrading any Linux plugin**: grep its `linux/`
+tree for C++ `try`/`catch`/`throw`. If present, verify startup under Flutter
+3.50 on a Linux branch before merging; a green Windows CI run proves nothing
+about unwinding. Do not work around it by disabling exceptions globally.
+
+**Concrete consequence — `window_manager` stays at 0.5.x.** `flutter pub
+outdated` reports 0.7.0 available, and 0.7.0 does require Flutter 3.50 / Dart
+3.14 (which we now have). It is still held back deliberately:
+
+- 0.6/0.7 removes all per-platform plugin code in favour of
+  `nativeapi` + `cnativeapi`, **one C++ core built from source** into the Linux
+  app by a Dart build hook. `cnativeapi` 0.6.0 uses `try`/`catch` in roughly 70
+  C++ files, including `src/platform/linux/secure_storage_linux.cpp` and every
+  C-ABI wrapper. Upgrading would *introduce* exactly the class of plugin this
+  regression breaks.
+- It is a breaking API rewrite: the 0.5.x API (`windowManager`,
+  `WindowListener`, `WindowOptions`) moved to
+  `package:window_manager/legacy.dart`, where everything is `@Deprecated` and
+  slated for removal — that alone would produce analyzer warnings against our
+  zero-warning gate. The new native API uses
+  `WindowManager.instance.getCurrent()`, synchronous properties and an event
+  stream instead of a listener mixin.
+- Extra requirements: `material_ui ^1.11.0`, `nativeapi ^0.6.0`,
+  `nativeapi_flutter ^0.6.0`, and GTK 3 / X11 / Xi development headers on Linux
+  build machines (our `scripts/build_linux.sh` does not install them).
+- `^0.5.2` already excludes 0.6+/0.7+, so `flutter pub upgrade` cannot drag it
+  in accidentally.
+
+Migration checklist for when the regression is fixed: (1) prove startup on a
+Linux branch; (2) migrate the ~30 call sites in `main.dart`,
+`screens/video_player_screen.dart`, `services/window_drag.dart` and
+`widgets/desktop_title_bar.dart` to the native API (or accept the legacy bridge
+plus explicit ignores); (3) regenerate the plugin registrants and remove the
+runner-side `window_manager` setup; (4) re-run the title-bar/fullscreen widget
+tests and the visual golden probes.
+
 ### zxing-cpp is C++ (CMake), not a Rust crate
 
 The QR reader/writer is zxing-cpp 3.1.1, compiled by the `zxing-cpp` wrapper's
@@ -367,6 +480,7 @@ RUSTC_BOOTSTRAP=rav1d cargo ndk --target aarch64-linux-android check \
 
 | Error | Cause | Fix |
 |-------|-------|-----|
+| `Gradle version (9.1.0) is lower than Flutter's minimum supported version of 9.3.1` | Flutter 3.50 raised the Android floors; a 3.44/3.47 template cannot configure | Set Gradle / AGP / KGP to at least 9.3.1 / 9.1.1 / 2.4.10 **together** (current pins: 9.9.1 / 9.3.1 / 2.4.21, see Version Matrix). Do not use `--android-skip-build-dependency-validation` |
 | `Error resolving plugin` | Flutter SDK's `google()`/`mavenCentral()` blocked | Global `init.gradle` (see China setup above) |
 | `repository 'maven' was added by settings` | Repo config conflict | Remove `allprojects { repositories {} }` or use `RepositoriesMode.PREFER_PROJECT` |
 | Silent NDK link failures | Wrong NDK version | Use exactly 28.2.13676358 |

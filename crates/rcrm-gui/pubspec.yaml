@@ -35,7 +35,14 @@ dependencies:
   # File/folder picking (static API; the federated 13.x split the platform impls)
   file_picker: ^13.1.0
 
-  # Desktop window (fullscreen)
+  # Desktop window (fullscreen). Deliberately held at 0.5.x under Flutter 3.50:
+  # 0.6/0.7 is a breaking rewrite whose legacy bridge is deprecated, and it
+  # swaps the platform plugins for cnativeapi — a C++ core built from source
+  # into the Linux app that uses try/catch in ~70 files. Flutter 3.50's Linux
+  # engine exports _Unwind_* and breaks C++ exception handling in plugins.
+  # See docs/BUILDING.md → "Flutter 3.50 Linux C++ exception regression".
+  # The ^0.5.2 constraint already excludes 0.6+/0.7+; keep it that way until
+  # that regression is fixed and a Linux build is verified on a branch.
   window_manager: ^0.5.2
 
   # FFI (explicit dependency for rust_bridge)
