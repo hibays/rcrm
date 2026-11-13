@@ -6,6 +6,7 @@
 
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:math' as math;
 import 'package:material_ui/material_ui.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:flutter/services.dart';
@@ -27,6 +28,7 @@ import '../widgets/video_card.dart';
 import '../widgets/media_player_keys.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../widgets/player_controls.dart';
+import '../widgets/player_end_card.dart';
 import '../widgets/player_overlays.dart';
 import '../widgets/finger_preview_listener.dart';
 import '../widgets/player_settings_panel.dart';
@@ -245,6 +247,13 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   /// there is exactly one rule for what a finished file is and one for what
   /// taking it back means.
   PlayerEof _eof = PlayerEof.idle;
+
+  /// The viewer has refused the ending's offer — either the up-next card's ✕
+  /// or the end card's own close. Both mean "leave this last frame alone", so
+  /// neither card comes back until a NEW ending (or a new file) clears it.
+  /// Without this the end card would replace the countdown the moment the ✕
+  /// dismissed it, which is exactly the refusal the ✕ promises.
+  bool _endingChoiceDismissed = false;
 
   /// The Related list and the key it was computed for. The list is a pure
   /// function of (item, scan generation, jump stack's excluded paths) — see
@@ -600,13 +609,6 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     if (offer != null) _playInPlace(offer.item, back: false);
   }
 
-  /// The card's "not this one": the video stays where it ended, paused, and
-  /// nothing plays until the user asks for something.
-  void _dismissUpNext() {
-    setState(() => _upNext = null);
-    _poke();
-  }
-
   /// Drops a pending offer without answering it — for every path that navigates
   /// somewhere else while one is up, where keeping it would play a video the
   /// user has already left.
@@ -771,7 +773,13 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       // take-back, and `loopOne` re-enters this same file immediately, so a
       // second pass would seek a video the viewer had just dragged back to 0.
       if (_eof.finished) return;
-      _eof = _eof.ended();
+      // A NEW ending is a new decision: any refusal of the previous one is
+      // dropped here. setState is not ceremony — `pauseAfter` has no other
+      // rebuild of its own, and the end card is what that branch paints.
+      setState(() {
+        _eof = _eof.ended();
+        _endingChoiceDismissed = false;
+      });
       final mode = PlaybackMode.fromString(
         ref.read(uiSettingsProvider).playbackMode,
       );
@@ -2023,7 +2031,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                       // Under the panels on purpose: the countdown is the
                       // autoplay the user asked for, so an open sheet covers
                       // the card without cancelling what it stands for.
-                      _upNextCard(bottom: _barClearance(safe.bottom)),
+                      _endCard(),
                       if (_showSettings) _settingsOverlay(),
                       if (_showEpisodes)
                         EpisodePickerPanel(
@@ -2252,7 +2260,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                   Positioned(bottom: 0, left: 0, right: 0, child: _miniBar()),
                 _bufferingLayer(),
                 _errorLayer(),
-                _upNextCard(bottom: _barClearance(0)),
+                _endCard(),
               ],
             ),
           ),
@@ -2789,52 +2797,71 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     ),
   );
 
-  /// The up-next card, clear of the transport bar.
+  /// What a finished file offers — the whole end-of-playback surface, and the
+  /// only one: there is no separate up-next card any more.
   ///
-  /// The bar is not necessarily on screen when a video ends — it has usually
-  /// faded — but it is where the controls would be, and a card that jumped when
-  /// the user moved the mouse would be worse than one that sits a little high.
-  Widget _upNextCard({required double bottom}) {
-    final next = _upNext;
-    if (next == null) return const SizedBox.shrink();
-    return Positioned(
-      // A KEY, and the card needs one: it is the last child of a Stack whose
-      // siblings come and go with things that have nothing to do with it — the
-      // mini bar when the windowed chrome fades, the seek bar on a mobile swipe.
-      // Flutter reconciles a Stack's children by INDEX, and every one of these
-      // is a `Positioned`, so an unkeyed card shifted down one slot was judged
-      // "same type, update in place": the element above was rewritten as the
-      // card and the card's element was destroyed. A fresh State re-runs
-      // `initState`, so the entrance and the whole 8s countdown started again
-      // every time the controls faded. Keyed, it is matched by key wherever it
-      // sits and its State survives.
-      key: const ValueKey('up_next'),
-      left: 0,
-      right: 0,
-      bottom: bottom,
-      child: PlayerUpNextCard(
-        title: next.item.name,
-        // A shuffled offer says why it is THIS one: the viewer was not looking
-        // at a list, so nothing else on screen would account for it.
-        subtitle: next.shuffled
-            ? 'Random pick · ${next.item.formattedSize} · '
-                  '${next.item.extension.toUpperCase()}'
-            : '${next.item.formattedSize} · '
-                  '${next.item.extension.toUpperCase()}',
+  /// `Loop All`/`Shuffle` hand it an offer, which becomes a ring on the FIRST
+  /// tile and a `Cancel` chip; the 8-second countdown lives there, on the video
+  /// it will play. `Pause After` (the default) and an ending whose Related list
+  /// is empty get the same card without a ring, so the last frame is never the
+  /// whole answer. Dismissing it refuses both the card and the autoplay.
+  Widget _endCard() {
+    if (!_eof.finished || _endingChoiceDismissed) {
+      return const SizedBox.shrink();
+    }
+    final related = _relatedFor(
+      ref.read(videosListProvider),
+      ref.read(jumpExcludedPathsProvider),
+      ref.read(scanStateProvider).scanGen,
+    );
+    final offer = _upNext;
+    return Positioned.fill(
+      // Keyed for the same reason the up-next card was: this is a Positioned
+      // among Positioneds in a Stack whose siblings come and go with the
+      // chrome, and an unkeyed one is reconciled by index.
+      key: const ValueKey('end_card'),
+      child: PlayerEndCard(
+        title: _item.name,
+        related: related,
+        // The card IS the up-next surface now: the countdown ring sits on the
+        // first tile, which is the video it will play. There is no second card.
+        autoPlayItem: offer?.item,
+        autoPlayShuffled: offer?.shuffled ?? false,
         countdown: _upNextSeconds,
-        onAdvance: _playUpNext,
-        onDismiss: _dismissUpNext,
+        onAutoPlay: _playUpNext,
+        onCancelAutoPlay: _cancelAutoPlay,
+        onReplay: _replayFromEnd,
+        onPick: (item) => unawaited(_playInPlace(item, back: false)),
+        // The episode sheet is mounted in the fullscreen branch only. The
+        // windowed player already shows the whole Related list beside the
+        // picture, so a button to open a sheet that is not there would be a
+        // dead control.
+        onShowAll: fullscreen ? _toggleEpisodes : null,
+        onDismiss: () {
+          if (mounted) setState(() => _endingChoiceDismissed = true);
+        },
       ),
     );
   }
 
-  /// Height the transport bar occupies, plus the bottom safe inset.
-  double _barClearance(double safeBottom) {
-    final m = PlayerChromeMetrics.of(
-      MediaQuery.sizeOf(context),
-      fullscreen: fullscreen,
-    );
-    return m.seekHeight + m.gap + m.tap + m.pad / 2 + safeBottom;
+  /// Stops the autoplay countdown but leaves the card up — the viewer is still
+  /// choosing. The ✕ is the other answer: it closes the card and leaves the
+  /// last frame alone.
+  void _cancelAutoPlay() {
+    if (_upNext == null) return;
+    setState(() => _upNext = null);
+  }
+
+  /// Replay THIS file from the beginning — the end card's "stay here" answer.
+  /// Distinct from a seek-back, which resumes from the frame the viewer
+  /// dragged to and must not be thrown to zero.
+  void _replayFromEnd() {
+    final player = p;
+    if (player == null) return;
+    setState(() => _eof = PlayerEof.idle);
+    _clearUpNext();
+    player.seek(Duration.zero);
+    player.play();
   }
 
   Widget _speedBadge({required double top}) {
@@ -2965,44 +2992,62 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     padding: const EdgeInsets.symmetric(vertical: 4),
     child: SizedBox(
       height: 90,
-      child: Row(
-        children: [
-          Expanded(
-            flex: 2,
-            child: VideoCard(
-              key: _fp.keyFor(item.path),
-              item: item,
-              preview: _fp.isActive(item.path),
-              compact: true,
-              onTap: () => _go(item),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            flex: 3,
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => _go(item),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    item.name,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: RCrmColors.textPrimary, fontSize: 13),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${item.formattedSize} • ${item.extension.toUpperCase()}',
-                    style: TextStyle(color: RCrmColors.textSecondary, fontSize: 11),
-                  ),
-                ],
+      child: LayoutBuilder(
+        builder: (BuildContext context, BoxConstraints constraints) {
+          // Same rule as the list row (`VideoListTile`): a 16:9 poster, never
+          // a band. The 380dp sidebar made `Expanded(flex: 2)` look right by
+          // accident; the full-width Related list on a phone or tablet drew a
+          // 320 × 90 strip. Below the ideal width it may shrink, not grow.
+          final double thumbWidth = math.min(
+            90 * 16 / 9,
+            constraints.maxWidth * 0.42,
+          );
+          return Row(
+            children: [
+              SizedBox(
+                width: thumbWidth,
+                child: VideoCard(
+                  key: _fp.keyFor(item.path),
+                  item: item,
+                  preview: _fp.isActive(item.path),
+                  compact: true,
+                  onTap: () => _go(item),
+                ),
               ),
-            ),
-          ),
-        ],
+              const SizedBox(width: 8),
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => _go(item),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        item.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: RCrmColors.textPrimary,
+                          fontSize: 13,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${item.formattedSize} • '
+                        '${item.extension.toUpperCase()}',
+                        style: TextStyle(
+                          color: RCrmColors.textSecondary,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     ),
   );
