@@ -1848,8 +1848,8 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "rav1d"
-version = "1.1.0"
-source = "git+https://github.com/memorysafety/rav1d?rev=0c851fa046d6a36430570459283e5886fbdd8a66#0c851fa046d6a36430570459283e5886fbdd8a66"
+version = "1.1.1"
+source = "git+https://github.com/memorysafety/rav1d?rev=2e7216c20ac2a75de204d6c8d7268b75a45959b4#2e7216c20ac2a75de204d6c8d7268b75a45959b4"
 dependencies = [
  "assert_matches",
  "atomig",
@@ -1963,7 +1963,6 @@ dependencies = [
  "rcrm-core",
  "rcrm-server",
  "serde_json",
- "windows-sys 0.61.2",
  "zenwebp",
  "zeroize",
  "zune-jpeg",
