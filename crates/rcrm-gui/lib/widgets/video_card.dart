@@ -6,6 +6,7 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import '../config/theme.dart';
@@ -334,31 +335,43 @@ class VideoListTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 100,
-      child: Row(
-        children: [
-          Expanded(
-            flex: 2,
-            child: VideoCard(
-              key: cardKey,
-              item: item,
-              preview: preview,
-              compact: true,
-              onTap: onTap,
-            ),
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        // A 16:9 poster, and it stays one. This used to be
+        // `Expanded(flex: 2)`, so the thumbnail grew with the window: a 1600px
+        // list drew a 630 × 100 strip and `BoxFit.cover` cropped the poster
+        // into a band. On a phone that same 16:9 box would eat the text
+        // column, so it may shrink below the ideal width — never above it.
+        final double thumbWidth = math.min(
+          100 * 16 / 9,
+          constraints.maxWidth * 0.42,
+        );
+        return SizedBox(
+          height: 100,
+          child: Row(
+            children: [
+              SizedBox(
+                width: thumbWidth,
+                child: VideoCard(
+                  key: cardKey,
+                  item: item,
+                  preview: preview,
+                  compact: true,
+                  onTap: onTap,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: onTap,
+                  child: _info(context),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            flex: 3,
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: onTap,
-              child: _info(context),
-            ),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 
