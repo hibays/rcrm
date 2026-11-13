@@ -33,7 +33,8 @@
 import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart' show MethodChannel;
+import 'package:rcrm_gui/services/platform_bridge.dart';
 
 /// Test seam for the mobile-only branch below.
 ///
@@ -46,9 +47,10 @@ bool debugScreenOrientationSupported = Platform.isAndroid || Platform.isIOS;
 class ScreenOrientation {
   ScreenOrientation._();
 
-  /// The channel both halves implement. Pinned here because a mismatch between
-  /// this name and either platform file is silent.
-  static const MethodChannel channel = MethodChannel('rcrm/orientation');
+  /// The channel both halves implement. The name now lives in
+  /// [PlatformChannelNames]; this alias keeps the public surface (and the
+  /// mockable MethodChannel) stable — test/screen_orientation_test.dart uses it.
+  static const MethodChannel channel = PlatformBridge.orientation;
 
   /// True where "follow the phone" means anything: the two mobile platforms. A
   /// desktop window has no sensor to follow and no mask to move, so neither the
@@ -86,7 +88,7 @@ class ScreenOrientation {
     if (!supported) return false;
     debugFollowing = follow;
     try {
-      await channel.invokeMethod<void>(follow ? 'follow' : 'release');
+      await PlatformBridge.followDevice(follow);
       return true;
     } catch (_) {
       // A platform that cannot answer leaves the orientation where it was; the

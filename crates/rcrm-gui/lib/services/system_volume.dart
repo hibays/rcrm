@@ -27,7 +27,8 @@
 import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart' show MethodChannel;
+import 'package:rcrm_gui/services/platform_bridge.dart';
 
 /// Test seam for the mobile-only branch below.
 ///
@@ -226,9 +227,10 @@ class SystemVolumeReading {
 class SystemVolume {
   SystemVolume._();
 
-  /// The channel both halves implement. Pinned here because a mismatch between
-  /// this name and either platform file is silent.
-  static const MethodChannel channel = MethodChannel('rcrm/volume');
+  /// The channel both halves implement. The name now lives in
+  /// [PlatformChannelNames]; this alias keeps the public surface stable —
+  /// test/system_volume_test.dart installs its mocks on it.
+  static const MethodChannel channel = PlatformBridge.volume;
 
   /// Where the binding is offered AND honoured: the two mobile platforms. A
   /// desktop app's volume is its own mixer's business, and the app's own slider
@@ -273,13 +275,10 @@ class SystemVolume {
   static void watch() {
     if (!supported || _watching) return;
     _watching = true;
-    channel.setMethodCallHandler((MethodCall call) async {
-      if (call.method != 'onChanged') return null;
-      final SystemVolumeReading? reading = SystemVolumeReading.fromPlatform(
-        call.arguments,
-      );
+    PlatformBridge.watchVolumeChanges((Map<String, Object?> args) {
+      final SystemVolumeReading? reading =
+          SystemVolumeReading.fromPlatform(args);
       if (reading != null) _publish(reading);
-      return null;
     });
   }
 
@@ -290,7 +289,9 @@ class SystemVolume {
   /// that case, so a failed read can never look like a reading.
   static Future<SystemVolumeReading?> read() async {
     if (!supported) return null;
-    final SystemVolumeReading? reading = await _call('read');
+    final SystemVolumeReading? reading = await _call(
+      PlatformBridge.volumeRead,
+    );
     if (reading != null) _publish(reading);
     return reading;
   }
@@ -316,21 +317,20 @@ class SystemVolume {
     if (index == (_requested ?? current.index) && !current.muted) return current;
     _requested = index;
     final SystemVolumeReading? reading = await _call(
-      'setIndex',
-      <String, Object?>{'index': index},
+      () => PlatformBridge.volumeSetIndex(index),
     );
     if (reading != null) _publish(reading);
     return reading;
   }
 
+  /// Runs ONE typed bridge call and applies the "no reading" policy. Method
+  /// names, argument maps and reply normalisation live in [PlatformBridge];
+  /// this helper owns only the failure semantics.
   static Future<SystemVolumeReading?> _call(
-    String method, [
-    Object? arguments,
-  ]) async {
+    Future<Map<String, Object?>?> Function() invoke,
+  ) async {
     try {
-      return SystemVolumeReading.fromPlatform(
-        await channel.invokeMethod<Object?>(method, arguments),
-      );
+      return SystemVolumeReading.fromPlatform(await invoke());
     } catch (_) {
       // MissingPluginException on a host without the native half, or a reply the
       // codec refused. Either way: no reading, and no claim about the device's
@@ -343,7 +343,7 @@ class SystemVolume {
   /// from what another one read. [watch] installs the handler again.
   @visibleForTesting
   static void debugReset() {
-    channel.setMethodCallHandler(null);
+    PlatformBridge.stopWatchingVolumeChanges();
     _watching = false;
     _requested = null;
     state.value = null;

@@ -30,7 +30,8 @@
 import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart' show MethodChannel;
+import 'package:rcrm_gui/services/platform_bridge.dart';
 
 /// Test seam for the mobile-only branch below.
 ///
@@ -44,9 +45,10 @@ bool debugScreenCaptureSupported = Platform.isAndroid || Platform.isIOS;
 class ScreenCapture {
   ScreenCapture._();
 
-  /// The channel both halves implement. Pinned here because a mismatch between
-  /// this name and either platform file is silent.
-  static const MethodChannel channel = MethodChannel('rcrm/screen');
+  /// The channel both halves implement. The name now lives in
+  /// [PlatformChannelNames]; this alias keeps the public surface (and the
+  /// mockable MethodChannel) stable.
+  static const MethodChannel channel = PlatformBridge.screen;
 
   /// Where the setting is offered AND honoured: the two mobile platforms. A
   /// desktop window's pixels are the OS's business and no app API reaches them,
@@ -65,9 +67,7 @@ class ScreenCapture {
   static Future<void> setAllowed(bool allowed) async {
     if (!supported) return;
     try {
-      await channel.invokeMethod<void>('setCaptureAllowed', <String, dynamic>{
-        'allowed': allowed,
-      });
+      await PlatformBridge.setCaptureAllowed(allowed);
     } catch (_) {
       // Nothing to configure on this platform.
     }

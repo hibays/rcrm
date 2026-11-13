@@ -498,3 +498,41 @@ Update report:
 		③ 升到 warn 阈值可消掉剩余 2 条，但 AGP 9.3.1 高于 included build 的 `compileOnly` 目标 9.1.1，三件套要一起动；而且**消不掉**那 2 条 AGP deprecated（它们来自 `gradle.properties`，与版本号无关）
 	4) 文档：`docs/BUILDING.md` 新增「Configuration-time warnings under Flutter 3.50」章节（三类来源表、文案误导说明、实测记录、不要动 flag 的理由）；`AGENTS.md` 同步一行速查
 	5) 本批**未改动任何构建配置文件**。未跑 `assembleDebug` / APK 打包，内置 Kotlin 下的 Kotlin 编译链仍未验证；若将来要迁，需先跑一次完整 assemble 再动 `gradle.properties`
+
+21. 2026.11.13.3.30.AM.Friday
+	*本批为未发布的工作区改动：Flutter 3.50 直接原生互操作审查 + 平台通道类型化重写*
+
+	1) 用户要求：审查「FFIgen/JNIgen stable、Pigeon native interop preview」这段升级说明，并依此对全部桥接能力做进化性重写
+	2) 审查结论（先纠正转述，再决定动作）
+		① 官方博客原话是「FFIgen for Objective-C 和 JNIgen 加入 **FFIgen's long-standing C support** 一起 stable」—— **C 支持早就 stable**，3.50 新增的是 ObjC 绑定与 JNIgen。本项目是纯 C ABI，没有新增能力可用
+		② 「不再有序列化开销」不严谨：Pigeon 官方对比表写明 data classes / List / Map 仍是 **per-call 一次 buffer 编码**（29.2.0 才优化成单 buffer）；只有标量、字符串、枚举、typed data 直传
+		③ 「过去 Dart 调原生走 Platform Channel、强制异步」只描述平台通道；`dart:ffi` 一直可同步、可从任意 isolate 调用，本项目 25 个 Rust 导出一直是这条路
+		④ Pigeon native interop 的 iOS/macOS/Android 范围说对了，但它是 **Preview**（29.0.0 experimental → 29.1.1 Preview → 30.0.0 BREAKING CHANGE），且**明确不支持 Windows/Linux**；官方另列多引擎路由、后台 isolate 无 engineId、`@FlutterApi` hot restart 残留、macOS 无 detach 回调等限制
+		⑤ 口径冲突：Flutter 博客宣布 stable，dart.dev 的 Java interop 页仍标 **experimental**；pub.dev `jnigen` 已是 1.0.1（早于 3.50 发布 42 天），无 status 标签
+		⑥ 工具链前置：`ffigen` 23.0.0 需 LLVM ≥18（本机 MSYS2 有 23.1.5 + `libclang.dll`）、只解析 C 头（不支持 C++）、YAML 配置已弃用；`jnigen` 需 JDK 17–21 + CMake + Gradle stub，Android SDK stubs >28 不完整；Pigeon native interop 官方自评 "Setup Complexity: Complex"
+	3) 现状盘点：**25 个** Rust C-ABI 导出（手写 `dart:ffi`，7 个 lib 文件、3 个 Struct 镜像、2 个 `NativeCallable.listener`）＋ **7 个** MethodChannel / **11 个**方法（6 个 Android、3 个 iOS 半边、1 个 Windows；1 个原生→Dart 推送 `onChanged`）＋ **0** 代码生成框架
+	4) 逐点判定：**全量替换是负收益**
+		① Rust 主桥接不迁：`ffigen` 只生成签名，表达不了 4 种所有权形状、len-only `Vec::from_raw_parts`、超时不得释放、feature-gated 符号的运行时探测、`NativeFinalizer` 地址与 listener 回调；还要求新增并维护一份 `.h`
+		② Android/iOS 通道不迁：本质是 Activity/Context、BroadcastReceiver + ContentObserver、AVAudioSession 的生命周期封装，不是「Dart 调 Java 类」；`onChanged` 正是 Pigeon `@FlutterApi` 风险最高的路径
+		③ Windows `rcrm/window` 不迁：一个无参 void 命令，序列化开销为零；改成 FFI 会失去 runner 持有的真实 `HWND`
+		④ 第三方插件（camera / media_kit / window_manager 等）的通道不可改
+	5) 实际重写：引文里另一半「string-based plumbing」才是可落地的进化
+		① 新增 `lib/services/platform_bridge.dart`：`PlatformChannelNames`（7）、`PlatformMethods`（10 个 Dart→原生 + 1 个原生→Dart）、`PlatformArgs`、`PlatformBridge`（7 个 `const MethodChannel` + 类型化调用 + `reply()` 把 untyped 回包规范成 `Map<String,Object?>` + `watchVolumeChanges` / `stopWatchingVolumeChanges` / `exitApp`）
+		② 7 个 service 全部改为调用类型层：`tv_detector` / `screen_capture` / `screen_orientation` / `storage_access` / `system_volume`（删掉 `_call(String method, [Object? args])`，改为 `_call(Future<Map<String,Object?>?> Function())`）/ `window_drag` / `double_back_exit`；保留 `ScreenOrientation.channel` 与 `SystemVolume.channel` 公开别名（测试依赖）
+		③ **线上行为零变化**：channel 名、方法名、StandardMessageCodec 载荷、异常与 fallback 策略全部不变 → Kotlin / Swift / Windows runner 与既有 mock 测试无需改动
+		④ 新增 `test/platform_bridge_test.dart` 13 例：钉住 7 个通道名 + 11 个方法名 + 参数键、回包规范化、各类型化调用发出的 method/arguments、`onChanged` 过滤与注销
+	6) 文档：`docs/API_REFERENCE.md` 新增「Native interop review (Flutter 3.50)」（已是直接互操作的证据、三工具不迁的逐条理由、类型化边界与未来迁移路径）；`AGENTS.md` Must-Know 新增一条「不要在 `platform_bridge.dart` 之外写 `invokeMethod` 字符串」
+	7) 门禁：`flutter analyze lib test` 零告警；`flutter test` **759/759 全绿**（746 + 新增 13）；`cargo build --locked` 通过；`cargo test -- --skip compare_` 全绿。Rust 侧本批未改
+	8) 未验证：未跑 Android / iOS / Windows 真机构建（线上行为靠「wire 不变 + mock 测试」保证，不是设备验证）；未引入 `ffigen` / `jnigen` / `pigeon` 依赖（本机 LLVM 23.1.5 可用，但审查判定无收益）
+
+22. 2026.11.13.3.55.AM.Friday
+	*本批为未发布的工作区改动：Android 工具链一次性跳到 Gradle 9.9.1 / AGP 9.3.1 / KGP 2.4.21*
+
+	1) 触发：用户贴出 3 条 `will soon be dropped`，要求直接升 Gradle 9.9.1，再追问 AGP / Kotlin、KGP 2.4.21
+	2) 取证：`DependencyVersionChecker.kt` 只判下限（error 9.3.1 / 9.1.1 / 2.4.10，warn 9.5.0 / 9.3.1 / 2.4.20）；Kotlin 官方 KGP 2.4.20–2.4.21 完全支持 Gradle ≤9.7.0 / AGP ≤9.3.1；AGP 9.3 → Gradle ≥9.5.0、9.4/9.5 → ≥9.6.0；腾讯 Gradle zip 与阿里云 AGP/KGP POM 全 200
+	3) 版本选择：AGP 9.3.1（模板默认 + KGP 支持上限），不用 9.5.0（离 included build 的 compileOnly 9.1.1 / 2.4.10 太远）；KGP 2.4.21 与 2.4.20 同兼容区间，且 SDK 对 >2.4.20 的 KGP 走「未知版本视为有效」分支 → `--suggestions` 少报一条 `Incompatible KGP/Gradle versions`
+	4) 三步实测（每步完整 `flutter build apk --release`）：只升 Gradle → APK 125.7MB / 363.8s（`:app:tasks` 3m40s）；+AGP 9.3.1 / KGP 2.4.20 → 350.2s；换 2.4.21 → 223.9s，3 条 warn 全消
+	5) 审查发现：`./gradlew help` BUILD SUCCESSFUL 1m9s，仍有模板 flags deprecated、AGP 9.3.1 新增 4 条 Variant API obsolete、KGP obsolete、Gradle 9.9 的 Kotlin DSL `w:` 与 javac 8 警告，全部非致命，不动模板开关；`--suggestions` 仅剩 1 条 `Incompatible Gradle/AGP versions`（AGP 9.3.x 上限写死 9.5.0，只喂诊断）
+	6) 门禁：`flutter analyze lib test` 零告警；`flutter test` 759/759；`cargo build --locked`；`cargo test -- --skip compare_` 全绿
+	7) 文档：BUILDING.md 版本矩阵与三个章节、AGENTS.md（gitignored）、本条 CHANGELOG；本地 memory 同步
+	8) 未验证：无 Android 真机安装 / 启动；`--suggestions` 那条诊断未消除（需等 SDK 抬高上限）；未跑桌面构建

@@ -18,11 +18,10 @@
 import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart' show debugPrint;
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart'
+    show MissingPluginException, PlatformException;
+import 'package:rcrm_gui/services/platform_bridge.dart';
 import 'package:window_manager/window_manager.dart';
-
-/// The runner-side window channel (see `windows/runner/flutter_window.cpp`).
-const MethodChannel _channel = MethodChannel('rcrm/window');
 
 /// False once the runner has answered that it does not know the method, so an
 /// older runner is asked exactly once.
@@ -51,7 +50,7 @@ Future<void> startWindowDrag() async {
     return;
   }
   try {
-    await _channel.invokeMethod<void>('startWindowDrag');
+    await PlatformBridge.startWindowDrag();
   } on MissingPluginException {
     _channelAvailable = false;
     _reportFallbackOnce();

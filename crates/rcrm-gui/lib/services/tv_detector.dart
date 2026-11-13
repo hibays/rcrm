@@ -4,15 +4,13 @@
 
 import 'dart:io' show Platform;
 
-import 'package:flutter/services.dart';
+import 'package:rcrm_gui/services/platform_bridge.dart';
 
 /// True when running on an Android TV device (leanback UI mode).
 Future<bool> isAndroidTv() async {
   if (!Platform.isAndroid) return false;
-  const channel = MethodChannel('rcrm/tv');
   try {
-    final result = await channel.invokeMethod<bool>('isTv');
-    return result ?? false;
+    return await PlatformBridge.isTv();
   } catch (_) {
     return false;
   }

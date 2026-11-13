@@ -188,6 +188,65 @@ final creds = bridge.getAuthCredentials(handle);
 // {'username': 'abc123', 'password': 'xyz456'}
 ```
 
+## Native interop review (Flutter 3.50)
+
+Flutter 3.50 declared **direct native interop stable**: FFIgen for Objective-C
+and JNIgen for Java/Kotlin joined FFIgen's *long-standing C support*, and
+Pigeon's FFI/JNI mode entered preview. The whole bridge surface was audited
+against that announcement. **No runtime binding was migrated**, for concrete
+reasons; what changed is the string-based plumbing (below).
+
+### What is already direct interop
+
+All 25 exports in `crates/rcrm-flutter-bridge/src/lib.rs` are handwritten
+`extern "C"` functions reached through `dart:ffi` in `ffi/rust_bridge.dart`.
+They are synchronous, callable from any isolate (`Isolate.run` calls
+`RustBridge.load()`), zero-copy for media bytes (Memory Ownership above), and
+already use `NativeCallable.listener` for Rust→Dart callbacks plus a
+`NativeFinalizer` for `WebpBuf`. C FFI was stable long before 3.50; this
+release added Objective-C bindings and JNIgen, neither of which applies here.
+
+FFIgen 23.0.0 generates **signatures only**. It cannot express the four
+ownership shapes above, the len-only `Vec::from_raw_parts` hand-off, the
+"never free on timeout" rule, the runtime probe that treats the five
+`mobile-decode` symbols as absent on desktop, or the callback/finalizer
+addresses. It also needs a maintained C header (the crate has none) and
+LLVM ≥ 18. Replacing the handwritten layer with generated bindings would turn
+a checked ownership contract into raw signatures — a downgrade, not an upgrade.
+
+### Why the platform channels stay
+
+Seven `MethodChannel`s / eleven methods remain. They are **lifecycle wrappers**,
+not "Dart wants to call a Java class": the native halves own an Activity /
+Context, a `BroadcastReceiver` + `ContentObserver`, an `AVAudioSession`, or an
+`HWND`.
+
+| Tool | Why not |
+|---|---|
+| JNIgen 1.0.1 | Generates bindings for Java/Kotlin classes; using it would mean constructing `AudioManager`, `Intent`, `Uri`, `BroadcastReceiver` in Dart and managing registration there. Needs JDK 17–21, CMake and a Gradle stub for Android classpaths; Android SDK stubs after API 28 are documented as incomplete; `package:jni` needs `Jni.spawn` off Android. dart.dev still labels Java interop **experimental** while the 3.50 blog calls it stable — the docs have not caught up. |
+| Pigeon native interop | **Preview** (29.0.0 experimental → 29.1.1 Preview → 30.0.0 BREAKING CHANGE), and explicitly **not supported on Windows or Linux**, which rules out `rcrm/window`. Its README lists multi-engine routing, background isolates without an engine id, stale `@FlutterApi` registrations after hot restart, and no macOS detach callback; `rcrm/volume`'s `onChanged` is exactly a `@FlutterApi` push. Data classes, Lists and Maps are still encoded into **one buffer per call** in Pigeon's own comparison table, so "zero serialisation" is not literal. |
+| FFI for the Windows runner | `rcrm/window` is one parameterless void command fired on a pointer-down; its serialisation cost is nil. Moving it to FFI would lose the runner's real `HWND` and require guessing the foreground window from the Rust DLL. |
+
+### What was evolved instead: the typed boundary
+
+The part of the 3.50 message that *does* apply here is "string-based plumbing".
+`lib/services/platform_bridge.dart` is now the single typed boundary for all
+seven channels: `PlatformChannelNames`, `PlatformMethods`, `PlatformArgs`, and
+typed call / reply helpers. The seven services no longer contain an
+`invokeMethod('…')` string or a hand-built argument map, and untyped codec
+replies are normalised to `Map<String, Object?>` in one place. Wire behaviour
+is unchanged — same channel names, method names, `StandardMessageCodec`
+payloads and exception / fallback policies — so Kotlin, Swift, the Windows
+runner and the existing mock tests needed no edits.
+`test/platform_bridge_test.dart` pins the contract (7 names, 10+1 methods,
+argument keys, reply shape, `onChanged` push).
+
+**Migration path**: if Pigeon native interop reaches stable with Windows/Linux
+coverage and a solved `@FlutterApi` lifecycle, replace only
+`platform_bridge.dart`. The 25 C-ABI exports stay handwritten regardless; any
+generator used there must be a *validator* of the ownership contract, never the
+runtime binding.
+
 ## See Also
 
 - `ffi/rust_bridge.dart` — all extern "C" bindings with null/pointer safety

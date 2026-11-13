@@ -15,6 +15,7 @@ import 'dart:io' show Platform;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
+import 'package:rcrm_gui/services/platform_bridge.dart';
 
 /// Shared "press back again to exit" state machine.
 ///
@@ -27,8 +28,8 @@ class DoubleBackGuard {
   /// Native exit hook: finishes the task and kills the process synchronously.
   /// Deterministic — unlike [SystemNavigator.pop] it cannot leave the Activity
   /// in a half-finished state that a relaunch would restore (which made the
-  /// reopened app exit immediately).
-  static const _exit = MethodChannel('rcrm/app');
+  /// reopened app exit immediately). The `rcrm/app` channel lives in
+  /// [PlatformBridge].
   DateTime? _lastBackAt;
 
   /// Handle a back press. Returns true if the app should exit now (second
@@ -40,7 +41,7 @@ class DoubleBackGuard {
     _lastBackAt = now;
     if (last != null && now.difference(last) <= interval) {
       try {
-        _exit.invokeMethod('exitApp');
+        PlatformBridge.exitApp();
       } catch (_) {
         SystemNavigator.pop();
       }

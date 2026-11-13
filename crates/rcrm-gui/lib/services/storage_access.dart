@@ -40,9 +40,10 @@
 import 'dart:io' show Platform;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter/widgets.dart'
     show AppLifecycleState, WidgetsBinding, WidgetsBindingObserver;
+import 'package:rcrm_gui/services/platform_bridge.dart';
 
 /// Test seam for the Android-only branch below.
 ///
@@ -156,9 +157,9 @@ class StorageAccessStatus {
 class StorageAccess {
   StorageAccess._();
 
-  /// The channel both halves implement. Pinned here because a mismatch between
-  /// this name and `StorageAccessChannel.kt` is silent.
-  static const MethodChannel channel = MethodChannel('rcrm/storage');
+  /// The channel both halves implement. The name now lives in
+  /// [PlatformChannelNames]; this alias keeps the public surface stable.
+  static const MethodChannel channel = PlatformBridge.storage;
 
   /// Where the ask is offered AND honoured. This permission is an Android
   /// one -- a desktop app reads its folders with the user's own rights and has
@@ -184,7 +185,8 @@ class StorageAccess {
   static Future<StorageAccessStatus> status() async {
     if (!supported) return StorageAccessStatus.unknown;
     try {
-      final Object? reply = await channel.invokeMethod<Object?>('status');
+      final Map<String, Object?>? reply =
+          await PlatformBridge.storageStatus();
       return StorageAccessStatus.fromPlatform(reply);
     } catch (_) {
       // MissingPluginException on a host without the native half, or a reply
@@ -212,7 +214,7 @@ class StorageAccess {
   static Future<void> request() async {
     if (!supported) return;
     try {
-      await channel.invokeMethod<Object?>('request');
+      await PlatformBridge.requestStorageAccess();
     } catch (_) {
       // A platform that cannot launch anything is not an error: the re-read
       // below is what the UI believes.
