@@ -23,7 +23,8 @@ import 'package:material_ui/material_ui.dart';
 
 import '../config/theme.dart';
 import '../models/media_item.dart';
-import 'video_poster.dart';
+import 'finger_preview_listener.dart';
+import 'video_card.dart';
 
 /// How long the card takes to arrive and to leave. A moment, not a place —
 /// the same 200ms rise the up-next card uses; the exit is a shade quicker.
@@ -44,6 +45,7 @@ class PlayerEndCard extends StatefulWidget {
     this.countdown = const Duration(seconds: 8),
     this.onAutoPlay,
     this.onCancelAutoPlay,
+    this.fingerPreview,
   });
 
   /// The file that just ended. Naming it is the only "you are here" the card
@@ -88,6 +90,11 @@ class PlayerEndCard extends StatefulWidget {
   /// Stop the countdown but KEEP the card: the viewer is still choosing, and
   /// closing the whole surface is the ✕'s job.
   final VoidCallback? onCancelAutoPlay;
+
+  /// The player's shared finger-preview state. Passed through so these tiles
+  /// behave like every other video list on touch (a finger held on a poster
+  /// previews it); null in tests and on desktop.
+  final FingerPreviewState? fingerPreview;
 
   @override
   State<PlayerEndCard> createState() => _PlayerEndCardState();
@@ -267,7 +274,15 @@ class _PlayerEndCardState extends State<PlayerEndCard>
               child: child,
             ),
           ),
-          child: card,
+          child: widget.fingerPreview == null
+              ? card
+              : Listener(
+                  // The same sticky-preview path the Related list uses: the
+                  // state hit-tests the card's key under the finger.
+                  onPointerDown: (e) =>
+                      widget.fingerPreview!.onPointerDown(e, setState),
+                  child: card,
+                ),
         ),
       ],
     );
@@ -437,6 +452,7 @@ class _PlayerEndCardState extends State<PlayerEndCard>
                       ? _Tile(
                           item: shown[row + col],
                           onTap: () => widget.onPick(shown[row + col]),
+                          fingerPreview: widget.fingerPreview,
                           autoOverlay:
                               auto != null && shown[row + col].path == auto.path
                               ? _autoOverlay()
@@ -581,6 +597,7 @@ class _Tile extends StatelessWidget {
     required this.item,
     required this.onTap,
     this.autoOverlay,
+    this.fingerPreview,
   });
 
   final MediaItem item;
@@ -590,66 +607,55 @@ class _Tile extends StatelessWidget {
   /// ring and the cancel chip live above the image and below the duration.
   final Widget? autoOverlay;
 
+  /// Shared finger-preview state, so a touch held on the poster previews it
+  /// exactly as it does on every other video list.
+  final FingerPreviewState? fingerPreview;
+
   @override
   Widget build(BuildContext context) {
+    final bool isAuto = autoOverlay != null;
     return Semantics(
       button: true,
       label: item.name,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(RCrmRadii.sm),
-        hoverColor: RCrmColors.playerHairline,
-        focusColor: RCrmColors.playerHairline,
-        child: Padding(
-          padding: const EdgeInsets.all(4),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              AspectRatio(
-                aspectRatio: 16 / 9,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(RCrmRadii.sm),
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      VideoPoster(
-                        item: item,
-                        loading: const _PosterPlaceholder(),
-                        fallback: const _PosterPlaceholder(),
-                      ),
-                      ?autoOverlay,
-                      if (item.durationSeconds != null)
-                        Positioned(
-                          right: 4,
-                          bottom: 4,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 4,
-                              vertical: 2,
-                            ),
-                            decoration: BoxDecoration(
-                              color: const Color(0xCC000000),
-                              borderRadius: BorderRadius.circular(
-                                RCrmRadii.sm,
-                              ),
-                            ),
-                            child: Text(
-                              item.formattedDuration,
-                              style: TextStyle(
-                                color: RCrmColors.playerText,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AspectRatio(
+            aspectRatio: 16 / 9,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // The same card the Related list uses, so the desktop hover
+                // preview and the mobile finger preview come with it. No
+                // margin: the poster fills the 16:9 box. The duration chip is
+                // asked for explicitly — compact cards drop it by default.
+                VideoCard(
+                  key: fingerPreview?.keyFor(item.path),
+                  item: item,
+                  compact: true,
+                  showDuration: true,
+                  margin: EdgeInsets.zero,
+                  // A countdown tile is about to play by itself; a second
+                  // moving picture under the ring would be noise.
+                  hoverPreview: !isAuto,
+                  preview:
+                      !isAuto && (fingerPreview?.isActive(item.path) ?? false),
+                  onTap: onTap,
                 ),
-              ),
-              const SizedBox(height: 6),
-              Text(
+                ?autoOverlay,
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(RCrmRadii.sm),
+            hoverColor: RCrmColors.playerHairline,
+            focusColor: RCrmColors.playerHairline,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+              child: Text(
                 item.name,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
@@ -659,25 +665,10 @@ class _Tile extends StatelessWidget {
                   fontWeight: FontWeight.w500,
                 ),
               ),
-            ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
-}
-
-class _PosterPlaceholder extends StatelessWidget {
-  const _PosterPlaceholder();
-
-  @override
-  Widget build(BuildContext context) => Container(
-    color: RCrmColors.darkCoal,
-    alignment: Alignment.center,
-    child: Icon(
-      Icons.play_circle_outline,
-      size: 26,
-      color: RCrmColors.playerTextFaint,
-    ),
-  );
 }

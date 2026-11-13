@@ -2830,6 +2830,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         countdown: _upNextSeconds,
         onAutoPlay: _playUpNext,
         onCancelAutoPlay: _cancelAutoPlay,
+        // Same shared preview the Related list uses: hover on desktop, a held
+        // finger on mobile.
+        fingerPreview: _fp,
         onReplay: _replayFromEnd,
         onPick: (item) => unawaited(_playInPlace(item, back: false)),
         // The episode sheet is mounted in the fullscreen branch only. The

@@ -12,6 +12,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:rcrm_gui/models/media_item.dart';
 import 'package:rcrm_gui/services/thumbnail_service.dart';
 import 'package:rcrm_gui/widgets/player_end_card.dart';
+import 'package:rcrm_gui/widgets/video_card.dart';
 import 'package:rcrm_gui/widgets/video_poster.dart';
 
 MediaItem _video(String name, {int? seconds}) => MediaItem(
@@ -254,6 +255,7 @@ void main() {
 
   Widget offerCard({
     MediaItem? offer,
+    List<MediaItem>? related,
     bool shuffled = false,
     Duration countdown = const Duration(seconds: 3),
     VoidCallback? onAutoPlay,
@@ -262,7 +264,7 @@ void main() {
   }) => _host(
     PlayerEndCard(
       title: 'current.mp4',
-      related: <MediaItem>[_video('other.mp4')],
+      related: related ?? <MediaItem>[_video('other.mp4')],
       autoPlayItem: offer,
       autoPlayShuffled: shuffled,
       countdown: countdown,
@@ -338,5 +340,30 @@ void main() {
     expect(auto, 0);
     expect(find.text('Cancel'), findsNothing);
     expect(find.byType(CircularProgressIndicator), findsNothing);
+  });
+
+  testWidgets('every tile previews on hover except the countdown one', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      offerCard(
+        offer: _video('auto.mp4'),
+        related: <MediaItem>[_video('a.mp4'), _video('b.mp4')],
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 250));
+
+    final List<VideoCard> cards = tester
+        .widgetList<VideoCard>(find.byType(VideoCard))
+        .toList();
+    // The offer is hoisted to the first slot, and that is the one tile that
+    // must NOT start a second moving picture under its ring.
+    expect(cards.first.item.name, 'auto.mp4');
+    expect(cards.first.hoverPreview, isFalse);
+    expect(
+      cards.skip(1).every((VideoCard c) => c.hoverPreview),
+      isTrue,
+      reason: 'the rest of the grid behaves like every other video list',
+    );
   });
 }

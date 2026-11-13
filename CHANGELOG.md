@@ -583,3 +583,13 @@ Update report:
 	4) 渲染：`.local_backup/render_end_card_test.dart` 新增 `end_card_autoplay`，确认第一张卡压暗 + 橙环 + `Cancel`，且 offer 不在列表首位时被提到第一格
 	5) 门禁：`flutter analyze lib test` 零告警、全量 `flutter test` 全绿、cargo 门禁全绿
 	6) 未验证：真机播放到结尾的实际自动跳转；`Cancel` 后切后台再回来是否仍保持取消（screen 状态在，理论保持）
+
+25. 2026.11.13.12.30.PM.Friday
+	*本批为完播卡片的 hover 预览补齐*
+
+	1) 用户指出新做的完播卡片没有 hover play。原因：格子用的是 `VideoPoster`（纯海报），而播放页 Related 行用的是 `VideoCard`（桌面 hover / 移动 finger preview），两边不一致
+	2) 修复：`_Tile` 换成 `VideoCard(compact: true, showDuration: true, margin: zero, hoverPreview: !isAuto, preview: _fp.isActive)`；`PlayerEndCard` 新增 `fingerPreview`，卡片外的 `Listener` 接 `_fp.onPointerDown`；screen 传 `_fp`
+	3) `VideoCard` 新增 `hoverPreview` / `showDuration` / `margin` 三个参数（默认值保持现有调用不变）；`_dur` 在 compact 时贴底 4dp，不再浮在中间
+	4) 倒计时那一格**禁用** hover preview：它本来就要自动播，环下再放一个动态画面是噪声
+	5) 测试 12 例（新增「非倒计时格可 hover、倒计时格不行」）；渲染复看宽屏，圆角 / 角标 / 栅格无回归；门禁全绿
+	6) 未验证：真实鼠标 hover 到 200ms 的预览起播（测试不模拟计时器与 `PreviewPlayer`）；移动端手指 sticky preview 的真机表现

@@ -22,12 +22,29 @@ class VideoCard extends StatefulWidget {
 
   /// When true (mobile), show preview video. External controller toggles this.
   final bool preview;
+
+  /// Whether a desktop pointer may start the shared hover preview. False where
+  /// the card is already about to play by itself — the end card's countdown
+  /// tile — because a second moving picture under the ring is noise.
+  final bool hoverPreview;
+
+  /// Overrides the duration chip's default, which is `!compact`. The end card's
+  /// grid wants the chip on a compact card; the list rows do not.
+  final bool? showDuration;
+
+  /// Card's own margin. The grids and list rows keep the Card default of 4;
+  /// the end card wants the poster to fill its 16:9 box exactly.
+  final EdgeInsetsGeometry margin;
+
   const VideoCard({
     super.key,
     required this.item,
     this.onTap,
     this.compact = false,
     this.preview = false,
+    this.hoverPreview = true,
+    this.showDuration,
+    this.margin = const EdgeInsets.all(4),
   });
   @override
   State<VideoCard> createState() => _VideoCardState();
@@ -79,11 +96,17 @@ class _VideoCardState extends State<VideoCard> {
         _stopPreview();
       }
     }
+    // A card that becomes the countdown tile must drop a preview a pointer is
+    // already holding; hoverPreview is the gate, not a hint.
+    if (old.hoverPreview && !widget.hoverPreview) {
+      _ht?.cancel();
+      _stopPreview();
+    }
   }
 
   // ── Desktop hover ──────────────────────────────────────
   void _enter(_) {
-    if (_isMobile) return;
+    if (_isMobile || !widget.hoverPreview) return;
     _ht?.cancel();
     final gen = _hoverGen;
     _ht = Timer(const Duration(milliseconds: 200), () {
@@ -141,9 +164,12 @@ class _VideoCardState extends State<VideoCard> {
   // ── Build ──────────────────────────────────────────────
   @override
   Widget build(BuildContext c) {
-    final showDur = widget.item.durationSeconds != null && !widget.compact;
+    final showDur =
+        (widget.showDuration ?? !widget.compact) &&
+        widget.item.durationSeconds != null;
     final card = Card(
       color: RCrmColors.char,
+      margin: widget.margin,
       clipBehavior: Clip.antiAlias,
       child: Stack(
         fit: StackFit.expand,
@@ -220,7 +246,10 @@ class _VideoCardState extends State<VideoCard> {
   Widget _dur() {
     final onMedia = _hasPoster;
     return Positioned(
-      bottom: 36,
+      // Clear of the info strip when there is one. A compact card has no
+      // strip, and the end card asks for the chip there — bottom 36 would
+      // float it in the middle of the poster.
+      bottom: widget.compact ? 4 : 36,
       right: 4,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
