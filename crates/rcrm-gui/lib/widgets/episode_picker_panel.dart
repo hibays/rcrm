@@ -65,6 +65,11 @@ class EpisodePickerPanel extends StatefulWidget {
 
 class _EpisodePickerPanelState extends State<EpisodePickerPanel>
     with SingleTickerProviderStateMixin {
+  /// This sheet's own key namespace. In fullscreen it opens OVER the end
+  /// card and both show the same files, so the two must not ask for the same
+  /// GlobalKey — one of them would render blank.
+  static const String _surfaceName = 'episodeSheet';
+
   /// The one value both directions read: 1 is arrived, 0 is gone.
   late final AnimationController _ctrl = AnimationController(
     vsync: this,
@@ -131,6 +136,10 @@ class _EpisodePickerPanelState extends State<EpisodePickerPanel>
 
   Widget _row(MediaItem item) {
     final fp = widget.fingerPreview;
+    // The sheet's own key namespace: in fullscreen it opens OVER the end
+    // card, and both show the same files — one GlobalKey per path would
+    // leave one of them blank.
+    final FingerPreviewSurface? surface = fp?.surface(_surfaceName);
     return InkWell(
       onTap: () => widget.onPick(item),
       child: Padding(
@@ -143,10 +152,13 @@ class _EpisodePickerPanelState extends State<EpisodePickerPanel>
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(6),
                 child: VideoCard(
-                  key: fp?.keyFor(item.path),
+                  key: surface?.keyFor(item.path),
                   item: item,
-                  preview: fp?.isActive(item.path) ?? false,
+                  preview: surface?.isActive(item.path) ?? false,
                   compact: true,
+                  // The sheet floats on the picture: its tiles stay dark in
+                  // both appearances.
+                  mediaSurface: true,
                 ),
               ),
             ),

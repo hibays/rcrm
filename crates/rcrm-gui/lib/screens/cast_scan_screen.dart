@@ -18,6 +18,7 @@ import 'package:camera/camera.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../config/theme.dart';
 import '../ffi/rust_bridge.dart';
 import '../providers/server_provider.dart';
 import '../services/cast_protocol.dart';
@@ -613,19 +614,19 @@ class _State extends ConsumerState<CastScanScreen> with WidgetsBindingObserver {
         margin: const EdgeInsets.fromLTRB(12, 12, 12, 0),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
-          color: const Color(0xFFFFF3CD),
+          color: RCrmColors.noticeSurface,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: const Color(0xFFE6C463)),
+          border: Border.all(color: RCrmColors.noticeBorder),
         ),
         child: Row(
           children: [
-            const Icon(Icons.info_outline, size: 20, color: Color(0xFF8A6D1A)),
+            Icon(Icons.info_outline, size: 20, color: RCrmColors.noticeInk),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
                 _notice!,
-                style: const TextStyle(
-                  color: Color(0xFF8A6D1A),
+                style: TextStyle(
+                  color: RCrmColors.noticeInk,
                   fontWeight: FontWeight.w500,
                 ),
               ),

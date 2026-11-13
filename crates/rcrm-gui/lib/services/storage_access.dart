@@ -158,7 +158,11 @@ class StorageAccess {
   StorageAccess._();
 
   /// The channel both halves implement. The name now lives in
-  /// [PlatformChannelNames]; this alias keeps the public surface stable.
+  /// [PlatformChannelNames]; this alias exists ONLY for the mock tests —
+  /// app code goes through [PlatformBridge.storageStatus] and
+  /// [PlatformBridge.requestStorageAccess]. Marked test-only so the bridge
+  /// cannot be bypassed from app code unnoticed.
+  @visibleForTesting
   static const MethodChannel channel = PlatformBridge.storage;
 
   /// Where the ask is offered AND honoured. This permission is an Android

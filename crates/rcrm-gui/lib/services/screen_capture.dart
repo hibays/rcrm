@@ -46,8 +46,10 @@ class ScreenCapture {
   ScreenCapture._();
 
   /// The channel both halves implement. The name now lives in
-  /// [PlatformChannelNames]; this alias keeps the public surface (and the
-  /// mockable MethodChannel) stable.
+  /// [PlatformChannelNames]; this alias exists ONLY for the mock tests —
+  /// app code goes through [PlatformBridge.setCaptureAllowed]. Marked
+  /// test-only so the bridge cannot be bypassed from app code unnoticed.
+  @visibleForTesting
   static const MethodChannel channel = PlatformBridge.screen;
 
   /// Where the setting is offered AND honoured: the two mobile platforms. A

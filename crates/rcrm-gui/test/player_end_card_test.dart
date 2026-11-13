@@ -9,8 +9,10 @@
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:rcrm_gui/config/theme.dart';
 import 'package:rcrm_gui/models/media_item.dart';
 import 'package:rcrm_gui/services/thumbnail_service.dart';
+import 'package:rcrm_gui/widgets/finger_preview_listener.dart';
 import 'package:rcrm_gui/widgets/player_end_card.dart';
 import 'package:rcrm_gui/widgets/video_card.dart';
 import 'package:rcrm_gui/widgets/video_poster.dart';
@@ -304,6 +306,32 @@ void main() {
     expect(cancelled, 1);
   });
 
+  testWidgets('tapping the ring tile plays THAT video, not nothing', (
+    WidgetTester tester,
+  ) async {
+    // The dim and the ring are decoration. They used to be a bare
+    // `ColoredBox` — which is hit-test OPAQUE — so a tap anywhere in the
+    // countdown tile was swallowed by the dim, never reached the tile's own
+    // tap handler, and fell through to the picture underneath. On a finished
+    // file that picture handler REPLAYS the video the viewer is sitting on.
+    MediaItem? picked;
+    await tester.pumpWidget(
+      offerCard(
+        offer: _video('auto.mp4', seconds: 30),
+        related: <MediaItem>[_video('auto.mp4', seconds: 30)],
+        onPick: (item) => picked = item,
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // The ring tile is the first grid tile; tap its centre, where the ring is.
+    final Rect tile = tester.getRect(find.byType(AspectRatio).first);
+    await tester.tapAt(tile.center);
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(picked?.name, 'auto.mp4');
+  });
+
   testWidgets('the countdown advances once, not on every frame after', (
     WidgetTester tester,
   ) async {
@@ -365,5 +393,116 @@ void main() {
       isTrue,
       reason: 'the rest of the grid behaves like every other video list',
     );
+  });
+
+  testWidgets('the countdown label counts down with the ring', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      offerCard(
+        offer: _video('auto.mp4'),
+        countdown: const Duration(seconds: 8),
+      ),
+    );
+    await tester.pump();
+
+    // The label and the ring are the same clock: a label that said "8s" for
+    // the whole countdown was a lie from its second second.
+    expect(find.text('Auto-plays in 8s'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 3));
+    expect(find.text('Auto-plays in 5s'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 3));
+    expect(find.text('Auto-plays in 2s'), findsOneWidget);
+  });
+
+  testWidgets('the tiles float on the picture, so they stay dark in Day', (
+    WidgetTester tester,
+  ) async {
+    // The end card's surface is FIXED dark in both appearances (it floats on
+    // the picture). Its tiles must be too — a cream tile in a dark card is a
+    // light patch on a video.
+    RCrmColors.apply(accent: RCrmAccent.marquee, brightness: Brightness.light);
+    addTearDown(
+      () => RCrmColors.apply(
+        accent: RCrmAccent.marquee,
+        brightness: Brightness.dark,
+      ),
+    );
+
+    await tester.pumpWidget(
+      offerCard(related: <MediaItem>[_video('a.mp4', seconds: 61)]),
+    );
+    await tester.pump();
+
+    final Card card = tester.widget<Card>(find.byType(Card).first);
+    expect(card.color, RCrmColors.playerSurface);
+  });
+
+  testWidgets('the end card and the Related list can both be mounted', (
+    WidgetTester tester,
+  ) async {
+    // The player's Related list and the end card show the SAME files at the
+    // same time, and they share one FingerPreviewState. One GlobalKey per
+    // path handed both the same key: the framework moved the first card's
+    // element into the second's slot and the end card's tiles went BLANK.
+    final FingerPreviewState fp = FingerPreviewState();
+    final List<MediaItem> related = <MediaItem>[
+      _video('a.mp4'),
+      _video('b.mp4'),
+    ];
+
+    await tester.pumpWidget(
+      _host(
+        Row(
+          children: [
+            Expanded(
+              child: PlayerEndCard(
+                title: 'current.mp4',
+                related: related,
+                onReplay: () {},
+                onPick: (_) {},
+                onShowAll: () {},
+                onDismiss: () {},
+                fingerPreview: fp,
+              ),
+            ),
+            SizedBox(
+              width: 200,
+              child: ListView(
+                children: [
+                  for (final MediaItem m in related)
+                    SizedBox(
+                      height: 90,
+                      child: VideoCard(
+                        key: fp.surface('related').keyFor(m.path),
+                        item: m,
+                        compact: true,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    // Both surfaces drew their tiles: the end card's grid shows every related
+    // item, and the list beside it shows the same ones again.
+    expect(find.byType(VideoCard), findsNWidgets(related.length * 2));
+  });
+
+  testWidgets('one path on two surfaces is two keys', (
+    WidgetTester tester,
+  ) async {
+    // The rule the blank tiles came from: a GlobalKey belongs to a SURFACE.
+    final FingerPreviewState fp = FingerPreviewState();
+    final GlobalKey a = fp.surface('one').keyFor('/library/x.mp4');
+    final GlobalKey b = fp.surface('two').keyFor('/library/x.mp4');
+    expect(identical(a, b), isFalse);
+    // ...and the same surface asks for the same key, so the element survives.
+    expect(identical(a, fp.surface('one').keyFor('/library/x.mp4')), isTrue);
   });
 }

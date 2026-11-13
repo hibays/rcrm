@@ -48,6 +48,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// again — the app hangs and the routes pile up ("route stacking").
   bool _castBusy = false;
   final _fp = FingerPreviewState();
+
+  /// The two rows' own key namespaces. A video can be in BOTH the
+  /// recommended row and the recent row, so the two must not ask for the
+  /// same GlobalKey — one of them would render blank.
+  late final FingerPreviewSurface _recommended = _fp.surface('homeRecommended');
+  late final FingerPreviewSurface _recent = _fp.surface('homeRecent');
   bool _fromHomeChip = false;
   final _exitGuard = DoubleBackGuard();
 
@@ -352,10 +358,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       width: 320 * rowScale,
                       child: VideoCard(
                         key: FingerPreviewState.isMobile
-                            ? _fp.keyFor(recommended[index].path)
+                            ? _recommended.keyFor(recommended[index].path)
                             : ValueKey(recommended[index].url),
                         item: recommended[index],
-                        preview: _fp.isActive(recommended[index].path),
+                        preview: _recommended.isActive(recommended[index].path),
                         onTap: () => _openVideo(recommended[index]),
                       ),
                     ),
@@ -389,10 +395,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       width: 280 * rowScale,
                       child: VideoCard(
                         key: FingerPreviewState.isMobile
-                            ? _fp.keyFor('recent:${item.path}')
+                            ? _recent.keyFor(item.path)
                             : ValueKey(item.url),
                         item: item,
-                        preview: _fp.isActive('recent:${item.path}'),
+                        preview: _recent.isActive(item.path),
                         onTap: () => _openVideo(item),
                       ),
                     ),

@@ -7,6 +7,8 @@ import 'package:media_kit/media_kit.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'app.dart';
 
+import 'package:rcrm_gui/services/settings_service.dart';
+
 import 'services/item_cache_limit.dart';
 
 void main() async {
@@ -31,6 +33,10 @@ void main() async {
   }
   try {
     final prefs = await SharedPreferences.getInstance();
+    // The instance exists now, so the app shell can read the persisted
+    // appearance synchronously and paint frame one in the user's own theme
+    // instead of flashing the default.
+    SettingsService.prime(prefs);
     runApp(
       ProviderScope(
         child: RcrmApp(savedConfig: prefs.getString('server_config')),

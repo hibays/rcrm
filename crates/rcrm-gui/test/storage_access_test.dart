@@ -24,12 +24,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:rcrm_gui/config/theme.dart';
 import 'package:rcrm_gui/screens/library_setup_screen.dart';
 import 'package:rcrm_gui/screens/settings_screen.dart';
+import 'package:rcrm_gui/services/platform_bridge.dart';
 import 'package:rcrm_gui/services/storage_access.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  const channel = MethodChannel('rcrm/storage');
+  // The channel itself comes from the bridge, so the wire name this file
+  // pins is the ONE the contract test also pins — a literal here could drift
+  // from the bridge and silently stop mocking the real call.
+  const MethodChannel channel = PlatformBridge.storage;
   final calls = <MethodCall>[];
 
   void answerWith(Future<Object?> Function(MethodCall) handler) {

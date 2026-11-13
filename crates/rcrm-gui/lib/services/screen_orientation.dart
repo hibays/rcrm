@@ -48,8 +48,10 @@ class ScreenOrientation {
   ScreenOrientation._();
 
   /// The channel both halves implement. The name now lives in
-  /// [PlatformChannelNames]; this alias keeps the public surface (and the
-  /// mockable MethodChannel) stable — test/screen_orientation_test.dart uses it.
+  /// [PlatformChannelNames]; this alias exists ONLY for the mock tests —
+  /// app code goes through [PlatformBridge.followDevice]. Marked test-only
+  /// so the bridge cannot be bypassed from app code unnoticed.
+  @visibleForTesting
   static const MethodChannel channel = PlatformBridge.orientation;
 
   /// True where "follow the phone" means anything: the two mobile platforms. A

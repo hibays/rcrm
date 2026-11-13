@@ -593,3 +593,26 @@ Update report:
 	4) 倒计时那一格**禁用** hover preview：它本来就要自动播，环下再放一个动态画面是噪声
 	5) 测试 12 例（新增「非倒计时格可 hover、倒计时格不行」）；渲染复看宽屏，圆角 / 角标 / 栅格无回归；门禁全绿
 	6) 未验证：真实鼠标 hover 到 200ms 的预览起播（测试不模拟计时器与 `PreviewPlayer`）；移动端手指 sticky preview 的真机表现
+
+26. 2026.11.13.1.40.PM.Friday
+	*本批为 56f4100 引入的回归修复：完播卡片的推荐瓦片全空白*
+
+	1) 用户贴图反馈「card 上面什么都不显示」：完播卡片的 Related 网格只剩文件名，三张瓦片一个海报、占位符、时长角标都没有；同时右侧 Related 侧栏的同名视频海报正常
+	2) 定位：`FingerPreviewState.keyFor(path)` 用 `putIfAbsent` 按 path 缓存 GlobalKey，**同一个 path 永远返回同一个 GlobalKey 实例**。56f4100 把瓦片从裸 `VideoPoster`（无 key）换成 `VideoCard(key: fingerPreview?.keyFor(item.path))` 后，完播卡片与 Related 侧栏/剧集 sheet 对同一批 path 申请到同一个 GlobalKey
+	3) 机制取证（不是猜测）：GlobalKey 一个 widget 树只能挂一处，第二处出现时框架会把先挂载的 element 搬到后挂载的位置，**先挂载的那一面被静默截断**——所以侧栏有海报、卡片瓦片空白，且不报错（`_debugVerifyGlobalKeyReservation` 在 assert 里，release 不抛）。探针复现：完播卡片 + 380dp 侧栏同树 → `Multiple widgets used the same GlobalKey`；卡片 + 剧集 sheet 同栈 → `Duplicate GlobalKeys detected in widget tree`
+	4) 修复：GlobalKey 的归属从「文件」改为「表面」。`FingerPreviewState` 新增 `surface(name)` 返回 `FingerPreviewSurface`，key 的缓存键变成 `surface\0path`，`isActive` 同源；7 个调用点全部迁移——Related 列表 `playerRelated`、剧集 sheet `episodeSheet`、完播卡片 `endCard`、视频网格/列表 `videoBrowser`、首页两行 `homeRecommended`/`homeRecent`（顺带替掉 `'recent:${path}'` 那个字符串前缀 hack）
+	5) 同一批修掉三个真实问题
+		① 倒计时标签恒为 `8s`：`widget.countdown.inSeconds` 是常量，环在走数字不动。改为 `_remainingSeconds()` 读同一个 `_count` 控制器（向上取整），实测 8s→5s→2s；`0` 时显示 `now`
+		② Day 模式瓦片不再是固定深色：DESIGN.md 明写「fixed dark tokens, never the page's semantic colours」，但换 `VideoCard` 后 Card 底色读 `RCrmColors.char`（Day = 奶油 #E3DCCD），浮在固定深色卡片上；时长角标底色也是 `char`，对卡片底 1.00:1（角标消失）。`VideoCard` 新增 `mediaSurface`，卡片底色/占位符/角标/加载态全部走 `player*` 固定 token；完播卡片与剧集 sheet 都置 true
+		③ Day 模式投放页低对比度硬编码色：`cast_remote_screen.dart` 文件夹图标 `0xFFFFB74D` 对 char 仅 1.27:1（改 `RCrmColors.warn`，Day 4.34:1）、连接状态点 `0xFF4CAF50` 2.04:1（改 `RCrmColors.ok`，Day 5.77:1）；`cast_scan_screen.dart` 提示卡底色 `0xFFFFF3CD` 对 Day 画布 **1.01:1（整张卡片消失）**，且该文件此前连 `config/theme.dart` 都没 import。新增 `RCrmColors.noticeSurface/.noticeInk/.noticeBorder` 三元组，Night 保持原奶油色（17.4:1），Day 反转成深琥珀底 + 白字（对画布 5.27:1、对卡片 4.34:1、正文 5.93:1）
+	6) 顺带修正：Night 的提示卡墨色 `#8A6D1A` 对奶油底只有 4.43:1，压线不过 AA 正文 → 改 `#806415`（5.05:1）
+	7) 测试：`player_end_card_test.dart` 新增 4 例（倒计时逐秒递减、Day 下瓦片仍是 `playerSurface`、完播卡片与 Related 侧栏同挂载不抛且两面都画出瓦片、同 path 两个 surface 得到两个 key）；`settings_appearance_test.dart` 新增 2 例（三状态色对 char ≥3:1 双外观、notice 三元组正文 ≥4.5:1 且对画布/卡片 ≥1.4:1 双外观）
+	8) 渲染复看（`.local_backup/render_end_card_fix_test.dart`，真字体 1280×800）：完播卡片三张瓦片的占位符、时长角标（05:59 / 01:18 / 01:06）、文件名全部正常，侧栏同时正常
+	9) 门禁：`flutter analyze lib test` 零告警、`flutter test` **774/774**、`cargo build --locked` 通过
+	10) 未验证：真机（尤其移动端手指 sticky preview 在两 surface 间切换）、真实鼠标 hover 起播、Day 模式真机渲染
+
+	11) 顺带两项（同批、同属审查清单）：① 启动闪屏——`main()` 在 runApp 前已解析 SharedPreferences，新增 `SettingsService.prime(prefs)` 与静态 `primedAppearance`，`SettingsNotifier.build()` 用它种下外观，首帧即用户自己的主题（探针：night+safelight 存量首帧即 `darkPitch`+safelight，不再是默认 Day 奶油色）；`load()` 读同一批键、落在同值，种子不产生可见变化；`clearPrimedAppearance()` 供测试复位；② `platform_bridge` 契约补洞——3 个测试文件硬编码的通道字符串改从 `PlatformBridge.screen/.storage/.window` 取（否则改 bridge 常量它们会静默失配）；4 个 service 的裸 `MethodChannel` 别名加 `@visibleForTesting` 并在文档里写明 app 侧走哪个 bridge 方法，让「绕过 bridge」在 analyze 阶段可见
+
+	12) 用户反馈（修完空白瓦片后的真机复看）：点击完播卡片第一格（转圈的倒计时瓦片）不是立即播那个视频，而是**重放原片**。定位：`_autoOverlay` 的压暗层是裸 `ColoredBox(color: 0x73000000)`，而 `_RenderColoredBox` 的命中行为是 `HitTestBehavior.opaque`（Flutter 源码 basic.dart:8393）——整块瓦片的点击被压暗层吞掉，瓦片自己的 tap 永远进不了竞技场，点击沿祖先落到画面自己的手势处理器上；播完的文件上 `_togglePlayPause()` 按 mpv 的「播放列表已结束」语义**从 0 重放原片**。探针复现：点环中心 → `picked=null, wrapperTaps=1`（点普通瓦片则 `picked ✓, wrapperTaps=0`）
+	13) 修复：压暗层与圆环是装饰，包进 `IgnorePointer`（只有 `Cancel` 角标保留自己的处理器）；探针复测点环中心 → `picked=深探大健身房.mp4, wrapperTaps=0`。新增回归 1 例「tapping the ring tile plays THAT video」，断言点倒计时瓦片中心拾取的是 offer 本身
+	14) 顺带核对 DESIGN.md「The whole tile is the yes」条目，补上这个 widget 树陷阱的说明（装饰性覆盖层 + 透明 ColoredBox = 点击吞噬）

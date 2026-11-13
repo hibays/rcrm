@@ -299,6 +299,11 @@ class _State extends ConsumerState<VideoPlayerScreen> {
   double _pipH = 169;
   final _fp = FingerPreviewState(); // mobile preview for related-videos list
 
+  /// The Related list's own key namespace. The end card floats over the
+  /// picture and shows the same files, so the two surfaces must not ask for
+  /// the same GlobalKey — one of them would render blank.
+  late final FingerPreviewSurface _relSurface = _fp.surface('playerRelated');
+
   bool get _isMobile => Platform.isAndroid || Platform.isIOS;
 
   // ── Mobile gesture state ─────────────────────────────────
@@ -3010,9 +3015,9 @@ class _State extends ConsumerState<VideoPlayerScreen> {
               SizedBox(
                 width: thumbWidth,
                 child: VideoCard(
-                  key: _fp.keyFor(item.path),
+                  key: _relSurface.keyFor(item.path),
                   item: item,
-                  preview: _fp.isActive(item.path),
+                  preview: _relSurface.isActive(item.path),
                   compact: true,
                   onTap: () => _go(item),
                 ),

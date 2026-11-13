@@ -158,8 +158,19 @@ class SettingsState {
 // ── Notifier ─────────────────────────────────────────────────
 
 class SettingsNotifier extends Notifier<SettingsState> {
+  /// The appearance is KNOWN before the first frame — main() primed it from
+  /// the already-resolved SharedPreferences — so the shell paints in the
+  /// user's own appearance from frame one instead of flashing the default and
+  /// correcting it a frame later. `load()` later reads the same keys and
+  /// lands on the same values, so the seed never visibly changes.
   @override
-  SettingsState build() => const SettingsState();
+  SettingsState build() {
+    final primed = SettingsService.primedAppearance;
+    return const SettingsState().copyWith(
+      appearanceMode: primed?.mode ?? 'system',
+      appearanceAccent: primed?.accent ?? 'marquee',
+    );
+  }
 
   SettingsService get _service => ref.read(settingsServiceProvider);
 

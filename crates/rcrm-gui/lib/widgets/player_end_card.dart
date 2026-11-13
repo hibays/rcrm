@@ -94,6 +94,10 @@ class PlayerEndCard extends StatefulWidget {
   /// The player's shared finger-preview state. Passed through so these tiles
   /// behave like every other video list on touch (a finger held on a poster
   /// previews it); null in tests and on desktop.
+  ///
+  /// The tiles ask for their keys on their OWN surface: the Related list
+  /// beside the picture and this card over it show the same files at the same
+  /// time, and one GlobalKey per path would leave one of them blank.
   final FingerPreviewState? fingerPreview;
 
   @override
@@ -184,6 +188,19 @@ class _PlayerEndCardState extends State<PlayerEndCard>
     }
     await _ctrl.reverse();
     if (mounted) widget.onDismiss();
+  }
+
+  /// How many whole seconds are LEFT before the autoplay fires, read from the
+  /// same controller the ring drains from.
+  ///
+  /// The controller runs 0 → 1 over [PlayerEndCard.countdown], so the time
+  /// left is what is left of that duration. It is rounded UP, because "0s"
+  /// for the last second would read as "it has already played".
+  int _remainingSeconds() {
+    final double elapsed =
+        _count.value * widget.countdown.inMilliseconds / 1000.0;
+    final double left = widget.countdown.inSeconds - elapsed;
+    return left.ceil().clamp(0, widget.countdown.inSeconds);
   }
 
   @override
@@ -326,17 +343,26 @@ class _PlayerEndCardState extends State<PlayerEndCard>
                   ),
                   const SizedBox(width: 4),
                   Flexible(
-                    child: Text(
-                      widget.autoPlayShuffled
-                          ? 'Random pick · auto-plays in '
-                                '${widget.countdown.inSeconds}s'
-                          : 'Auto-plays in ${widget.countdown.inSeconds}s',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: RCrmColors.playerTextSecondary,
-                        fontSize: 11,
-                      ),
+                    // The SAME controller that drains the ring, so the number
+                    // and the ring cannot disagree: a label that said "8s" for
+                    // the whole countdown was a lie from its second second.
+                    child: AnimatedBuilder(
+                      animation: _count,
+                      builder: (context, _) {
+                        final int left = _remainingSeconds();
+                        final String when = left > 0 ? '${left}s' : 'now';
+                        return Text(
+                          widget.autoPlayShuffled
+                              ? 'Random pick · auto-plays in $when'
+                              : 'Auto-plays in $when',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: RCrmColors.playerTextSecondary,
+                            fontSize: 11,
+                          ),
+                        );
+                      },
                     ),
                   ),
                 ],
@@ -472,42 +498,56 @@ class _PlayerEndCardState extends State<PlayerEndCard>
   /// frame dimmed, the ring draining, and a way out that does not close the
   /// whole card. The reference's end screen marks its first card this way, and
   /// it is the honest place for it — the ring is on the video it will play.
+  ///
+  /// The dim and the ring are DECORATION, and they are wrapped in
+  /// [IgnorePointer] for exactly that reason: a translucent [ColoredBox] is
+  /// hit-test OPAQUE, and left bare it would swallow every tap in the tile —
+  /// the tap would then fall through to the picture's own handler, which on a
+  /// finished file REPLAYS the video the viewer is sitting on. Only the
+  /// `Cancel` chip is its own button; the rest of the tile stays the "yes".
   Widget _autoOverlay() => Stack(
     fit: StackFit.expand,
     children: [
-      const ColoredBox(color: Color(0x73000000)),
-      Center(
-        child: AnimatedBuilder(
-          animation: _count,
-          builder: (_, _) => SizedBox(
-            width: 40,
-            height: 40,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                SizedBox(
+      IgnorePointer(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            const ColoredBox(color: Color(0x73000000)),
+            Center(
+              child: AnimatedBuilder(
+                animation: _count,
+                builder: (_, _) => SizedBox(
                   width: 40,
                   height: 40,
-                  child: CircularProgressIndicator(
-                    // Drains: full at the moment the card appeared.
-                    value: 1 - _count.value,
-                    strokeWidth: 2.5,
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      RCrmColors.playerAccent,
-                    ),
-                    backgroundColor: RCrmColors.playerText.withValues(
-                      alpha: 0.12,
-                    ),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      SizedBox(
+                        width: 40,
+                        height: 40,
+                        child: CircularProgressIndicator(
+                          // Drains: full at the moment the card appeared.
+                          value: 1 - _count.value,
+                          strokeWidth: 2.5,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            RCrmColors.playerAccent,
+                          ),
+                          backgroundColor: RCrmColors.playerText.withValues(
+                            alpha: 0.12,
+                          ),
+                        ),
+                      ),
+                      Icon(
+                        Icons.skip_next,
+                        size: 17,
+                        color: RCrmColors.playerText,
+                      ),
+                    ],
                   ),
                 ),
-                Icon(
-                  Icons.skip_next,
-                  size: 17,
-                  color: RCrmColors.playerText,
-                ),
-              ],
+              ),
             ),
-          ),
+          ],
         ),
       ),
       Positioned(
@@ -611,9 +651,16 @@ class _Tile extends StatelessWidget {
   /// exactly as it does on every other video list.
   final FingerPreviewState? fingerPreview;
 
+  /// This surface's own key namespace. The Related list beside the picture
+  /// and this card over it show the same files at the same time, so the two
+  /// must not ask for the same GlobalKey — one of them would render blank.
+  static const String _surfaceName = 'endCard';
+
   @override
   Widget build(BuildContext context) {
     final bool isAuto = autoOverlay != null;
+    final FingerPreviewSurface? surface =
+        fingerPreview?.surface(_surfaceName);
     return Semantics(
       button: true,
       label: item.name,
@@ -631,16 +678,19 @@ class _Tile extends StatelessWidget {
                 // margin: the poster fills the 16:9 box. The duration chip is
                 // asked for explicitly — compact cards drop it by default.
                 VideoCard(
-                  key: fingerPreview?.keyFor(item.path),
+                  key: surface?.keyFor(item.path),
                   item: item,
                   compact: true,
                   showDuration: true,
                   margin: EdgeInsets.zero,
+                  // This tile floats on the picture: its surface and its
+                  // placeholder stay dark in both appearances.
+                  mediaSurface: true,
                   // A countdown tile is about to play by itself; a second
                   // moving picture under the ring would be noise.
                   hoverPreview: !isAuto,
                   preview:
-                      !isAuto && (fingerPreview?.isActive(item.path) ?? false),
+                      !isAuto && (surface?.isActive(item.path) ?? false),
                   onTap: onTap,
                 ),
                 ?autoOverlay,

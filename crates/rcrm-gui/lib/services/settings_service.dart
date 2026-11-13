@@ -37,6 +37,36 @@ const int kVideoJumpHistoryDefault = 10;
 bool useSystemVolumeDefault({required bool isDesktop}) => !isDesktop;
 
 class SettingsService {
+  /// The persisted appearance, readable WITHOUT awaiting.
+  ///
+  /// main() resolves SharedPreferences before runApp, so by the time the app
+  /// shell builds, the two appearance values are a synchronous read. The shell
+  /// needs them on the FIRST frame: painting the default appearance and
+  /// correcting it a frame later is a visible flash on every launch for
+  /// anyone who chose Day/Night or a non-default accent. [load] later confirms
+  /// the same values, so the seeded state never visibly changes.
+  static ({String mode, String accent})? primedAppearance;
+
+  /// Called once by main() with the instance it already resolved.
+  static void prime(SharedPreferences prefs) {
+    final String? mode = prefs.getString(_keyAppearanceMode);
+    final String? accent = prefs.getString(_keyAppearanceAccent);
+    primedAppearance = (
+      mode: switch (mode) {
+        'day' || 'night' => mode!,
+        _ => 'system',
+      },
+      accent: accent ?? 'marquee',
+    );
+  }
+
+  /// Puts the seed back to "not primed", the way a fresh process would find
+  /// it — the same idea as [ThumbCache.resetForTest]. A seed left over from
+  /// one test would answer another's build().
+  static void clearPrimedAppearance() {
+    primedAppearance = null;
+  }
+
   static const _keyServerConfig = 'server_config';
   static const _keyVideoLayout = 'video_layout'; // 'grid' or 'list'
   static const _keyVideoGridColumns = 'video_grid_columns';

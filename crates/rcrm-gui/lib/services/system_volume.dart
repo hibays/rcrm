@@ -228,8 +228,11 @@ class SystemVolume {
   SystemVolume._();
 
   /// The channel both halves implement. The name now lives in
-  /// [PlatformChannelNames]; this alias keeps the public surface stable —
-  /// test/system_volume_test.dart installs its mocks on it.
+  /// [PlatformChannelNames]; this alias exists ONLY for the mock tests —
+  /// app code goes through [PlatformBridge.volumeRead] and
+  /// [PlatformBridge.volumeSetIndex]. Marked test-only so the bridge cannot
+  /// be bypassed from app code unnoticed.
+  @visibleForTesting
   static const MethodChannel channel = PlatformBridge.volume;
 
   /// Where the binding is offered AND honoured: the two mobile platforms. A

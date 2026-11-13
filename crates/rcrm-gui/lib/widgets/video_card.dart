@@ -36,6 +36,16 @@ class VideoCard extends StatefulWidget {
   /// the end card wants the poster to fill its 16:9 box exactly.
   final EdgeInsetsGeometry margin;
 
+  /// This card floats on MEDIA — over a picture, not on the page.
+  ///
+  /// The page's own colours belong to the page: in the Day appearance the
+  /// card surface and the poster placeholder turn cream, and a cream tile
+  /// sitting on the player's fixed dark surface is a light patch on a dark
+  /// picture. A card on media therefore reads the FIXED dark tokens instead
+  /// (docs/DESIGN.md §2A: "Media overlays deliberately do not follow the page
+  /// appearance").
+  final bool mediaSurface;
+
   const VideoCard({
     super.key,
     required this.item,
@@ -45,6 +55,7 @@ class VideoCard extends StatefulWidget {
     this.hoverPreview = true,
     this.showDuration,
     this.margin = const EdgeInsets.all(4),
+    this.mediaSurface = false,
   });
   @override
   State<VideoCard> createState() => _VideoCardState();
@@ -167,8 +178,14 @@ class _VideoCardState extends State<VideoCard> {
     final showDur =
         (widget.showDuration ?? !widget.compact) &&
         widget.item.durationSeconds != null;
+    // A card on media reads the FIXED dark tokens, never the page's: the page
+    // turns cream in the Day appearance, and a cream tile on the player's
+    // dark surface is a light patch on a picture.
+    final surface = widget.mediaSurface
+        ? RCrmColors.playerSurface
+        : RCrmColors.char;
     final card = Card(
-      color: RCrmColors.char,
+      color: surface,
       margin: widget.margin,
       clipBehavior: Clip.antiAlias,
       child: Stack(
@@ -227,14 +244,18 @@ class _VideoCardState extends State<VideoCard> {
         }
       },
       loading: Container(
-        color: RCrmColors.coal,
+        color: widget.mediaSurface
+            ? RCrmColors.playerSurface
+            : RCrmColors.coal,
         child: Center(
           child: SizedBox(
             width: 20,
             height: 20,
             child: CircularProgressIndicator(
               strokeWidth: 2,
-              color: RCrmColors.textFaint,
+              color: widget.mediaSurface
+                  ? RCrmColors.playerTextFaint
+                  : RCrmColors.textFaint,
             ),
           ),
         ),
@@ -245,6 +266,19 @@ class _VideoCardState extends State<VideoCard> {
 
   Widget _dur() {
     final onMedia = _hasPoster;
+    // The chip sits on the poster: over a real picture it is black with
+    // white ink, and over the placeholder it takes the card's own surface so
+    // it does not become a second rectangle inside the tile.
+    final Color chipBg = onMedia
+        ? Colors.black87
+        : (widget.mediaSurface
+              ? RCrmColors.playerSurface
+              : RCrmColors.char);
+    final Color chipFg = onMedia
+        ? Colors.white
+        : (widget.mediaSurface
+              ? RCrmColors.playerText
+              : RCrmColors.textPrimary);
     return Positioned(
       // Clear of the info strip when there is one. A compact card has no
       // strip, and the end card asks for the chip there — bottom 36 would
@@ -254,15 +288,12 @@ class _VideoCardState extends State<VideoCard> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
         decoration: BoxDecoration(
-          color: onMedia ? Colors.black87 : RCrmColors.char,
+          color: chipBg,
           borderRadius: BorderRadius.circular(4),
         ),
         child: Text(
           widget.item.formattedDuration,
-          style: TextStyle(
-            color: onMedia ? Colors.white : RCrmColors.textPrimary,
-            fontSize: 11,
-          ),
+          style: TextStyle(color: chipFg, fontSize: 11),
         ),
       ),
     );
@@ -270,6 +301,14 @@ class _VideoCardState extends State<VideoCard> {
 
   Widget _info() {
     if (widget.compact) return const SizedBox.shrink();
+    // The no-poster strip is a media overlay of its own: on media it stays
+    // dark in both appearances, so it never becomes a cream band on a card
+    // floating over the picture.
+    final Color strip = _hasPoster
+        ? Colors.transparent
+        : (widget.mediaSurface
+              ? RCrmColors.playerSurface
+              : RCrmColors.coal);
     return Positioned(
       bottom: 0,
       left: 0,
@@ -287,8 +326,8 @@ class _VideoCardState extends State<VideoCard> {
                     Colors.transparent,
                   ]
                 : [
-                    RCrmColors.coal,
-                    RCrmColors.coal.withValues(alpha: 0.55),
+                    strip,
+                    strip.withValues(alpha: 0.55),
                     Colors.transparent,
                   ],
           ),
@@ -300,7 +339,9 @@ class _VideoCardState extends State<VideoCard> {
             MarqueeText(
               text: widget.item.name,
               style: TextStyle(
-                color: _hasPoster ? Colors.white : RCrmColors.textPrimary,
+                color: _hasPoster || widget.mediaSurface
+                    ? Colors.white
+                    : RCrmColors.textPrimary,
                 fontSize: widget.compact ? 11 : 13,
                 fontWeight: FontWeight.w500,
               ),
@@ -309,7 +350,7 @@ class _VideoCardState extends State<VideoCard> {
               Text(
                 '${widget.item.formattedSize} • ${widget.item.extension.toUpperCase()}',
                 style: TextStyle(
-                  color: _hasPoster
+                  color: _hasPoster || widget.mediaSurface
                       ? Colors.white60
                       : RCrmColors.textSecondary,
                   fontSize: 10,
@@ -322,15 +363,30 @@ class _VideoCardState extends State<VideoCard> {
   }
 
   Widget _ph() => Container(
-    color: RCrmColors.coal,
+    // The placeholder is a media overlay too: on the picture it stays dark in
+    // both appearances, so a card on media never turns into a cream block.
+    color: widget.mediaSurface
+        ? RCrmColors.playerSurface
+        : RCrmColors.coal,
     child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Icon(Icons.play_circle_outline, size: 48, color: RCrmColors.textFaint),
+        Icon(
+          Icons.play_circle_outline,
+          size: 48,
+          color: widget.mediaSurface
+              ? RCrmColors.playerTextFaint
+              : RCrmColors.textFaint,
+        ),
         const SizedBox(height: 4),
         Text(
           widget.item.extension.toUpperCase(),
-          style: TextStyle(color: RCrmColors.textSecondary, fontSize: 11),
+          style: TextStyle(
+            color: widget.mediaSurface
+                ? RCrmColors.playerTextSecondary
+                : RCrmColors.textSecondary,
+            fontSize: 11,
+          ),
         ),
       ],
     ),

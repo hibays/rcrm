@@ -404,6 +404,11 @@ class _VideoGrid extends StatefulWidget {
 class _VideoGridState extends State<_VideoGrid> {
   final _fp = FingerPreviewState();
 
+  /// This browser's own key namespace. The grid and the list are alternatives
+  /// (never mounted together), so they share one surface — and no other
+  /// surface may claim this name.
+  late final FingerPreviewSurface _surface = _fp.surface('videoBrowser');
+
   @override
   Widget build(BuildContext c) {
     final videos = widget.videos;
@@ -456,9 +461,9 @@ class _VideoGridState extends State<_VideoGrid> {
           itemBuilder: (_, i) {
             final v = videos[i];
             return VideoCard(
-              key: FingerPreviewState.isMobile ? _fp.keyFor(v.path) : null,
+              key: FingerPreviewState.isMobile ? _surface.keyFor(v.path) : null,
               item: v,
-              preview: _fp.isActive(v.path),
+              preview: _surface.isActive(v.path),
               onTap: () => widget.onOpen(v),
             );
           },
@@ -478,8 +483,8 @@ class _VideoGridState extends State<_VideoGrid> {
           padding: const EdgeInsets.only(bottom: 8),
           child: VideoListTile(
             item: v,
-            cardKey: _fp.keyFor(v.path),
-            preview: _fp.isActive(v.path),
+            cardKey: _surface.keyFor(v.path),
+            preview: _surface.isActive(v.path),
             onTap: () => widget.onOpen(v),
           ),
         );

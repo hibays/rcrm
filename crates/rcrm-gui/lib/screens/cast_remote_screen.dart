@@ -813,7 +813,7 @@ class _State extends ConsumerState<CastRemoteScreen>
                 color: connected
                     ? (playing
                           ? theme.colorScheme.primary
-                          : const Color(0xFF4CAF50))
+                          : RCrmColors.ok)
                     : theme.colorScheme.error,
               ),
               const SizedBox(width: 10),
@@ -904,7 +904,10 @@ class _State extends ConsumerState<CastRemoteScreen>
               onPressed: _goUp,
             )
           else
-            const Icon(Icons.folder, size: 20, color: Color(0xFFFFB74D)),
+            // The folder mark is a warning-tinted accent, so it reads with the
+            // `warn` token: its Day variant is the deepened one, which keeps
+            // it legible on the cream canvas (the fixed amber was 1.27:1).
+            Icon(Icons.folder, size: 20, color: RCrmColors.warn),
           const SizedBox(width: 8),
           Expanded(
             child: Text(

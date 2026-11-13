@@ -16,6 +16,14 @@ import 'package:rcrm_gui/providers/settings_provider.dart';
 import 'package:rcrm_gui/screens/settings_screen.dart';
 import 'package:rcrm_gui/services/settings_service.dart';
 
+/// WCAG contrast of two opaque colours, so "readable" is a number rather than
+/// an opinion.
+double _contrast(Color a, Color b) {
+  final la = a.computeLuminance(), lb = b.computeLuminance();
+  final hi = la > lb ? la : lb, lo = la > lb ? lb : la;
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
@@ -135,6 +143,66 @@ void main() {
     expect(RCrmColors.coal, RCrmColors.lightCoal);
     expect(RCrmColors.textPrimary, RCrmColors.lightInk);
     expect(RCrmColors.textSecondary, RCrmColors.lightInkSubtle);
+  });
+
+  test('every status token reads on its own canvas, in both appearances', () {
+    // These are ICONS and small labels, so 3:1 is the floor (WCAG 1.4.11),
+    // not the 4.5:1 body-text one. The numbers were 1.27:1 and 2.04:1 before
+    // the Day ramp existed: the colours were the Night ones, hardcoded.
+    for (final brightness in [Brightness.dark, Brightness.light]) {
+      RCrmColors.apply(accent: RCrmAccent.marquee, brightness: brightness);
+      for (final entry in {
+        'ok': RCrmColors.ok,
+        'warn': RCrmColors.warn,
+        'bad': RCrmColors.bad,
+      }.entries) {
+        expect(
+          _contrast(entry.value, RCrmColors.char),
+          greaterThanOrEqualTo(3.0),
+          reason: '${entry.key} on char must read in $brightness',
+        );
+      }
+    }
+  });
+
+  test('the notice banner reads over the camera AND on the canvas', () {
+    // It floats on the camera preview — arbitrary video pixels — and falls
+    // back to the page canvas when the camera is not there. The file's own
+    // literals were a cream chip with brown ink: 1.01:1 against the Day
+    // canvas, i.e. the banner was simply invisible.
+    //
+    // The promise is the TEXT, not the chip's edge: the chip is opaque, so
+    // the message never sits on video pixels. Its own separation is measured
+    // against the two surfaces it can land on — the canvas and a card. (No
+    // single colour separates from BOTH pure-white and pure-black video; that
+    // is what the border is for, and why the chip is opaque in the first
+    // place.)
+    for (final brightness in [Brightness.dark, Brightness.light]) {
+      RCrmColors.apply(accent: RCrmAccent.marquee, brightness: brightness);
+      final surface = RCrmColors.noticeSurface;
+      final ink = RCrmColors.noticeInk;
+
+      expect(
+        _contrast(ink, surface),
+        greaterThanOrEqualTo(4.5),
+        reason: 'the message must be body-text readable in $brightness',
+      );
+      expect(
+        surface.a,
+        1.0,
+        reason: 'an opaque chip is what keeps the text off the video',
+      );
+      for (final canvas in <String, Color>{
+        'the page canvas': RCrmColors.pitch,
+        'a card': RCrmColors.char,
+      }.entries) {
+        expect(
+          _contrast(surface, canvas.value),
+          greaterThanOrEqualTo(1.4),
+          reason: 'the chip must separate from ${canvas.key} in $brightness',
+        );
+      }
+    }
   });
 
   testWidgets('the Appearance rows are one door each, and write through', (

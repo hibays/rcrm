@@ -14,12 +14,16 @@
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:rcrm_gui/services/platform_bridge.dart';
 import 'package:rcrm_gui/services/window_drag.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  const runner = MethodChannel('rcrm/window');
+  // The runner channel itself comes from the bridge, so the wire name this
+  // file pins is the ONE the contract test also pins — a literal here could
+  // drift from the bridge and silently stop mocking the real call.
+  const MethodChannel runner = PlatformBridge.window;
   const plugin = MethodChannel('window_manager');
   final runnerCalls = <String>[];
   final pluginCalls = <String>[];

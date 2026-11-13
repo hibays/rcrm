@@ -198,6 +198,25 @@ abstract final class RCrmColors {
   static Color get warn => _warn;
   static Color get bad => _bad;
 
+  // ── The notice banner (the cast scanner's transient message) ──
+  //
+  // It floats over the CAMERA — video pixels of unknown brightness — and
+  // falls back to the page canvas when the camera is not there yet. It must
+  // read in both, and in both appearances.
+  //
+  // Night keeps the original cream chip: 17.4:1 on the Night canvas and
+  // 4.4:1 for the ink on the chip. Day INVERTS it — a deep amber chip with
+  // white ink — because the cream chip was 1.01:1 against the cream canvas
+  // (the banner vanished) and 1.23:1 against a card.
+  static Color _noticeSurface = const Color(0xFFFFF3CD);
+  // 5.05:1 on the cream chip. The original #8A6D1A read 4.43:1 — just under
+  // AA body text, which is what this is.
+  static Color _noticeInk = const Color(0xFF806415);
+  static Color _noticeBorder = const Color(0xFFE6C463);
+  static Color get noticeSurface => _noticeSurface;
+  static Color get noticeInk => _noticeInk;
+  static Color get noticeBorder => _noticeBorder;
+
   // ── Android 12+ Material You ──────────────────────────────
   static Color? _systemLight;
   static Color? _systemDark;
@@ -276,6 +295,16 @@ abstract final class RCrmColors {
     _ok = dark ? const Color(0xFF4CAF50) : const Color(0xFF1B5E20);
     _warn = dark ? const Color(0xFFFFB74D) : const Color(0xFF8A5A00);
     _bad = dark ? const Color(0xFFEF5350) : const Color(0xFFC62828);
+    // The notice banner inverts in Day: the cream chip is invisible on the
+    // cream canvas, so the chip becomes the deep amber and the ink becomes
+    // white. Both read over the camera and on the canvas.
+    _noticeSurface = dark
+        ? const Color(0xFFFFF3CD)
+        : const Color(0xFF8A5A00);
+    _noticeInk = dark ? const Color(0xFF806415) : const Color(0xFFFFFFFF);
+    _noticeBorder = dark
+        ? const Color(0xFFE6C463)
+        : const Color(0xFF6B4600);
   }
 }
 
