@@ -499,6 +499,37 @@ Update report:
 	4) 文档：`docs/BUILDING.md` 新增「Configuration-time warnings under Flutter 3.50」章节（三类来源表、文案误导说明、实测记录、不要动 flag 的理由）；`AGENTS.md` 同步一行速查
 	5) 本批**未改动任何构建配置文件**。未跑 `assembleDebug` / APK 打包，内置 Kotlin 下的 Kotlin 编译链仍未验证；若将来要迁，需先跑一次完整 assemble 再动 `gradle.properties`
 
+22. 2026.11.13.5.10.AM.Friday
+	*本批为未发布的工作区改动：视频完播（end-of-playback）界面*
+
+	1) 用户给了一张 B 站播放结束页截图，要求「参考可取元素做完播 playback」。先做取舍审查，不照抄
+	2) 可取（已实现）：完播即在画面上给出下一步；一行「图标 + 文字」动作（重播 / 下一个 / 全部）；相关推荐缩略图网格 + 时长角标；合集入口带数量；压暗的最后一帧作背景
+	3) 不可取（明确拒绝）：模糊 / 玻璃背景（DESIGN.md §6 明禁 glassmorphism）；作者条 / 关注 / 充电 / 投币 / 点赞 / 弹幕 / 广告（本地加密媒体库没有社交语义）；蓝色主按钮与网站导航 / 侧栏
+	4) 现状缺口（先查代码再动手）：`pauseAfter`（默认模式）完播后只有静止最后一帧 + 自动淡出的控制条，全屏时没有重播、没有下一个、也回不到 Related；`loopAll` / `shuffle` 在 Related 为空时同样什么都没有。原 8 秒 Up next 卡片只在 `offersNextVideo` 且真的有下一个时出现
+	5) 实现
+		① 新增 `widgets/player_end_card.dart`：`playerSurface` 卡片 + `playerScrim` 压暗；标题 `Playback finished` + 文件名；动作行 Replay / Play next（accent）/ All N；Related 2×3 网格（`VideoPoster` + 时长角标 + 两行标题）；✕ 与背景点击同义
+		② 网格列数按宽度（≥560dp 三列，否则两列），**行数按卡片真实可用高度**（`LayoutBuilder` 的 `bounds.maxHeight`，不是屏幕高度）：420dp 横屏只放一行，避免第二行被裁成半截；卡片限高同样用 `bounds.maxHeight`，窗口模式的 16:9 画面框不会让卡片溢出画面
+		③ 互斥与既有语义：完播卡片只在 `_eof.finished && _upNext == null && !_endingChoiceDismissed` 时出现；`loopAll` / `shuffle` 的 8 秒倒计时卡片原样保留；✕ 关掉任一卡片都会置 `_endingChoiceDismissed`，新一次 ending 才复位 —— 保住「✕ = 停在最后一帧」的承诺。**这里的「互斥」是错的，已由第 24 条替换：完播卡片本身就是 Up next 的载体。**
+		④ `All N` 只在全屏传入（剧集 sheet 只挂在全屏分支；窗口模式右侧已有完整 Related，按钮会是死控件）
+		⑤ 重播走 `seek(0) + play()` 并把 `_eof` 置回 idle；点推荐走 `_playInPlace(back: false)` 与 Next 同一路径，不新增路由语义
+		⑥ 入场 200ms / 退场 140ms，`disableAnimations` 直接切状态；橙色只出现在 `Play next` 与 Related 小圆点
+	6) 验证
+		① 新增 `test/player_end_card_test.dart` 8 例：动作回调、空 Related、无 sheet 时按钮缺席、网格 3×2 上限、点卡片、✕ 回调一次、背景点击、reduced motion
+		② 渲染验收（`.local_backup/render_end_card_test.dart`，真字体出 PNG）：1280×800 宽屏、800×420 横屏、空态、Day 窗口模式、超长标题五张；首轮发现横屏第二行被裁，按高度算行数后复渲染确认
+		③ 期间修了探针自身的一个坑：测试里用空 `MediaQueryData()` 覆盖会丢失 `size`，导致卡片限高被 clamp 到 180、内容被裁 —— 不是组件问题；同时把卡片限高从 `MediaQuery.sizeOf` 改为 `LayoutBuilder` 的 `bounds.maxHeight`
+		④ `flutter analyze lib test` 零告警；新增 8 例全绿
+	7) 未验证：没有真机 / 桌面实际播放到结尾的验收（完播触发依赖真实 `completed` 事件）；海报在真实库中的加载与缓存表现未在本轮渲染（探针抑制了生成，全是占位）；未测平板竖屏等中间尺寸
+	8) 文档：DESIGN.md 在 Controls Overlay 增加 End card 条目（含「不是模糊流媒体结束页」的边界）
+
+23. 2026.11.13.5.15.AM.Friday
+	*本批为未发布的工作区改动：列表式视频卡片的缩略图比例修复*
+
+	1) 用户反馈「横屏列表样式的视频卡片会被压缩得很难看，比例极端」。定位：`VideoListTile`（视频 tab 列表 + 搜索结果列表）的缩略图用 `Expanded(flex: 2)`，宽度随窗口增长 —— 1600dp 宽时是 630×100（6.3:1），`BoxFit.cover` 把 16:9 海报裁成一条横带。播放页 `_relItem` 同样是 flex 2/5：380dp 侧栏下恰好接近 16:9，但平板 / 手机全宽的 Related 会到 3.6:1
+	2) 修复：两处都把缩略图宽度改为 `min(行高 × 16/9, 可用宽度 × 0.42)` —— 横屏锁在 16:9，窄屏允许缩小给文字列让位，**永不随窗口变宽**。行高不变（列表 100dp / Related 90dp）
+	3) 验证：渲染探针（`.local_backup/render_video_list_test.dart`，真字体）在 1600 / 360 / 820 三档出图，宽屏从 630×100 变为 178×100；新增 `test/video_list_tile_test.dart` 3 例钉住「宽屏 16:9」「窄屏收缩」「文字列仍拿到剩余宽度」
+	4) 注意：测试 VM 用 Ahem 字体，两行标题在 100dp 行内会溢出 14px（真字体渲染图正常），所以测试用短标题、只断言几何；带 textScale 的大字号场景未验证
+	5) 门禁：`flutter analyze lib test` 零告警、全量 `flutter test` 全绿、cargo 门禁全绿
+
 21. 2026.11.13.3.30.AM.Friday
 	*本批为未发布的工作区改动：Flutter 3.50 直接原生互操作审查 + 平台通道类型化重写*
 
@@ -536,3 +567,19 @@ Update report:
 	6) 门禁：`flutter analyze lib test` 零告警；`flutter test` 759/759；`cargo build --locked`；`cargo test -- --skip compare_` 全绿
 	7) 文档：BUILDING.md 版本矩阵与三个章节、AGENTS.md（gitignored）、本条 CHANGELOG；本地 memory 同步
 	8) 未验证：无 Android 真机安装 / 启动；`--suggestions` 那条诊断未消除（需等 SDK 抬高上限）；未跑桌面构建
+
+24. 2026.11.13.5.30.AM.Friday
+	*本批为第 22 条（完播界面）的修正：完播卡片就是 Up next 的替代，不是与它互斥*
+
+	1) 用户指出：参考图第一张推荐卡上有转圈等待自动跳转 + 「取消连播」，说明 B 站的结束页本身承载了 Up next；第 22 条把两者做成互斥是错的
+	2) 重构
+		① `PlayerEndCard` 新增 `autoPlayItem` / `autoPlayShuffled` / `countdown` / `onAutoPlay` / `onCancelAutoPlay`：倒计时环画在**第一张推荐卡**上（即使 offer 在 Related 里不是第一条，也前置到第一格），海报压暗 + 中央 40px 环 + 左上 `Cancel` chip
+		② 标题区加一行 `Random pick · auto-plays in 8s`（shuffle 说明来源），取消后消失
+		③ 动作行删掉 `Play next`：第一张卡就是「立即播放」，不再有两个门到同一个视频
+		④ 删除 `PlayerUpNextCard` 与 `_upNextCard()`、`_dismissUpNext()`、`_barClearance()`；`player_overlays.dart` 回到只有 buffering + error 两个 overlay
+		⑤ 显示条件改为 `_eof.finished && !_endingChoiceDismissed`：有 offer 时卡片带环，无 offer（`pauseAfter` / Related 空）时同一张卡不带环，不再有第二个浮层
+		⑥ 语义保留：8 秒、点第一张卡立即播、`Cancel` 只停表保留卡片、✕ / 背景关闭卡片并停表、take-back 与模式切换仍 `_clearUpNext()`、每次 ending 只决定一次
+	3) 测试：`player_end_card_test.dart` 11 例（新增 offer 前置 / 环 / `Cancel` / 倒计时只触发一次 / 撤下 offer 停表）；`player_overlays_test.dart` 删除 UpNextCard 组，保留 buffering / error
+	4) 渲染：`.local_backup/render_end_card_test.dart` 新增 `end_card_autoplay`，确认第一张卡压暗 + 橙环 + `Cancel`，且 offer 不在列表首位时被提到第一格
+	5) 门禁：`flutter analyze lib test` 零告警、全量 `flutter test` 全绿、cargo 门禁全绿
+	6) 未验证：真机播放到结尾的实际自动跳转；`Cancel` 后切后台再回来是否仍保持取消（screen 状态在，理论保持）
