@@ -18,6 +18,12 @@ pub fn is_supported_file(path: &Path) -> bool {
 		return false;
 	}
 
+	is_supported_file_name(path)
+}
+
+/// Extension check only — the caller already knows the path is a regular
+/// file, so it skips the `is_dir()` probe.
+fn is_supported_file_name(path: &Path) -> bool {
 	let ext = path
 		.extension()
 		.and_then(std::ffi::OsStr::to_str)
@@ -59,29 +65,53 @@ pub fn is_valid_encrypted_file_name(name: &str) -> bool {
 // =======================
 
 pub fn resolve_ne_path_from_dir(path: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
-	let mut queue = vec![path.to_path_buf()];
 	let mut nor_videos = Vec::new();
 	let mut enc_videos = Vec::new();
+	let mut queue: Vec<PathBuf> = Vec::new();
 
-	while let Some(file) = queue.pop() {
-		if file.is_file() {
-			if is_supported_file(&file) {
-				nor_videos.push(file);
-			} else if let Some(name) = file.file_name().and_then(|s| s.to_str())
-				&& is_valid_encrypted_file_name(name)
-			{
-				enc_videos.push(file);
-			}
-		} else if file.is_dir()
-			&& let Ok(entries) = fs::read_dir(&file)
-		{
-			for entry in entries.flatten() {
-				queue.push(entry.path());
+	// The root may itself be a file — keep the old behaviour of accepting
+	// it, then walk it as a directory.
+	match fs::metadata(path).map(|m| m.is_file()) {
+		Ok(true) => {
+			classify_file(path, &mut nor_videos, &mut enc_videos);
+			return (nor_videos, enc_videos);
+		}
+		Ok(false) => queue.push(path.to_path_buf()),
+		Err(_) => return (nor_videos, enc_videos),
+	}
+
+	while let Some(dir) = queue.pop() {
+		let Ok(rd) = fs::read_dir(&dir) else {
+			continue;
+		};
+		for entry in rd.flatten() {
+			let p = entry.path();
+			// `file_type()` reuses the type the OS reported with the
+			// directory entry; `is_file()` + `is_dir()` cost two stats per
+			// entry, and on Windows each one opens the file.
+			let Ok(ft) = entry.file_type() else {
+				continue;
+			};
+			if ft.is_dir() {
+				queue.push(p);
+			} else if ft.is_file() {
+				classify_file(&p, &mut nor_videos, &mut enc_videos);
 			}
 		}
 	}
 
 	(nor_videos, enc_videos)
+}
+
+/// Sort one regular file into the plain / encrypted buckets.
+fn classify_file(path: &Path, nor_videos: &mut Vec<PathBuf>, enc_videos: &mut Vec<PathBuf>) {
+	if is_supported_file_name(path) {
+		nor_videos.push(path.to_path_buf());
+	} else if let Some(name) = path.file_name().and_then(|s| s.to_str())
+		&& is_valid_encrypted_file_name(name)
+	{
+		enc_videos.push(path.to_path_buf());
+	}
 }
 
 // =======================
@@ -92,28 +122,38 @@ pub fn resolve_ne_path_from_dir_with_progress(
 	path: &Path,
 	progress_cb: impl Fn(usize),
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
-	let mut queue = vec![path.to_path_buf()];
 	let mut nor_videos = Vec::new();
 	let mut enc_videos = Vec::new();
 	let mut scanned_count = 0;
+	let mut queue: Vec<PathBuf> = Vec::new();
 
-	while let Some(file) = queue.pop() {
-		scanned_count += 1;
-		progress_cb(scanned_count);
+	match fs::metadata(path).map(|m| m.is_file()) {
+		Ok(true) => {
+			scanned_count += 1;
+			progress_cb(scanned_count);
+			classify_file(path, &mut nor_videos, &mut enc_videos);
+			return (nor_videos, enc_videos);
+		}
+		Ok(false) => queue.push(path.to_path_buf()),
+		Err(_) => return (nor_videos, enc_videos),
+	}
 
-		if file.is_file() {
-			if is_supported_file(&file) {
-				nor_videos.push(file);
-			} else if let Some(name) = file.file_name().and_then(|s| s.to_str())
-				&& is_valid_encrypted_file_name(name)
-			{
-				enc_videos.push(file);
-			}
-		} else if file.is_dir()
-			&& let Ok(entries) = fs::read_dir(&file)
-		{
-			for entry in entries.flatten() {
-				queue.push(entry.path());
+	while let Some(dir) = queue.pop() {
+		let Ok(rd) = fs::read_dir(&dir) else {
+			continue;
+		};
+		for entry in rd.flatten() {
+			let p = entry.path();
+			scanned_count += 1;
+			progress_cb(scanned_count);
+
+			let Ok(ft) = entry.file_type() else {
+				continue;
+			};
+			if ft.is_dir() {
+				queue.push(p);
+			} else if ft.is_file() {
+				classify_file(&p, &mut nor_videos, &mut enc_videos);
 			}
 		}
 	}

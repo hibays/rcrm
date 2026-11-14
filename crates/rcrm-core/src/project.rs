@@ -95,10 +95,11 @@ enum ProjectedKind {
 		/// First (calibration - header_len) ciphertext bytes of the head —
 		/// physically adjacent to the header, read during open.
 		part1: Vec<u8>,
-		/// Lazily computed (encrypted_head, head_nonce). `Err` if the
-		/// deferred part2 read/decrypt failed; cached so a permanently
-		/// broken file fails consistently.
-		head: OnceLock<io::Result<(Vec<u8>, [u8; 12])>>,
+		/// Lazily computed (encrypted_head, head_nonce). Only a SUCCESS
+		/// is cached: a failed read (a flaky network drive, a file locked
+		/// by another process) must be retryable, not a permanent
+		/// "this file is broken".
+		head: OnceLock<(Vec<u8>, [u8; 12])>,
 	},
 }
 
@@ -292,10 +293,23 @@ impl ProjectedFile {
 					// decrypts, re-encrypts at rest with the session key),
 					// then decrypt it on-the-fly into a temporary Zeroizing
 					// buffer and copy out the requested slice.
-					let cached = head.get_or_init(|| self.init_head(file, session_key));
-					let (encrypted_head, head_nonce) = cached
-						.as_ref()
-						.map_err(|e| io::Error::new(e.kind(), e.to_string()))?;
+					if head.get().is_none() {
+						match self.init_head(file, session_key) {
+							Ok(v) => {
+								let _ = head.set(v);
+							}
+							Err(e) => {
+								// The head is cached only on success so a transient
+								// failure can be retried; the original error is
+								// discarded here, but surface it for diagnostics
+								// rather than letting it vanish.
+								crate::log_error!("init_head failed (head will be retried): {e}");
+							}
+						}
+					}
+					let (encrypted_head, head_nonce) = head
+						.get()
+						.ok_or_else(|| io::Error::other("head is unavailable"))?;
 					let head = session_key.decrypt(encrypted_head, head_nonce)?;
 					if offset + to_read as u64 <= c {
 						let start = offset as usize;

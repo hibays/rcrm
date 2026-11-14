@@ -41,6 +41,30 @@ fn xorshift64s(state: u64) -> u64 {
 	n * 0x2545f4914f6cdd1d
 }
 
+/// The index a password is registered under — the key's identity.
+///
+/// Two passwords with the same index would share one slot, so `add_key`
+/// rejects a repeated index. Callers registering user-supplied passwords
+/// must check [`Manager::has_key_index`] first; comparing by index means
+/// the plaintext never has to be kept around to spot a repeat.
+pub fn key_index(password: &[u8]) -> u32 {
+	crc32fast::hash(password)
+}
+
+// =======================
+// KDF parameters
+// =======================
+
+/// Argon2id memory cost, in KiB.
+///
+/// **These three numbers are part of the on-disk format.** The file header
+/// stores `BLAKE2b(derived_key ‖ file_size ‖ calibration ‖ salt)`, so the
+/// derived key must stay reproducible for every file ever encrypted —
+/// changing any of them makes every existing file undecryptable.
+pub const KDF_M_COST: u32 = 1 << 15; // 32 MiB
+pub const KDF_T_COST: u32 = 7;
+pub const KDF_P_COST: u32 = 4;
+
 // =======================
 // Manager Struct
 // =======================
@@ -53,13 +77,23 @@ pub struct Manager {
 	pub works: usize,
 	/// Derived keys, shared via `Arc` so multiple `ProjectedFile`s can
 	/// reference the same locked page without cloning (each clone would
-	/// allocate + mlock a fresh page).
+	/// allocate + mlock a fresh page). Keyed by the key index.
+	///
+	/// Only REAL keys live here. Which one is currently selected is
+	/// `using_idx` — a second copy of the selected key used to sit in this
+	/// map under a magic index, which made `list_key_idxs` report one key
+	/// twice and made every "try any key" scan test one key twice.
 	pub keys: HashMap<u32, Arc<LockedKey<32>>>,
+	/// The index of the key currently in use, if any.
+	///
+	/// Invariant: `None`, or an index that IS in `keys`. Dropping the
+	/// selected key clears this, so it can never point at a key that is
+	/// gone. "Nothing is selected" is a real state — the functions that
+	/// need the current key report it as an error.
+	pub using_idx: Option<u32>,
 }
 
 impl Manager {
-	pub const MAGIC_KEY_USING: u32 = 0;
-
 	pub fn new(
 		dir_name_crypt: bool,
 		file_name_crypt: bool,
@@ -81,6 +115,7 @@ impl Manager {
 			rule_fn,
 			works,
 			keys: HashMap::new(),
+			using_idx: None,
 		};
 
 		if let Some(k) = key {
@@ -89,6 +124,7 @@ impl Manager {
 
 		manager
 	}
+
 	fn derive_key(&self, key: &[u8]) -> LockedKey<32> {
 		let mut state = self.calibration_amount;
 		let salt_val = xorshift64s(xorshift32(&mut state) as u64) ^ self.calibration_amount as u64;
@@ -97,7 +133,7 @@ impl Manager {
 		let argon2 = Argon2::new(
 			Algorithm::Argon2id,
 			Version::V0x13,
-			argon2::Params::new(1 << 15, 7, 4, Some(32)).unwrap(),
+			argon2::Params::new(KDF_M_COST, KDF_T_COST, KDF_P_COST, Some(32)).unwrap(),
 		);
 
 		// Allocate locked memory first, then write Argon2 output directly
@@ -111,34 +147,53 @@ impl Manager {
 	}
 
 	fn add_key(&mut self, key: &[u8], idx: Option<u32>) -> u32 {
-		let derived = Arc::new(self.derive_key(key));
-		let idx = idx.unwrap_or_else(|| crc32fast::hash(key));
+		let idx = idx.unwrap_or_else(|| key_index(key));
 
-		if self.keys.contains_key(&idx) {
+		// Registering the same index twice means the caller lost track of
+		// which keys it already handed over. Fail loudly: a silently
+		// ignored key looks like "the password does not work" to the user.
+		//
+		// Checked before the derivation so a rejected duplicate does not
+		// pay for a KDF that is about to be thrown away.
+		if self.has_key_index(idx) {
 			panic!("Index ({}) of key exists!", idx);
 		}
-		if !self
-			.keys
-			.values()
-			.any(|v| v.as_bytes() == derived.as_bytes())
-		{
-			self.keys.insert(idx, derived);
-		}
+
+		let derived = Arc::new(self.derive_key(key));
+		self.keys.insert(idx, derived);
 
 		idx
 	}
 
+	/// Whether a key index is already registered.
+	///
+	/// The single place that answers "is this key registered?" — `Manager`
+	/// goes through this method too, so the rule lives in one spot.
+	///
+	/// Callers registering user-supplied passwords must check this first:
+	/// [`Manager::use_added_key`] treats a repeated index as a programming
+	/// error and panics. Use [`key_index`] for the index.
+	pub fn has_key_index(&self, idx: u32) -> bool {
+		self.keys.contains_key(&idx)
+	}
+
 	pub fn use_key(&mut self, idx: &u32) {
-		if !self.keys.contains_key(idx) {
+		if !self.has_key_index(*idx) {
 			panic!("The indexed key index '{}' does not exist.", idx);
 		}
-		self.keys
-			.insert(Manager::MAGIC_KEY_USING, Arc::clone(&self.keys[idx]));
+		self.using_idx = Some(*idx);
 	}
 
 	pub fn drop_key(&mut self, idx: &u32) -> Option<Arc<LockedKey<32>>> {
 		// LockedKey's Drop zeroizes + unlocks the page — no explicit zeroize needed.
-		self.keys.remove(idx)
+		let dropped = self.keys.remove(idx);
+		// Dropping the selected key leaves nothing selected. Leaving
+		// `using_idx` pointing at a key that is no longer there would make
+		// the manager claim a current key it does not have.
+		if self.using_idx == Some(*idx) {
+			self.using_idx = None;
+		}
+		dropped
 	}
 
 	pub fn drop_all_keys(&mut self) {
@@ -155,30 +210,31 @@ impl Manager {
 		idx
 	}
 
-	pub fn use_provided_key(&mut self, key: &[u8]) {
-		self.keys
-			.insert(Manager::MAGIC_KEY_USING, Arc::new(self.derive_key(key)));
-	}
-
 	pub fn list_key_idxs(&self) -> Option<Vec<u32>> {
 		let v: Vec<u32> = self.keys.keys().cloned().collect();
 		if v.is_empty() { None } else { Some(v) }
 	}
 
-	fn get_using_key(&self) -> &LockedKey<32> {
-		self.keys
-			.get(&Manager::MAGIC_KEY_USING)
-			.expect("No current key")
+	/// The key currently selected for encryption and single-key reads.
+	///
+	/// "Nothing is selected" is a real state — the selected key can be
+	/// dropped — so it is an error, not a panic.
+	fn get_using_key(&self) -> io::Result<&LockedKey<32>> {
+		self.using_idx
+			.and_then(|idx| self.keys.get(&idx))
+			.map(|k| k.as_ref())
+			.ok_or_else(|| io::Error::other("no key is currently selected"))
 	}
 
 	/// Public accessor for the currently-active derived key.
 	/// Used by the projection layer to decrypt file heads / streams on demand.
-	pub fn using_key(&self) -> &LockedKey<32> {
+	pub fn using_key(&self) -> io::Result<&LockedKey<32>> {
 		self.get_using_key()
 	}
 
 	/// Return a shared reference to the key registered under `idx`.
 	/// All `ProjectedFile`s opened with this key share the same locked page.
+	///
 	pub fn key_by_idx(&self, idx: u32) -> Option<Arc<LockedKey<32>>> {
 		self.keys.get(&idx).cloned()
 	}
@@ -189,7 +245,7 @@ impl Manager {
 	/// the encrypted head part 1 for partial files, or the start of the
 	/// encrypted data for full files).
 	pub fn read_file_header(&self, file: &mut File) -> io::Result<FileHeader> {
-		FileHeader::read_and_verify(file, self.get_using_key().as_ref())
+		FileHeader::read_and_verify(file, self.get_using_key()?.as_ref())
 	}
 
 	/// Decrypt the head (the first `calibration_amount` bytes of the
@@ -201,7 +257,7 @@ impl Manager {
 		file: &mut File,
 		header: &FileHeader,
 	) -> io::Result<Zeroizing<Vec<u8>>> {
-		header.decrypt_head(file, self.get_using_key().as_ref())
+		header.decrypt_head(file, self.get_using_key()?.as_ref())
 	}
 
 	/// Try to detect whether `file` is an rcrm-encrypted file by reading and
@@ -210,7 +266,7 @@ impl Manager {
 	/// I/O failure. The file cursor is rewound to the start on the `None`
 	/// path so the caller can fall back to plain serving.
 	pub fn try_read_header(&self, file: &mut File) -> io::Result<Option<FileHeader>> {
-		match FileHeader::read_and_verify(file, self.get_using_key().as_ref()) {
+		match FileHeader::read_and_verify(file, self.get_using_key()?.as_ref()) {
 			Ok(h) => Ok(Some(h)),
 			Err(e) if e.kind() == io::ErrorKind::InvalidData => {
 				// Either too small for a header, or key_hash mismatch → not encrypted with our key.
@@ -270,7 +326,7 @@ impl Manager {
 
 		// 计算 key_hash = BLAKE2b(key + file_size + ca + salt)
 		let mut hasher = Blake2b512::new();
-		hasher.update(self.get_using_key().as_bytes());
+		hasher.update(self.get_using_key()?.as_bytes());
 		hasher.update(file_size.to_le_bytes());
 		hasher.update(self.calibration_amount.to_le_bytes());
 		hasher.update(key_hash_salt);
@@ -292,7 +348,7 @@ impl Manager {
 		header.extend_from_slice(&nonce); // 12
 
 		// 生成密钥流（基于密钥和 nonce）
-		let mut cipher = ChaCha20::new_from_slices(self.get_using_key().as_ref(), &nonce).unwrap();
+		let mut cipher = ChaCha20::new_from_slices(self.get_using_key()?.as_ref(), &nonce).unwrap();
 
 		// 处理文件名加密
 		// Note: 文件名加密时，会原地修改文件名
@@ -341,9 +397,17 @@ impl Manager {
 			// 写入：header + 加密数据
 			f.seek(SeekFrom::Start(0))?;
 			f.write_all(&header)?;
-			f.write_all(&enc_data[..self.calibration_amount as usize - header.len()])?;
+			let split = (self.calibration_amount as usize)
+				.checked_sub(header.len())
+				.ok_or_else(|| {
+					io::Error::new(
+						io::ErrorKind::InvalidInput,
+						"calibration amount must be at least the header size",
+					)
+				})?;
+			f.write_all(&enc_data[..split])?;
 			f.seek(SeekFrom::End(0))?;
-			f.write_all(&enc_data[self.calibration_amount as usize - header.len()..])?;
+			f.write_all(&enc_data[split..])?;
 		};
 
 		drop(f);
@@ -382,7 +446,7 @@ impl Manager {
 
 		// Verify key_hash before nonce
 		let mut hasher = Blake2b512::new();
-		hasher.update(self.get_using_key().as_bytes());
+		hasher.update(self.get_using_key()?.as_bytes());
 		hasher.update(file_size_b);
 		hasher.update(ca_b);
 		hasher.update(key_hash_salt);
@@ -394,7 +458,7 @@ impl Manager {
 		}
 
 		let nonce = &header_rd[80..92];
-		let mut cipher = ChaCha20::new_from_slices(self.get_using_key().as_ref(), nonce).unwrap();
+		let mut cipher = ChaCha20::new_from_slices(self.get_using_key()?.as_ref(), nonce).unwrap();
 
 		// 读取文件名标志和长度
 		let ff = u16::from_le_bytes([header_rd[92], header_rd[93]]);
@@ -440,7 +504,15 @@ impl Manager {
 				.take(calibration_amount as u64 - curpos)
 				.read_to_end(&mut data)?;*/
 			let curpos = f.stream_position()? as usize;
-			let mut data = vec![0u8; calibration_amount as usize - curpos];
+			let data_len = (calibration_amount as usize)
+				.checked_sub(curpos)
+				.ok_or_else(|| {
+					io::Error::new(
+						io::ErrorKind::InvalidData,
+						"calibration amount smaller than header offset",
+					)
+				})?;
+			let mut data = vec![0u8; data_len];
 			f.read_exact(&mut data)?;
 			f.seek(SeekFrom::Start(file_size))?;
 

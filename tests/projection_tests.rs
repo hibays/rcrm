@@ -13,7 +13,7 @@
 use std::io::Read;
 use std::path::PathBuf;
 
-use rcrm::{Manager, ProjectedFile, SessionKey, is_supported_file};
+use rcrm::{Manager, ProjectedFile, SessionKey, is_supported_file, key_index};
 
 fn make_manager(key: &[u8]) -> Manager {
 	Manager::new(true, true, 2048, is_supported_file, 6, Some(key))
@@ -286,7 +286,7 @@ fn projection_does_not_modify_disk() {
 /// `verify_encryption_passwords` in main.rs. Files encrypted with different
 /// keys must be openable by a manager holding all keys. The returned key
 /// index is one of the registered keys that matches (possibly
-/// `MAGIC_KEY_USING` if it holds a copy of the matching derived key).
+/// of the matching key).
 #[test]
 fn read_header_any_key_finds_matching_key() {
 	let dir = std::env::temp_dir().join("rcrm_proj_test_anykey");
@@ -559,4 +559,73 @@ fn lazy_head_defers_part2_read_until_head_access() {
 	assert!(pf.read_at(100, &mut head_buf, &session_key).is_err());
 
 	std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The registry holds REAL keys only.
+///
+/// The selected key used to be copied into the map under a magic index, so
+/// one registered key appeared twice: `list_key_idxs` reported a key that
+/// was not there, and every "try any key" scan tested one key twice.
+#[test]
+fn the_registry_holds_only_real_keys() {
+	let key = [42u8; 32];
+	let mut manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&key));
+
+	// One password → one entry.
+	let idxs = manager.list_key_idxs().expect("the key is registered");
+	assert_eq!(
+		idxs.len(),
+		1,
+		"the registry must hold one entry per registered key, got {:?}",
+		idxs
+	);
+	assert_eq!(idxs[0], key_index(&key));
+
+	// The selected key is the registered one, not a second copy of it.
+	assert_eq!(manager.using_idx, Some(key_index(&key)));
+
+	// A second password adds exactly one entry.
+	manager.use_added_key(&[7u8; 32]);
+	let idxs = manager.list_key_idxs().expect("both keys are registered");
+	assert_eq!(idxs.len(), 2, "expected two entries, got {:?}", idxs);
+
+	// Selecting a key does not add an entry.
+	manager.use_key(&idxs[0]);
+	assert_eq!(manager.list_key_idxs().unwrap().len(), 2);
+}
+
+/// Dropping the key in use leaves the manager with NO selected key.
+///
+/// "Nothing is selected" is a real state, so it has to be handled: the
+/// selection is cleared (the manager must not claim a current key it does
+/// not have), and using it is an error rather than a panic.
+#[test]
+fn dropping_the_selected_key_clears_the_selection() {
+	let key = [11u8; 32];
+	let mut manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&key));
+	let idx = key_index(&key);
+	assert_eq!(manager.using_idx, Some(idx));
+
+	manager.drop_key(&idx);
+	assert_eq!(
+		manager.using_idx, None,
+		"the selection must be cleared, not left dangling"
+	);
+	// The registry no longer holds it.
+	assert!(!manager.has_key_index(idx));
+	// Using it is an error, not a panic.
+	assert!(
+		manager.using_key().is_err(),
+		"using a manager with no selected key must be an error"
+	);
+
+	// Dropping a DIFFERENT key keeps the selection.
+	let mut manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(&key));
+	let other = manager.use_added_key(&[13u8; 32]);
+	// `use_added_key` selects the key it just added, so select the first
+	// one again before dropping the other.
+	manager.use_key(&idx);
+	manager.drop_key(&other);
+	assert_eq!(manager.using_idx, Some(idx));
+	assert!(manager.using_key().is_ok());
 }
