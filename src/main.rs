@@ -386,9 +386,6 @@ fn run_crypt(dirs: Vec<String>) -> io::Result<()> {
 
 					let mut key_matched_in_prelist = false;
 					for idx in manager.list_key_idxs().unwrap() {
-						if idx == Manager::MAGIC_KEY_USING {
-							continue;
-						}
 						pb.println(format!("\t↑ 尝试中: `{:}`", idx));
 						manager.use_key(&idx);
 						if let Ok(name) = manager.decrypt_file(file) {
@@ -430,10 +427,11 @@ fn run_crypt(dirs: Vec<String>) -> io::Result<()> {
 						Confirm::new()
 							.with_prompt("\t↑ Would you like to delete it?")
 							.interact()
-							.unwrap_or(false) && Confirm::new()
-							.with_prompt("\t↑ Proceed?")
-							.interact()
 							.unwrap_or(false)
+							&& Confirm::new()
+								.with_prompt("\t↑ Proceed?")
+								.interact()
+								.unwrap_or(false)
 					}) {
 						let _ = fs::remove_file(file);
 						pb.println("\t↑ Deleted!");
@@ -568,6 +566,12 @@ fn run_serve(
 		};
 		eprintln!("[serve] {} user: {}", proto_name, user);
 		let pass = get_user_password(&format!("{} password", proto_name), false)?;
+		if pass.is_empty() {
+			return Err(io::Error::new(
+				io::ErrorKind::InvalidInput,
+				"The password must not be empty — anyone could log in without it.",
+			));
+		}
 		let auth = AuthConfig::with_credentials(user, pass.as_str());
 		drop(pass);
 		auth
@@ -704,7 +708,6 @@ fn run_serve(
 		session_key,
 		cache,
 		tls_config: tls_cfg,
-		require_tls: false,
 		implicit_tls,
 		protocol,
 		max_connections,

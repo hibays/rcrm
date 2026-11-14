@@ -134,7 +134,6 @@ fn start_server_with_mode(root: std::path::PathBuf, key: &[u8], implicit: bool) 
 		session_key,
 		cache: Arc::new(FileCache::new()),
 		tls_config: Some(tls_cfg),
-		require_tls: false,
 		implicit_tls: implicit,
 		protocol: if implicit {
 			rcrm::serve::Protocol::FtpImplicitTls
@@ -309,6 +308,15 @@ fn ftps_retr_over_tls() {
 	// Expect 226 on the control connection.
 	let done = read_line(&mut tls).unwrap();
 	assert!(done.starts_with("226"), "226: {}", done);
+}
+
+/// Send a command over a PLAIN control connection and read the reply.
+/// Used for the phase before `AUTH TLS`.
+fn plain_cmd(tcp: &mut TcpStream, cmd: &str) -> std::io::Result<String> {
+	tcp.write_all(cmd.as_bytes())?;
+	tcp.write_all(b"\r\n")?;
+	tcp.flush()?;
+	read_full_response(tcp)
 }
 
 fn read_line_after_cmd(
@@ -490,17 +498,141 @@ fn implicit_ftps_rejects_prot_c() {
 	let _ = read_line(&mut tls).unwrap(); // 220
 	let _ = read_line_after_cmd(&mut tls, "USER anonymous").unwrap(); // 230
 
-	// PROT C must be rejected with 534.
+	// PROT C must be refused — RFC 4217 §9: "the reply to indicate that
+	// the PROT setting is incorrect is 521 data connection cannot be
+	// opened with this PROT setting".
 	let prot_resp = read_line_after_cmd(&mut tls, "PROT C").unwrap();
 	assert!(
-		prot_resp.starts_with("534"),
-		"PROT C should be 534 in implicit FTPS, got: {}",
+		prot_resp.starts_with("521"),
+		"PROT C should be 521 in implicit FTPS, got: {}",
 		prot_resp
 	);
 
-	// PROT P must succeed.
+	// PROT P is accepted (the data connection is encrypted already).
 	let prot_p_resp = read_line_after_cmd(&mut tls, "PROT P").unwrap();
 	assert!(prot_p_resp.starts_with("200"), "PROT P: {}", prot_p_resp);
+}
+
+/// Explicit FTPS: neither the user nor the password may travel before the
+/// AUTH TLS upgrade.
+///
+/// RFC 4217 §4.2: the server can obtain the security it wants "by
+/// refusing to accept certain FTP commands until the session is secured".
+///
+/// The gate has to cover USER as well: in anonymous mode `USER` alone
+/// authenticates, so gating only the password would leave the whole session
+/// — the listing, the file names, the media — in the clear.
+#[test]
+fn explicit_ftps_refuses_credentials_before_tls() {
+	let dir = std::env::temp_dir().join("rcrm_explicit_ftps_pass_test");
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+
+	let key = deterministic_content(32, 91);
+	let fixture = start_tls_server(dir.clone(), &key);
+
+	let mut tcp = TcpStream::connect(fixture.addr).expect("connect failed");
+	tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+
+	let _ = read_line(&mut tcp).unwrap(); // 220
+
+	// USER alone would authenticate in anonymous mode — it must be refused
+	// while the control connection is still in the clear.
+	let user_resp = plain_cmd(&mut tcp, "USER anonymous").unwrap();
+	assert!(
+		user_resp.starts_with("534"),
+		"USER before AUTH TLS should be 534, got: {}",
+		user_resp
+	);
+
+	let pass_resp = plain_cmd(&mut tcp, "PASS secret").unwrap();
+	assert!(
+		pass_resp.starts_with("534"),
+		"PASS before AUTH TLS should be 534, got: {}",
+		pass_resp
+	);
+
+	// After the upgrade the credentials are accepted.
+	let auth = plain_cmd(&mut tcp, "AUTH TLS").unwrap();
+	assert!(auth.starts_with("234"), "AUTH TLS: {}", auth);
+
+	let client_config = build_client_config();
+	let server_name = ServerName::try_from("localhost").unwrap();
+	let client_conn = rustls::ClientConnection::new(client_config, server_name).unwrap();
+	let mut tls = rustls::StreamOwned::new(client_conn, tcp);
+
+	let user_resp = read_line_after_cmd(&mut tls, "USER anonymous").unwrap();
+	assert!(user_resp.starts_with("230"), "USER: {}", user_resp);
+}
+
+/// RFC 4217 §4.2 / RFC 2228: accepting AUTH resets the authentication
+/// state, so the client has to authorize again — the credentials sent
+/// before the upgrade do not carry over.
+#[test]
+fn explicit_ftps_auth_resets_the_session() {
+	let dir = std::env::temp_dir().join("rcrm_explicit_ftps_reset_test");
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+
+	let key = deterministic_content(32, 95);
+	let fixture = start_tls_server(dir.clone(), &key);
+
+	let mut tcp = TcpStream::connect(fixture.addr).expect("connect failed");
+	tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+
+	let _ = read_line(&mut tcp).unwrap(); // 220
+	let auth = plain_cmd(&mut tcp, "AUTH TLS").unwrap();
+	assert!(auth.starts_with("234"), "AUTH TLS: {}", auth);
+
+	let client_config = build_client_config();
+	let server_name = ServerName::try_from("localhost").unwrap();
+	let client_conn = rustls::ClientConnection::new(client_config, server_name).unwrap();
+	let mut tls = rustls::StreamOwned::new(client_conn, tcp);
+
+	// Not authorized yet — the upgrade cleared whatever state there was.
+	let size = read_line_after_cmd(&mut tls, "SIZE a.mp4").unwrap();
+	assert!(
+		size.starts_with("530"),
+		"the session must not be authorized after AUTH, got: {}",
+		size
+	);
+
+	// And the user has to identify again.
+	let user_resp = read_line_after_cmd(&mut tls, "USER anonymous").unwrap();
+	assert!(user_resp.starts_with("230"), "USER: {}", user_resp);
+}
+
+/// RFC 4217 §9: for FTPS the PBSZ parameter MUST be 0 — the protocol is a
+/// stream, so nothing is buffered.
+#[test]
+fn explicit_ftps_pbsz_must_be_zero() {
+	let dir = std::env::temp_dir().join("rcrm_explicit_ftps_pbsz_test");
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+
+	let key = deterministic_content(32, 93);
+	let fixture = start_tls_server(dir.clone(), &key);
+
+	let mut tcp = TcpStream::connect(fixture.addr).expect("connect failed");
+	tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+
+	let _ = read_line(&mut tcp).unwrap(); // 220
+	let auth = plain_cmd(&mut tcp, "AUTH TLS").unwrap();
+	assert!(auth.starts_with("234"), "AUTH TLS: {}", auth);
+
+	let client_config = build_client_config();
+	let server_name = ServerName::try_from("localhost").unwrap();
+	let client_conn = rustls::ClientConnection::new(client_config, server_name).unwrap();
+	let mut tls = rustls::StreamOwned::new(client_conn, tcp);
+
+	let bad = read_line_after_cmd(&mut tls, "PBSZ 1").unwrap();
+	assert!(
+		bad.starts_with("504"),
+		"PBSZ 1 should be refused, got: {}",
+		bad
+	);
+	let good = read_line_after_cmd(&mut tls, "PBSZ 0").unwrap();
+	assert!(good.starts_with("200"), "PBSZ 0: {}", good);
 }
 
 /// Implicit FTPS: AUTH TLS must be rejected (already in TLS).

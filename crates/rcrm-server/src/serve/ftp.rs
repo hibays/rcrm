@@ -86,6 +86,10 @@ impl Stream {
 // LineReader: buffered line reader over any Read
 // =======================
 
+/// Longest control line accepted. A client that never sends a newline must
+/// not be able to grow the buffer without bound.
+const MAX_COMMAND_LINE: usize = 8 * 1024;
+
 struct LineReader {
 	buf: Vec<u8>,
 }
@@ -121,7 +125,22 @@ impl LineReader {
 				));
 			}
 			self.buf.extend_from_slice(&tmp[..n]);
+			if self.buf.len() > MAX_COMMAND_LINE {
+				return Err(io::Error::new(
+					io::ErrorKind::InvalidData,
+					"control line too long",
+				));
+			}
 		}
+	}
+}
+
+/// Mask the argument of commands whose argument is a secret. The FTP
+/// password would otherwise land in the log verbatim.
+fn redact_arg<'a>(verb: &str, arg: &'a str) -> &'a str {
+	match verb {
+		"PASS" | "ACCT" => "***",
+		_ => arg,
 	}
 }
 
@@ -138,7 +157,8 @@ pub struct FtpSession {
 	rest_offset: Option<u64>,
 	data_listener: Option<TcpListener>,
 	data_addr: Option<SocketAddr>,
-	data_tls: bool, // PROT P — encrypt data connections
+	data_tls: bool,  // PROT P — encrypt data connections
+	pbsz_done: bool, // PBSZ ran — RFC 4217 §9 requires it before PROT
 	authed: bool,
 	username: Option<String>,
 	use_tls: bool, // control connection upgraded to TLS
@@ -208,6 +228,7 @@ impl FtpSession {
 			data_listener: None,
 			data_addr: None,
 			data_tls,
+			pbsz_done: false,
 			authed: false,
 			username: None,
 			use_tls,
@@ -249,7 +270,12 @@ impl FtpSession {
 				Some((v, a)) => (v.to_uppercase(), a.trim().to_string()),
 				None => (line.to_uppercase(), String::new()),
 			};
-			rcrm_core::log_info!("[ftp:{}] CMD {} {}", self.addr, verb, arg);
+			rcrm_core::log_info!(
+				"[ftp:{}] CMD {} {}",
+				self.addr,
+				verb,
+				redact_arg(&verb, &arg)
+			);
 
 			let quit = match verb.as_str() {
 				"USER" => self.cmd_user(&arg),
@@ -300,6 +326,20 @@ impl FtpSession {
 		Ok(())
 	}
 
+	// ------------------- TLS policy -------------------
+
+	/// Whether the credentials may only travel over TLS.
+	///
+	/// Explicit FTPS has a plaintext phase by design — the control
+	/// connection starts in the clear and is upgraded with `AUTH TLS` — so
+	/// the server refuses a password that arrives before the upgrade.
+	/// RFC 4217 §4.2: "the same effect can be achieved by refusing to
+	/// accept certain FTP commands until the session is secured to a level
+	/// that is acceptable to the server".
+	fn credentials_require_tls(&self) -> bool {
+		self.ctx.tls_config.is_some() && !self.ctx.implicit_tls
+	}
+
 	// ------------------- response helpers -------------------
 
 	fn send(&mut self, code: u16, msg: &str) -> io::Result<()> {
@@ -333,6 +373,13 @@ impl FtpSession {
 	// ------------------- command handlers -------------------
 
 	fn cmd_user(&mut self, arg: &str) -> io::Result<()> {
+		// The TLS gate has to cover USER, not just PASS: in anonymous mode
+		// `USER` alone authenticates, so gating only the password would
+		// leave the whole session — the listing, the file names, the
+		// media — in the clear.
+		if self.credentials_require_tls() && !self.use_tls {
+			return self.send(534, "TLS required — use AUTH TLS first");
+		}
 		self.username = Some(arg.to_string());
 		self.authed = false;
 		if self.ctx.auth.user.is_none() {
@@ -345,6 +392,11 @@ impl FtpSession {
 	}
 
 	fn cmd_pass(&mut self, arg: &str) -> io::Result<()> {
+		// The TLS check comes first: in anonymous mode there is no password,
+		// but the connection would still read files in the clear.
+		if self.credentials_require_tls() && !self.use_tls {
+			return self.send(534, "TLS required — use AUTH TLS first");
+		}
 		if self.ctx.auth.user.is_none() {
 			return self.send(230, "Anonymous login OK");
 		}
@@ -391,13 +443,25 @@ impl FtpSession {
 		let stream = rustls::StreamOwned::new(conn, tcp);
 		self.control = Stream::Tls(stream);
 		self.use_tls = true;
+		// RFC 4217 §4.2: "the FTP protocol insists on a USER command be
+		// used ... the USER command MUST still be issued by the client",
+		// and RFC 2228: accepting AUTH resets the state the security
+		// commands changed, so the user has to be authorized again.
+		self.authed = false;
+		self.username = None;
 		Ok(())
 	}
 
-	fn cmd_pbsz(&mut self, _arg: &str) -> io::Result<()> {
+	fn cmd_pbsz(&mut self, arg: &str) -> io::Result<()> {
 		if !self.use_tls {
 			return self.send(503, "PBSZ requires TLS");
 		}
+		// RFC 4217 §9: for FTPS the parameter MUST be 0 — the protocol is
+		// a stream, so nothing is buffered.
+		if arg.trim() != "0" {
+			return self.send(504, "Only PBSZ 0 supported");
+		}
+		self.pbsz_done = true;
 		self.send(200, "PBSZ=0")
 	}
 
@@ -405,13 +469,25 @@ impl FtpSession {
 		if !self.use_tls {
 			return self.send(503, "PROT requires TLS");
 		}
+		// RFC 4217 §9: "the PROT command MUST be preceded by a PBSZ
+		// command". That rule belongs to the explicit mode's negotiation —
+		// in implicit FTPS the data connection is already encrypted, so
+		// PROT P is a no-op and PROT C is refused below.
+		if !self.ctx.implicit_tls && !self.pbsz_done {
+			return self.send(503, "PROT requires PBSZ first");
+		}
 		match arg.to_uppercase().as_str() {
 			"C" => {
-				// PROT C is rejected in implicit FTPS — the whole point of
-				// implicit FTPS is end-to-end encryption. Allowing clear
-				// data would defeat that.
+				// PROT C is refused in implicit FTPS — the whole point of
+				// implicit FTPS is end-to-end encryption. RFC 4217 §9:
+				// "the reply to indicate that the PROT setting is
+				// incorrect is 521 data connection cannot be opened with
+				// this PROT setting".
 				if self.ctx.implicit_tls {
-					self.send(534, "Clear data not allowed in implicit FTPS")
+					self.send(
+						521,
+						"Data connection cannot be opened with this PROT setting",
+					)
 				} else {
 					self.data_tls = false;
 					self.send(200, "Protection level: Clear")
@@ -465,7 +541,10 @@ impl FtpSession {
 			return self.send(250, "Directory changed to /");
 		}
 		let resolved: ResolvedMount =
-			resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root())?;
+			match resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root()) {
+				Ok(r) => r,
+				Err(_) => return self.send(550, "No such directory"),
+			};
 		if !resolved.disk_path.is_dir() {
 			return self.send(550, "No such directory");
 		}
@@ -653,17 +732,23 @@ impl FtpSession {
 			return self.stream_listing(entries, names_only);
 		}
 
-		let resolved = resolve_disk_path(
+		let resolved = match resolve_disk_path(
 			&self.ctx.mounts,
 			&self.cwd,
 			path_arg,
 			self.ctx.is_multi_root(),
-		)?;
+		) {
+			Ok(r) => r,
+			Err(_) => return self.send(550, "No such file"),
+		};
 		let mount_idx = resolved.mount_idx;
 		let target = resolved.disk_path;
-		let dir = if target.is_dir() {
+		// ONE metadata probe instead of `is_dir()` + `exists()` (two).
+		let target_meta = std::fs::metadata(&target).ok();
+		let target_is_dir = target_meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+		let dir = if target_is_dir {
 			target.clone()
-		} else if target.exists() {
+		} else if target_meta.is_some() {
 			// Listing a single file — return just that entry.
 			let parent = target
 				.parent()
@@ -693,7 +778,10 @@ impl FtpSession {
 			return self.send(530, "Not logged in");
 		}
 		let resolved =
-			resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root())?;
+			match resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root()) {
+				Ok(r) => r,
+				Err(_) => return self.send(550, "No such file"),
+			};
 		let mount_idx = resolved.mount_idx;
 		let target = resolved.disk_path;
 		let dir = if target.is_dir() {
@@ -834,12 +922,12 @@ impl FtpSession {
 		if !self.authed {
 			return self.send(530, "Not logged in");
 		}
-		if !self.use_tls && self.ctx.require_tls {
-			return self.send(530, "TLS required");
-		}
 
 		let resolved =
-			resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root())?;
+			match resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root()) {
+				Ok(r) => r,
+				Err(_) => return self.send(550, "No such file"),
+			};
 		let mount_idx = resolved.mount_idx;
 		let disk = resolved.disk_path;
 
@@ -1004,8 +1092,14 @@ impl FtpSession {
 		if !self.authed {
 			return self.send(530, "Not logged in");
 		}
+		if self.credentials_require_tls() && !self.use_tls {
+			return self.send(530, "TLS required");
+		}
 		let resolved =
-			resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root())?;
+			match resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root()) {
+				Ok(r) => r,
+				Err(_) => return self.send(550, "No such file"),
+			};
 		let mount_idx = resolved.mount_idx;
 		let disk = resolved.disk_path;
 		match self.resolve_retr_target(&disk, arg, mount_idx) {
@@ -1022,8 +1116,14 @@ impl FtpSession {
 		if !self.authed {
 			return self.send(530, "Not logged in");
 		}
+		if self.credentials_require_tls() && !self.use_tls {
+			return self.send(530, "TLS required");
+		}
 		let resolved =
-			resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root())?;
+			match resolve_disk_path(&self.ctx.mounts, &self.cwd, arg, self.ctx.is_multi_root()) {
+				Ok(r) => r,
+				Err(_) => return self.send(550, "No such file"),
+			};
 		let mount_idx = resolved.mount_idx;
 		let disk = resolved.disk_path;
 		// MDTM uses the on-disk file's mtime (we don't track original mtime).
@@ -1045,6 +1145,9 @@ impl FtpSession {
 	}
 
 	fn cmd_rest(&mut self, arg: &str) -> io::Result<()> {
+		if !self.authed {
+			return self.send(530, "Not logged in");
+		}
 		match arg.parse::<u64>() {
 			Ok(n) => {
 				self.rest_offset = Some(n);
@@ -1055,6 +1158,9 @@ impl FtpSession {
 	}
 
 	fn cmd_abor(&mut self) -> io::Result<()> {
+		if !self.authed {
+			return self.send(530, "Not logged in");
+		}
 		// Drop any pending data listener.
 		self.data_listener = None;
 		self.data_addr = None;
@@ -1210,4 +1316,18 @@ fn dummy_stream() -> TcpStream {
 #[allow(dead_code)]
 fn _silence_unused_import() -> bool {
 	is_supported_file(Path::new("."))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::redact_arg;
+
+	#[test]
+	fn password_argument_is_masked() {
+		assert_eq!(redact_arg("PASS", "hunter2"), "***");
+		assert_eq!(redact_arg("ACCT", "hunter2"), "***");
+		// Everything else is logged as-is.
+		assert_eq!(redact_arg("USER", "bob"), "bob");
+		assert_eq!(redact_arg("RETR", "movie.mp4"), "movie.mp4");
+	}
 }

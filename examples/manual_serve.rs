@@ -62,7 +62,6 @@ fn main() {
 		session_key,
 		cache: Arc::new(FileCache::new()),
 		tls_config: Some(tls_cfg),
-		require_tls: false,
 		implicit_tls: false,
 		protocol: rcrm::serve::Protocol::Ftp,
 		max_connections: 8,

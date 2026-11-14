@@ -143,7 +143,6 @@ fn start_server(root: PathBuf, key: &[u8]) -> ServerFixture {
 		session_key,
 		cache: Arc::new(FileCache::new()),
 		tls_config: None,
-		require_tls: false,
 		implicit_tls: false,
 		protocol: rcrm::serve::Protocol::Ftp,
 		max_connections: 8,
@@ -407,6 +406,57 @@ fn ftp_path_traversal_contained() {
 	assert_eq!(code, 550, "traversal SIZE should be 550");
 }
 
+/// A segment carrying a Windows separator or a drive prefix escapes the
+/// mount root: the virtual path is split on `/` only, so `..\..` reaches
+/// the OS as one component and is resolved at open time — past the `..`
+/// handling. A drive prefix replaces the whole path.
+#[test]
+fn ftp_path_traversal_with_windows_separators_contained() {
+	let base = std::env::temp_dir().join("rcrm_ftp_test_traversal_win");
+	let _ = std::fs::remove_dir_all(&base);
+	let root = base.join("root");
+	std::fs::create_dir_all(&root).unwrap();
+	// The secret lives OUTSIDE the served root.
+	let secret = base.join("secret.txt");
+	std::fs::write(&secret, b"TOP-SECRET-CONTENT").unwrap();
+
+	let key = deterministic_content(32, 23);
+	let fixture = start_server(root.clone(), &key);
+	let mut client = FtpClient::connect(fixture.addr).expect("connect failed");
+	let _ = client.read_response().unwrap();
+	let _ = client.cmd("USER anonymous").unwrap();
+	let _ = client.cmd("TYPE I").unwrap();
+
+	for probe in [
+		r"..\secret.txt",
+		r"..\..\secret.txt",
+		r"..\.secret.txt",
+		"C:\\secret.txt",
+	] {
+		let (code, msg) = client.cmd(&format!("SIZE {probe}")).unwrap();
+		assert_eq!(
+			code, 550,
+			"SIZE {probe} should be refused, got {} {}",
+			code, msg
+		);
+	}
+
+	// RETR must not leak it either.
+	let data_stream = client.pasv_connect().expect("PASV failed");
+	let (code, _) = client.cmd(r"RETR ..\secret.txt").unwrap();
+	assert_eq!(code, 550, "traversal RETR should be 550");
+	drop(data_stream);
+
+	// Positive control: a file inside the root is still served.
+	std::fs::write(root.join("ok.txt"), b"public").unwrap();
+	let (code, msg) = client.cmd("SIZE ok.txt").unwrap();
+	assert_eq!(
+		code, 213,
+		"a file inside the root must still be served: {msg}"
+	);
+	assert_eq!(msg.trim(), "6");
+}
+
 #[test]
 fn ftp_size_returns_virtual_size_not_disk_size() {
 	let dir = std::env::temp_dir().join("rcrm_ftp_test_size");
@@ -493,7 +543,6 @@ fn ftp_serves_plain_files_without_encryption_password() {
 		session_key,
 		cache: Arc::new(FileCache::new()),
 		tls_config: None,
-		require_tls: false,
 		implicit_tls: false,
 		protocol: rcrm::serve::Protocol::Ftp,
 		max_connections: 8,
@@ -569,7 +618,6 @@ fn ftp_pasv_advertises_correct_ip_on_non_default_loopback() {
 		session_key,
 		cache: Arc::new(FileCache::new()),
 		tls_config: None,
-		require_tls: false,
 		implicit_tls: false,
 		protocol: rcrm::serve::Protocol::Ftp,
 		max_connections: 8,

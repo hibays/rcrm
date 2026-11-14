@@ -53,6 +53,15 @@ impl Drop for ServerFixture {
 }
 
 fn start_webdav_server(root: PathBuf, key: &[u8], https: bool) -> ServerFixture {
+	start_webdav_server_with_auth(root, key, https, AuthConfig::no_auth())
+}
+
+fn start_webdav_server_with_auth(
+	root: PathBuf,
+	key: &[u8],
+	https: bool,
+	auth: AuthConfig,
+) -> ServerFixture {
 	let manager = Manager::new(true, true, 2048, is_supported_file, 6, Some(key));
 	let session_key = Arc::new(SessionKey::generate().expect("mlock failed"));
 	let tls_cfg = if https {
@@ -66,7 +75,6 @@ fn start_webdav_server(root: PathBuf, key: &[u8], https: bool) -> ServerFixture 
 		session_key,
 		cache: Arc::new(FileCache::new()),
 		tls_config: tls_cfg,
-		require_tls: false,
 		implicit_tls: https,
 		protocol: if https {
 			Protocol::WebDavHttps
@@ -74,7 +82,7 @@ fn start_webdav_server(root: PathBuf, key: &[u8], https: bool) -> ServerFixture 
 			Protocol::WebDav
 		},
 		max_connections: 8,
-		auth: AuthConfig::no_auth(),
+		auth,
 		idle_timeout: Duration::from_secs(60),
 	};
 	let server = Server::new(ctx, "127.0.0.1:0".parse().unwrap());
@@ -146,6 +154,70 @@ fn http_request_split(addr: SocketAddr, raw: &str) -> (String, Vec<(String, Stri
 		stream.read_exact(&mut body).unwrap();
 	}
 	(status_line, headers, body)
+}
+
+/// Read a whole response on a connection the server will close, then split it
+/// at the header terminator. Deliberately does NOT consume `Content-Length`
+/// bytes: a HEAD response advertises the length the equivalent GET would have
+/// sent (RFC 9110 §8.6) while carrying no content (§9.3.2), so a helper that
+/// trusts Content-Length would block forever on a compliant HEAD answer.
+fn http_response_raw(addr: SocketAddr, raw: &str) -> (String, Vec<(String, String)>, Vec<u8>) {
+	let mut stream = TcpStream::connect(addr).expect("connect");
+	stream
+		.set_read_timeout(Some(Duration::from_secs(10)))
+		.unwrap();
+	stream.write_all(raw.as_bytes()).unwrap();
+	stream.flush().unwrap();
+	let mut buf = Vec::new();
+	stream.read_to_end(&mut buf).expect("read to end");
+	let pos = buf
+		.windows(4)
+		.position(|w| w == b"\r\n\r\n")
+		.expect("no header terminator");
+	let head = String::from_utf8_lossy(&buf[..pos]);
+	let mut lines = head.lines();
+	let status_line = lines.next().unwrap_or("").to_string();
+	let mut headers = Vec::new();
+	for line in lines {
+		if let Some((k, v)) = line.split_once(':') {
+			headers.push((k.trim().to_string(), v.trim().to_string()));
+		}
+	}
+	(status_line, headers, buf[pos + 4..].to_vec())
+}
+
+fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+	headers
+		.iter()
+		.find(|(k, _)| k.eq_ignore_ascii_case(name))
+		.map(|(_, v)| v.as_str())
+}
+
+/// Send several raw requests on ONE keep-alive connection and read everything
+/// the server writes until it closes. The last request must ask for close.
+/// Used for RFC 9112 §6.3 framing tests: an unread body shows up as a corrupt
+/// second response.
+fn http_pipeline(addr: SocketAddr, raw: &str) -> Vec<u8> {
+	let mut stream = TcpStream::connect(addr).expect("connect");
+	stream
+		.set_read_timeout(Some(Duration::from_secs(10)))
+		.unwrap();
+	stream.write_all(raw.as_bytes()).unwrap();
+	stream.flush().unwrap();
+	let mut buf = Vec::new();
+	stream.read_to_end(&mut buf).expect("read to end");
+	buf
+}
+
+/// A throwaway plain-text fixture used by the table-driven spec tests.
+fn spec_fixture(name: &str) -> ServerFixture {
+	let dir = std::env::temp_dir().join(name);
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(dir.join("sub")).unwrap();
+	std::fs::write(dir.join("data.bin"), deterministic_content(1024, 7)).unwrap();
+	std::fs::write(dir.join("a.txt"), b"hello").unwrap();
+	let key = deterministic_content(32, 53);
+	start_webdav_server(dir, &key, false)
 }
 
 // =======================
@@ -256,6 +328,576 @@ fn webdav_head_returns_virtual_size() {
 }
 
 #[test]
+fn webdav_head_never_sends_content_but_keeps_get_metadata() {
+	let dir = std::env::temp_dir().join("rcrm_webdav_test_head_no_content");
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(dir.join("sub")).unwrap();
+	std::fs::write(dir.join("plain.txt"), b"plain text for head test").unwrap();
+
+	let key = deterministic_content(32, 31);
+	let fixture = start_webdav_server(dir, &key, false);
+
+	// Every HEAD-reachable response path: missing file (Resolved::NotFound),
+	// rejected path (not_found), directory HTML, and a normal file
+	// (RangeSpec::None, which was already correct).
+	for target in ["/missing.jpg", r"/..%5Csecret.txt", "/", "/plain.txt"] {
+		let get = http_response_raw(
+			fixture.addr,
+			&format!("GET {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
+		);
+		let head = http_response_raw(
+			fixture.addr,
+			&format!("HEAD {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
+		);
+		assert_eq!(
+			head.0, get.0,
+			"HEAD and GET must agree on the status line for {target}"
+		);
+		assert!(
+			head.2.is_empty(),
+			"HEAD {target} sent {} content bytes; RFC 9110 §9.3.2 says MUST NOT: {:?}",
+			head.2.len(),
+			String::from_utf8_lossy(&head.2)
+		);
+		assert_eq!(
+			header_value(&head.1, "content-length"),
+			header_value(&get.1, "content-length"),
+			"HEAD {target} must advertise the GET content length (§8.6)"
+		);
+		if let Some(n) =
+			header_value(&get.1, "content-length").and_then(|v| v.parse::<usize>().ok())
+		{
+			assert_eq!(get.2.len(), n, "GET {target} body length");
+		}
+	}
+}
+
+#[test]
+fn webdav_head_404_does_not_poison_the_next_keep_alive_request() {
+	let dir = std::env::temp_dir().join("rcrm_webdav_test_head_keepalive");
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+	std::fs::write(dir.join("plain.txt"), b"KEEPALIVE-OK").unwrap();
+
+	let key = deterministic_content(32, 37);
+	let fixture = start_webdav_server(dir, &key, false);
+
+	// Both requests on ONE connection, with no `Connection: close` on the
+	// HEAD. Before the fix the 404 wrote an HTML body that RFC 9112 §6.3 makes
+	// invisible to a HEAD client; those bytes became the start of the next
+	// response and broke connection reuse.
+	let request = concat!(
+		"HEAD /missing.jpg HTTP/1.1\r\nHost: localhost\r\n\r\n",
+		"GET /plain.txt HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+	);
+	let mut stream = TcpStream::connect(fixture.addr).expect("connect");
+	stream
+		.set_read_timeout(Some(Duration::from_secs(10)))
+		.unwrap();
+	stream.write_all(request.as_bytes()).unwrap();
+	stream.flush().unwrap();
+	let mut buf = Vec::new();
+	stream.read_to_end(&mut buf).expect("read to end");
+
+	let first_end = buf
+		.windows(4)
+		.position(|w| w == b"\r\n\r\n")
+		.expect("no first response header terminator")
+		+ 4;
+	assert!(
+		String::from_utf8_lossy(&buf[..first_end]).contains("404"),
+		"first response should be 404: {}",
+		String::from_utf8_lossy(&buf)
+	);
+	let rest = &buf[first_end..];
+	assert!(
+		rest.starts_with(b"HTTP/1.1 200"),
+		"bytes after the HEAD headers must be the next status line, not content: {:?}",
+		String::from_utf8_lossy(&rest[..rest.len().min(80)])
+	);
+	assert!(
+		String::from_utf8_lossy(&buf).contains("KEEPALIVE-OK"),
+		"the following GET must still be served: {}",
+		String::from_utf8_lossy(&buf)
+	);
+}
+
+#[test]
+fn webdav_head_errors_carry_no_content() {
+	let dir = std::env::temp_dir().join("rcrm_webdav_test_head_errors");
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+	std::fs::write(dir.join("a.txt"), b"hello").unwrap();
+	let key = deterministic_content(32, 43);
+
+	// 401 is raised before method dispatch.
+	let authed = start_webdav_server_with_auth(
+		dir.clone(),
+		&key,
+		false,
+		AuthConfig::with_credentials("alice".to_string(), "secret123"),
+	);
+	let get401 = http_response_raw(
+		authed.addr,
+		"GET /a.txt HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+	);
+	let head401 = http_response_raw(
+		authed.addr,
+		"HEAD /a.txt HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+	);
+	assert!(head401.0.contains("401"), "{}", head401.0);
+	assert!(head401.2.is_empty(), "HEAD 401 must not carry content");
+	assert_eq!(
+		header_value(&head401.1, "content-length"),
+		header_value(&get401.1, "content-length"),
+		"HEAD 401 keeps the GET content length (§8.6)"
+	);
+
+	// 413 is raised while reading the request body, when no `Request` value
+	// exists yet — `HttpConn::last_method` is what makes this one correct.
+	let open = start_webdav_server(dir, &key, false);
+	let oversized = "Content-Length: 2000000\r\nConnection: close\r\n\r\n";
+	let get413 = http_response_raw(
+		open.addr,
+		&format!("GET / HTTP/1.1\r\nHost: localhost\r\n{oversized}"),
+	);
+	let head413 = http_response_raw(
+		open.addr,
+		&format!("HEAD / HTTP/1.1\r\nHost: localhost\r\n{oversized}"),
+	);
+	assert!(head413.0.contains("413"), "{}", head413.0);
+	assert!(head413.2.is_empty(), "HEAD 413 must not carry content");
+	assert_eq!(
+		header_value(&head413.1, "content-length"),
+		header_value(&get413.1, "content-length"),
+		"HEAD 413 keeps the GET content length (§8.6)"
+	);
+}
+
+// =======================
+// RFC boundary tables
+// =======================
+
+/// RFC 9110 §14.2 / §14.4 / §15.3.7: single-range parsing, clamping,
+/// unsatisfiable ranges, suffix ranges, and the "ignore an invalid Range"
+/// fallback. Each case also pins Content-Length == actual body length (§8.6).
+#[test]
+fn webdav_range_boundaries_follow_rfc9110() {
+	let fixture = spec_fixture("rcrm_webdav_spec_range");
+	let data = deterministic_content(1024, 7);
+	let n = data.len();
+
+	let cases: Vec<(String, u16, Option<String>, Vec<u8>)> = vec![
+		(
+			"bytes=0-0".into(),
+			206,
+			Some(format!("bytes 0-0/{n}")),
+			data[0..1].to_vec(),
+		),
+		(
+			"bytes=0-9".into(),
+			206,
+			Some(format!("bytes 0-9/{n}")),
+			data[0..10].to_vec(),
+		),
+		(
+			"bytes=10-".into(),
+			206,
+			Some(format!("bytes 10-{}/{n}", n - 1)),
+			data[10..].to_vec(),
+		),
+		(
+			"bytes=-5".into(),
+			206,
+			Some(format!("bytes {}-{}/{n}", n - 5, n - 1)),
+			data[n - 5..].to_vec(),
+		),
+		// A range covering the whole representation is answered with 200,
+		// which §14.2 explicitly permits.
+		("bytes=0-1023".into(), 200, None, data.clone()),
+		("bytes=0-999999".into(), 200, None, data.clone()),
+		("bytes=0-".into(), 200, None, data.clone()),
+		// §14.2: unsatisfiable ranges get 416 with "bytes */<complete-length>".
+		(
+			"bytes=1024-".into(),
+			416,
+			Some(format!("bytes */{n}")),
+			vec![],
+		),
+		(
+			"bytes=9999-10000".into(),
+			416,
+			Some(format!("bytes */{n}")),
+			vec![],
+		),
+		(
+			"bytes=20-10".into(),
+			416,
+			Some(format!("bytes */{n}")),
+			vec![],
+		),
+		("bytes=-0".into(), 416, Some(format!("bytes */{n}")), vec![]),
+		// A Range a server cannot parse is ignored → 200 full representation.
+		("bytes=abc".into(), 200, None, data.clone()),
+		("bytes=0-1,5-6".into(), 200, None, data.clone()),
+		("bytes=".into(), 200, None, data.clone()),
+		("bytes=5".into(), 200, None, data.clone()),
+		("items=0-5".into(), 200, None, data.clone()),
+		(
+			"bytes=0-999999999999999999999999".into(),
+			200,
+			None,
+			data.clone(),
+		),
+	];
+	for (range, status, cr, expected) in cases {
+		let (line, headers, body) = http_response_raw(
+			fixture.addr,
+			&format!(
+				"GET /data.bin HTTP/1.1\r\nHost: localhost\r\nRange: {range}\r\nConnection: close\r\n\r\n"
+			),
+		);
+		assert!(
+			line.contains(&status.to_string()),
+			"Range {range:?}: {line}"
+		);
+		assert_eq!(
+			header_value(&headers, "content-range").map(str::to_string),
+			cr,
+			"Range {range:?}: Content-Range"
+		);
+		assert_eq!(body, expected, "Range {range:?}: body");
+		let cl = header_value(&headers, "content-length")
+			.and_then(|v| v.parse::<usize>().ok())
+			.expect("Content-Length present");
+		assert_eq!(cl, body.len(), "Range {range:?}: §8.6 Content-Length");
+	}
+}
+
+/// RFC 9110 §9.3.2: HEAD SHOULD return the same header fields as GET. Compare
+/// the WHOLE header set (not just Content-Length) across 200 / 206 / 416 and
+/// the range-ignored fallback, while the content itself stays absent.
+#[test]
+fn webdav_head_matches_get_header_fields() {
+	let fixture = spec_fixture("rcrm_webdav_spec_head_headers");
+	for range in [
+		"",
+		"bytes=0-9",
+		"bytes=1024-",
+		"bytes=0-1023",
+		"bytes=0-999999",
+	] {
+		let extra = if range.is_empty() {
+			String::new()
+		} else {
+			format!("Range: {range}\r\n")
+		};
+		let get = http_response_raw(
+			fixture.addr,
+			&format!(
+				"GET /data.bin HTTP/1.1\r\nHost: localhost\r\n{extra}Connection: close\r\n\r\n"
+			),
+		);
+		let head = http_response_raw(
+			fixture.addr,
+			&format!(
+				"HEAD /data.bin HTTP/1.1\r\nHost: localhost\r\n{extra}Connection: close\r\n\r\n"
+			),
+		);
+		assert_eq!(head.0, get.0, "Range {range:?}: status line");
+		assert!(
+			head.2.is_empty(),
+			"Range {range:?}: HEAD must not send content"
+		);
+		assert_eq!(
+			head.1.len(),
+			get.1.len(),
+			"Range {range:?}: same header set\nGET: {:?}\nHEAD: {:?}",
+			get.1,
+			head.1
+		);
+		for (k, v) in &get.1 {
+			assert_eq!(
+				header_value(&head.1, k),
+				Some(v.as_str()),
+				"Range {range:?}: header {k}"
+			);
+		}
+	}
+}
+
+/// RFC 9112 §6.3(3) and §6.3(5): Transfer-Encoding together with
+/// Content-Length, and an invalid Content-Length, are unrecoverable framing
+/// errors — 400 and close, never a header silently ignored (which would leave
+/// unread bytes to be parsed as the next request).
+#[test]
+fn webdav_request_framing_errors_are_rejected() {
+	let fixture = spec_fixture("rcrm_webdav_spec_framing");
+	let cases: &[(&str, u16)] = &[
+		("Content-Length: abc\r\n", 400),
+		("Content-Length: -1\r\n", 400),
+		("Content-Length: 1, 1\r\n", 400),
+		("Content-Length: 1.5\r\n", 400),
+		("Content-Length: \r\n", 400),
+		("Content-Length: 1\r\nTransfer-Encoding: chunked\r\n", 400),
+		("Transfer-Encoding: gzip\r\n", 400),
+		("Transfer-Encoding: chunked, gzip\r\n", 400),
+	];
+	for (hdr, expected) in cases {
+		let (line, headers, body) = http_response_raw(
+			fixture.addr,
+			&format!("GET /data.bin HTTP/1.1\r\nHost: localhost\r\n{hdr}Connection: close\r\n\r\n"),
+		);
+		assert!(
+			line.contains(&expected.to_string()),
+			"headers {hdr:?}: {line}"
+		);
+		assert_eq!(
+			header_value(&headers, "connection"),
+			Some("close"),
+			"headers {hdr:?}: an unrecoverable framing error must close"
+		);
+		let cl = header_value(&headers, "content-length").and_then(|v| v.parse::<usize>().ok());
+		assert_eq!(cl, Some(body.len()), "headers {hdr:?}: §8.6 Content-Length");
+	}
+}
+
+/// RFC 9112 §7.1 and RFC 9110 §9.3.2: a chunked request body, and content on
+/// a HEAD request (which clients SHOULD NOT send), must still be consumed.
+/// The second request on the same connection is the detector.
+#[test]
+fn webdav_chunked_and_head_bodies_are_consumed() {
+	let fixture = spec_fixture("rcrm_webdav_spec_chunked");
+	let data = deterministic_content(1024, 7);
+	let sequences: &[(&str, &str)] = &[
+		(
+			"chunked with extensions and a trailer",
+			concat!(
+				"GET /data.bin HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n",
+				"5;ext=1\r\nhello\r\n",
+				"6\r\n world\r\n",
+				"0\r\nX-Trailer: ok\r\n\r\n",
+				"GET /data.bin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+			),
+		),
+		(
+			"HEAD carrying a Content-Length body",
+			concat!(
+				"HEAD /data.bin HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\n\r\n",
+				"xxxxx",
+				"GET /data.bin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+			),
+		),
+	];
+	for (label, raw) in sequences {
+		let buf = http_pipeline(fixture.addr, raw);
+		let text = String::from_utf8_lossy(&buf);
+		assert_eq!(
+			text.matches("HTTP/1.1 200").count(),
+			2,
+			"{label}: expected two intact 200 responses: {text}"
+		);
+		assert!(
+			buf.windows(data.len()).any(|w| w == data.as_slice()),
+			"{label}: final GET must still return the whole representation"
+		);
+	}
+}
+
+/// RFC 9110 §11.6.1: the auth-scheme is case-insensitive and one or more
+/// spaces may separate it from the token. A different scheme or a wrong
+/// password still gets 401 with a challenge.
+#[test]
+fn webdav_basic_auth_scheme_is_case_insensitive() {
+	let dir = std::env::temp_dir().join("rcrm_webdav_spec_auth");
+	let _ = std::fs::remove_dir_all(&dir);
+	std::fs::create_dir_all(&dir).unwrap();
+	std::fs::write(dir.join("a.txt"), b"hello").unwrap();
+	let key = deterministic_content(32, 59);
+	let fixture = start_webdav_server_with_auth(
+		dir,
+		&key,
+		false,
+		AuthConfig::with_credentials("alice".to_string(), "secret123"),
+	);
+	let correct = base64::engine::general_purpose::STANDARD.encode(b"alice:secret123");
+	let wrong = base64::engine::general_purpose::STANDARD.encode(b"alice:wrong");
+
+	for scheme in ["Basic ", "basic ", "BASIC ", "bAsIc ", "Basic   "] {
+		let (line, _, body) = http_response_raw(
+			fixture.addr,
+			&format!(
+				"GET /a.txt HTTP/1.1\r\nHost: localhost\r\nAuthorization: {scheme}{correct}\r\nConnection: close\r\n\r\n"
+			),
+		);
+		assert!(line.contains("200"), "scheme {scheme:?}: {line}");
+		assert_eq!(body, b"hello", "scheme {scheme:?}");
+	}
+	for (scheme, cred) in [("Bearer ", correct.as_str()), ("Basic ", wrong.as_str())] {
+		let (line, headers, _) = http_response_raw(
+			fixture.addr,
+			&format!(
+				"GET /a.txt HTTP/1.1\r\nHost: localhost\r\nAuthorization: {scheme}{cred}\r\nConnection: close\r\n\r\n"
+			),
+		);
+		assert!(line.contains("401"), "scheme {scheme:?}: {line}");
+		assert!(
+			header_value(&headers, "www-authenticate").is_some(),
+			"401 must carry WWW-Authenticate"
+		);
+	}
+}
+
+/// RFC 9110 §8.6 / RFC 9112 §6.3: every response (including empty-body 200,
+/// 400, 403, 416, 501 and OPTIONS) declares a correct Content-Length, so a
+/// keep-alive client can always delimit it. HEAD declares the GET length while
+/// sending no bytes.
+#[test]
+fn webdav_every_response_declares_content_length() {
+	let fixture = spec_fixture("rcrm_webdav_spec_cl");
+	let cases: &[(&str, &str)] = &[
+		("GET", "/data.bin"),
+		("HEAD", "/data.bin"),
+		("GET", "/missing"),
+		("HEAD", "/missing"),
+		("GET", "/"),
+		("HEAD", "/"),
+		("OPTIONS", "/"),
+		("PROPFIND", "/"),
+		("PUT", "/x"),
+		("BREW", "/"),
+	];
+	for (method, path) in cases {
+		let (line, headers, body) = http_response_raw(
+			fixture.addr,
+			&format!(
+				"{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+			),
+		);
+		let cl = header_value(&headers, "content-length").and_then(|v| v.parse::<usize>().ok());
+		assert!(
+			cl.is_some(),
+			"{method} {path} ({line}) must declare Content-Length"
+		);
+		if *method == "HEAD" {
+			assert!(
+				body.is_empty(),
+				"{method} {path}: HEAD must not send content"
+			);
+		} else {
+			assert_eq!(
+				cl,
+				Some(body.len()),
+				"{method} {path}: Content-Length must equal the body"
+			);
+		}
+	}
+}
+
+/// Request-body cap boundary: exactly 1 MiB is accepted, one byte more is
+/// refused with 413 and a closed connection (no unbounded buffering).
+#[test]
+fn webdav_request_body_limit_boundary() {
+	let fixture = spec_fixture("rcrm_webdav_spec_body_limit");
+	let at_limit = "x".repeat(1024 * 1024);
+	let (line, _, _) = http_response_raw(
+		fixture.addr,
+		&format!(
+			"GET /data.bin HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+			at_limit.len(),
+			at_limit
+		),
+	);
+	assert!(line.contains("200"), "exactly 1 MiB is accepted: {line}");
+
+	let over = format!(
+		"GET /data.bin HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+		at_limit.len() + 1
+	);
+	let (line, headers, _) = http_response_raw(fixture.addr, &over);
+	assert!(
+		line.contains("413"),
+		"one byte over the cap is refused: {line}"
+	);
+	assert_eq!(header_value(&headers, "connection"), Some("close"));
+}
+
+/// RFC 9110 §7.6.1: "Connection" carries a comma-separated token LIST, so a
+/// `close` token anywhere in it ends the connection after this response. The
+/// second pipelined request is the detector — if the first one was (wrongly)
+/// treated as keep-alive, two responses come back.
+#[test]
+fn webdav_connection_token_list_is_parsed() {
+	let fixture = spec_fixture("rcrm_webdav_spec_conn");
+	for hdr in ["keep-alive, close", "CLOSE", "close, keep-alive"] {
+		let raw = format!(
+			"GET /data.bin HTTP/1.1\r\nHost: localhost\r\nConnection: {hdr}\r\n\r\n{}",
+			"GET /data.bin HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+		);
+		let buf = http_pipeline(fixture.addr, &raw);
+		let text = String::from_utf8_lossy(&buf);
+		assert_eq!(
+			text.matches("HTTP/1.1 200").count(),
+			1,
+			"Connection: {hdr} must close after the first response: {text}"
+		);
+	}
+}
+
+/// RFC 9110 §14.2 on a zero-length representation: no range is satisfiable,
+/// and computing `content_length - 1` while clamping must not underflow.
+#[test]
+fn webdav_empty_file_ranges_do_not_underflow() {
+	let dir = std::env::temp_dir().join("rcrm_webdav_spec_empty");
+	let fixture = spec_fixture("rcrm_webdav_spec_empty");
+	std::fs::write(dir.join("empty.bin"), b"").unwrap();
+	for range in ["bytes=0-", "bytes=-1", "bytes=0-0", "bytes=1-2"] {
+		let (line, headers, body) = http_response_raw(
+			fixture.addr,
+			&format!(
+				"GET /empty.bin HTTP/1.1\r\nHost: localhost\r\nRange: {range}\r\nConnection: close\r\n\r\n"
+			),
+		);
+		assert!(line.contains("416"), "empty file, Range {range}: {line}");
+		assert_eq!(
+			header_value(&headers, "content-range"),
+			Some("bytes */0"),
+			"empty file, Range {range}"
+		);
+		assert!(body.is_empty(), "empty file, Range {range}: no content");
+	}
+}
+
+/// RFC 9112 §7.1: malformed chunk framing is unrecoverable, and a chunk larger
+/// than the 1 MiB cap is refused before any buffering.
+#[test]
+fn webdav_chunked_framing_errors_are_rejected() {
+	let fixture = spec_fixture("rcrm_webdav_spec_chunk_err");
+	let cases: &[(&str, u16)] = &[
+		("ZZ\r\n", 400),
+		("5\r\nhelloXX", 400),
+		("FFFFFFFFFFFFFFFF\r\n", 413),
+	];
+	for (body, expected) in cases {
+		let (line, headers, _) = http_response_raw(
+			fixture.addr,
+			&format!(
+				"GET /data.bin HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{body}"
+			),
+		);
+		assert!(
+			line.contains(&expected.to_string()),
+			"chunked body {body:?}: {line}"
+		);
+		assert_eq!(
+			header_value(&headers, "connection"),
+			Some("close"),
+			"chunked body {body:?}: framing errors must close"
+		);
+	}
+}
+
+#[test]
 fn webdav_range_request_partial_content() {
 	let dir = std::env::temp_dir().join("rcrm_webdav_test_range");
 	let _ = std::fs::remove_dir_all(&dir);
@@ -285,6 +927,52 @@ fn webdav_range_request_partial_content() {
 		.map(|(_, v)| v.as_str())
 		.unwrap();
 	assert!(cr.contains("bytes 10000-20000/"), "Content-Range: {}", cr);
+}
+
+#[test]
+fn webdav_path_traversal_with_windows_separators_contained() {
+	// The secret lives OUTSIDE the served root.
+	let base = std::env::temp_dir().join("rcrm_webdav_test_traversal_win");
+	let _ = std::fs::remove_dir_all(&base);
+	let root = base.join("root");
+	std::fs::create_dir_all(&root).unwrap();
+	std::fs::write(base.join("secret.txt"), b"TOP-SECRET-CONTENT").unwrap();
+
+	let key = deterministic_content(32, 29);
+	let fixture = start_webdav_server(root.clone(), &key, false);
+
+	for probe in [
+		r"/..\secret.txt",
+		r"/..\..\secret.txt",
+		r"/..\.secret.txt",
+		r"/..%5Csecret.txt",
+		r"/..%5C..%5Csecret.txt",
+		"/C:%5Csecret.txt",
+		r"/..%2Fsecret.txt",
+	] {
+		let response = http_request(
+			fixture.addr,
+			&format!("GET {probe} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
+		);
+		assert!(
+			!response.contains("TOP-SECRET-CONTENT"),
+			"GET {probe} leaked a file outside the root:\n{}",
+			response
+		);
+	}
+
+	// Positive control: a file inside the root is still served.
+	std::fs::write(root.join("ok.txt"), b"public").unwrap();
+	let response = http_request(
+		fixture.addr,
+		"GET /ok.txt HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+	);
+	assert!(response.contains("200"), "expected 200:\n{}", response);
+	assert!(
+		response.contains("public"),
+		"expected the body:\n{}",
+		response
+	);
 }
 
 #[test]
@@ -402,7 +1090,6 @@ fn webdav_basic_auth_required() {
 		session_key,
 		cache: Arc::new(FileCache::new()),
 		tls_config: None,
-		require_tls: false,
 		implicit_tls: false,
 		protocol: Protocol::WebDav,
 		max_connections: 8,
