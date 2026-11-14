@@ -17,6 +17,7 @@ import 'dart:typed_data';
 import 'package:media_kit/media_kit.dart';
 
 import 'live_media_server.dart';
+import 'bounded_fetch.dart';
 import 'net.dart';
 
 // ── Result types ───────────────────────────────────────────────
@@ -57,55 +58,9 @@ final _headCache = <String, bool>{};
 final _headPending = <String, Future<bool>>{};
 // ── HTTP helpers ───────────────────────────────────────────────
 
-Future<Uint8List> _rangeFetch(
-  String url,
-  int start,
-  int end, {
-  Map<String, String>? headers,
-}) async {
-  final client = createTrustAwareHttpClient();
-  try {
-    final req = await client.openUrl('GET', Uri.parse(url));
-    req.headers.set('Range', 'bytes=$start-$end');
-    if (headers != null) {
-      headers.forEach((k, v) => req.headers.set(k, v));
-    }
-    final resp = await req.close();
-    final bb = BytesBuilder(copy: false);
-    await for (final chunk in resp) {
-      bb.add(chunk);
-    }
-    return bb.toBytes();
-  } finally {
-    client.close();
-  }
-}
-
-Future<int> _fileSize(String url, {Map<String, String>? headers}) async {
-  final client = createTrustAwareHttpClient();
-  try {
-    final req = await client.openUrl('HEAD', Uri.parse(url));
-    if (headers != null) {
-      headers.forEach((k, v) => req.headers.set(k, v));
-    }
-    final resp = await req.close();
-    final cl = resp.headers.value('content-length');
-    if (cl != null) {
-      final n = int.tryParse(cl);
-      if (n != null && n > 0) return n;
-    }
-  } finally {
-    client.close();
-  }
-  return 0;
-}
-
 // ── Apple Live Photo detection ────────────────────────────────
 
-Future<bool> _hasMovCompanion(
-  String url, {
-  Map<String, String>? headers,
-}) async {
+Future<bool> _hasMovCompanion(String url) async {
   final uri = Uri.parse(url);
   final path = uri.path;
   final dot = path.lastIndexOf('.');
@@ -120,18 +75,12 @@ Future<bool> _hasMovCompanion(
   if (_headPending.containsKey(movUrl)) return _headPending[movUrl]!;
 
   final f = (() async {
-    final client = createTrustAwareHttpClient();
     try {
-      final req = await client.openUrl('HEAD', Uri.parse(movUrl));
-      if (headers != null) {
-        headers.forEach((k, v) => req.headers.set(k, v));
-      }
-      final resp = await req.close();
-      return resp.statusCode == 200;
+      // Only a real, non-empty companion counts — a 0-byte response is not a
+      // usable .mov, and HEAD errors mean "no companion", not "is live".
+      return await fetchBoundedContentLength(movUrl) > 0;
     } catch (_) {
       return false;
-    } finally {
-      client.close();
     }
   })();
 
@@ -262,19 +211,24 @@ bool _isContainerBox(String type) {
 }
 
 /// Detect Samsung HEIC "mpvd" box and return its offset and size.
-Future<(int offset, int size)?> _findMpvdBox(
-  String url, {
-  Map<String, String>? headers,
-}) async {
+Future<(int offset, int size)?> _findMpvdBox(String url) async {
   // HEIC headers rarely exceed 512KB (typically ~100KB).
   const headerLen = 512 * 1024;
-  final fileSize = await _fileSize(url, headers: headers);
+  // A 404 / timeout on the source must fall back to "not a Samsung live
+  // photo", not throw out of isLivePhotoUrl / phaseLivePhoto (the doc contract
+  // is "falls back to false / returns none").
+  final fileSize = await fetchBoundedContentLength(url).catchError((_) => 0);
   if (fileSize < 256) return null;
 
   final len = headerLen < fileSize ? headerLen : fileSize;
   Uint8List data;
   try {
-    data = await _rangeFetch(url, 0, len - 1, headers: headers);
+    data = await fetchBoundedBytes(
+      url,
+      range: 'bytes=0-${len - 1}',
+      maxBytes: len,
+      truncateToMax: true,
+    );
   } catch (_) {
     return null;
   }
@@ -294,18 +248,26 @@ final _isLivePending = <String, Future<bool>>{};
 ///   Android:    512-byte Range GET to peek at XMP markers (1 small request).
 ///   Samsung:    HEIC only, 512-byte check for "mpvd" (1 small request).
 /// Falls back to false — never fetches large payloads.
-Future<bool> isLivePhotoUrl(String url, {Map<String, String>? headers}) async {
+Future<bool> isLivePhotoUrl(String url) async {
   if (_isLiveCache.containsKey(url)) return _isLiveCache[url]!;
   if (_isLivePending.containsKey(url)) return _isLivePending[url]!;
-  final f = _quickCheck(url, headers);
+  final f = _quickCheck(url);
   _isLivePending[url] = f;
-  final r = await f;
-  _isLiveCache[url] = r;
-  _isLivePending.remove(url);
-  return r;
+  try {
+    final r = await f;
+    // Cache every outcome: the grid re-queries each tile on rebuild, so an
+    // un-pinned negative would re-run both probes (a companion HEAD and a
+    // 64 KiB Range GET) on every frame.
+    _isLiveCache[url] = r;
+    return r;
+  } finally {
+    // An exception must not leave a poisoned future in `_isLivePending`:
+    // every later call would reuse that same failed future forever.
+    _isLivePending.remove(url);
+  }
 }
 
-Future<bool> _quickCheck(String url, Map<String, String>? headers) async {
+Future<bool> _quickCheck(String url) async {
   final uri = Uri.parse(url);
   final path = uri.path;
   final dot = path.lastIndexOf('.');
@@ -313,12 +275,12 @@ Future<bool> _quickCheck(String url, Map<String, String>? headers) async {
 
   // ── 1) Apple Live Photo ────────────────────────────────────────
   if (_kAppleExts.contains(ext)) {
-    if (await _hasMovCompanion(url, headers: headers)) return true;
+    if (await _hasMovCompanion(url)) return true;
   }
 
   // ── 2) Samsung HEIC (mpvd box) ────────────────────────────────
   if (ext == 'heic' || ext == 'heif') {
-    final mpvd = await _findMpvdBox(url, headers: headers);
+    final mpvd = await _findMpvdBox(url);
     if (mpvd != null) return true;
   }
 
@@ -329,7 +291,12 @@ Future<bool> _quickCheck(String url, Map<String, String>? headers) async {
   if (ext != 'jpg' && ext != 'jpeg') return false;
 
   try {
-    final head = await _rangeFetch(url, 0, 65535, headers: headers);
+    final head = await fetchBoundedBytes(
+      url,
+      range: 'bytes=0-65535',
+      maxBytes: 65536,
+      truncateToMax: true,
+    );
     if (head.length >= 12 && _hasXmpMarkers(head)) return true;
   } catch (_) {
     return false;
@@ -340,22 +307,22 @@ Future<bool> _quickCheck(String url, Map<String, String>? headers) async {
 
 // ── Phase detection (full metadata) ─────────────────────────────
 
-Future<LivePhotoInfo> phaseLivePhoto(
-  String url, {
-  Map<String, String>? headers,
-}) async {
+Future<LivePhotoInfo> phaseLivePhoto(String url) async {
   if (_resultCache.containsKey(url)) return _resultCache[url]!;
   if (_pending.containsKey(url)) return _pending[url]!;
 
-  final f = _phase(url, headers);
+  final f = _phase(url);
   _pending[url] = f;
   final r = await f;
-  if (r.isLive) _resultCache[url] = r;
+  // Memoise both outcomes so repeated calls (e.g. a grid re-querying the same
+  // URL, or createLiveMedia after an isLivePhotoUrl hit) are idempotent — the
+  // caller gets the same result without re-running the network detection.
+  _resultCache[url] = r;
   _pending.remove(url);
   return r;
 }
 
-Future<LivePhotoInfo> _phase(String url, Map<String, String>? headers) async {
+Future<LivePhotoInfo> _phase(String url) async {
   final uri = Uri.parse(url);
   final path = uri.path;
   final dot = path.lastIndexOf('.');
@@ -363,7 +330,7 @@ Future<LivePhotoInfo> _phase(String url, Map<String, String>? headers) async {
 
   // ── 1) Apple Live Photo ──────────────────────────────────────
   if (_kAppleExts.contains(ext)) {
-    final hasMov = await _hasMovCompanion(url, headers: headers);
+    final hasMov = await _hasMovCompanion(url);
     if (hasMov) {
       final movPath = '${path.substring(0, dot)}.mov';
       final movUrl = uri.replace(path: movPath).toString();
@@ -373,7 +340,7 @@ Future<LivePhotoInfo> _phase(String url, Map<String, String>? headers) async {
 
   // ── 2) Samsung HEIC (mpvd box) ──────────────────────────────
   if (ext == 'heic' || ext == 'heif') {
-    final mpvd = await _findMpvdBox(url, headers: headers);
+    final mpvd = await _findMpvdBox(url);
     if (mpvd != null) {
       final (mpvdOff, mpvdSize) = mpvd;
       // Video data starts after 8-byte box header
@@ -389,12 +356,19 @@ Future<LivePhotoInfo> _phase(String url, Map<String, String>? headers) async {
   // ── 3) Android embedded — XMP-based offset detection (nom-exif approach) ──
   // Matches nom-exif's find_motion_photo_offset(): scan JPEG for XMP APP1,
   // parse GCamera:MicroVideoOffset / GCamera:MotionPhotoOffset / Container:Directory.
-  final fileSize = await _fileSize(url, headers: headers);
+  // A 404 / timeout on the source must fall back to "not a live photo", not
+  // throw — see the same guard in _findMpvdBox.
+  final fileSize = await fetchBoundedContentLength(url).catchError((_) => 0);
   if (fileSize < 1024) return const LivePhotoInfo();
 
   final headerEnd = (64 * 1024).clamp(0, fileSize - 1);
   try {
-    final header = await _rangeFetch(url, 0, headerEnd, headers: headers);
+    final header = await fetchBoundedBytes(
+      url,
+      range: 'bytes=0-$headerEnd',
+      maxBytes: headerEnd + 1,
+      truncateToMax: true,
+    );
     if (_hasXmpMarkers(header)) {
       final headerStr = utf8.decode(header, allowMalformed: true);
       final rawOffset = _parseVideoOffset(headerStr);
@@ -423,16 +397,13 @@ Future<LivePhotoInfo> _phase(String url, Map<String, String>? headers) async {
 /// Apple:          direct .mov URL.
 /// AndroidEmbed:   HTTP Range → Media.memory(videoBytes)
 /// SamsungHeic:    HTTP Range of mpvd payload → Media.memory(videoBytes)
-Future<Media?> createLiveMedia(
-  String url, {
-  Map<String, String>? headers,
-}) async {
-  final info = await phaseLivePhoto(url, headers: headers);
+Future<Media?> createLiveMedia(String url) async {
+  final info = await phaseLivePhoto(url);
   if (!info.isLive) return null;
 
   // Apple: direct .mov URL.
   if (info.type == LivePhotoType.apple && info.movUrl != null) {
-    return Media(info.movUrl!, httpHeaders: headers);
+    return Media(info.movUrl!, httpHeaders: sharedAuthHeader);
   }
 
   // Android Embedded: video appended at end of file.
@@ -440,11 +411,10 @@ Future<Media?> createLiveMedia(
       info.videoOffset > 0 &&
       info.videoOffset < info.fileSize) {
     try {
-      final videoBytes = await _rangeFetch(
+      final videoBytes = await fetchBoundedBytes(
         url,
-        info.videoOffset,
-        info.fileSize - 1,
-        headers: headers,
+        range: 'bytes=${info.videoOffset}-${info.fileSize - 1}',
+        maxBytes: info.fileSize - info.videoOffset,
       );
       if (videoBytes.length < 100) return null;
       // Served from RAM over loopback: Media.memory() would write the
@@ -461,11 +431,11 @@ Future<Media?> createLiveMedia(
       info.videoOffset > 0 &&
       info.mpvdSize > 8) {
     try {
-      final videoBytes = await _rangeFetch(
+      final videoBytes = await fetchBoundedBytes(
         url,
-        info.videoOffset,
-        info.videoOffset + info.mpvdSize - 9,
-        headers: headers,
+        range:
+            'bytes=${info.videoOffset}-${info.videoOffset + info.mpvdSize - 9}',
+        maxBytes: info.mpvdSize - 8,
       );
       if (videoBytes.length < 100) return null;
       // Served from RAM over loopback: Media.memory() would write the
@@ -484,6 +454,8 @@ Future<Media?> createLiveMedia(
 void clearLivePhotoCache() {
   _resultCache.clear();
   _pending.clear();
+  _isLiveCache.clear();
+  _isLivePending.clear();
   _headCache.clear();
   _headPending.clear();
 }

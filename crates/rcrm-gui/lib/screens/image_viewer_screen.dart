@@ -4,20 +4,23 @@
 
 import 'dart:async';
 import 'dart:ui' as ui;
+
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
+
 import 'dart:io' show Platform;
+
 import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../widgets/image_wall_strip.dart';
 
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+
 import '../services/item_cache_limit.dart';
 import '../services/bounded_fetch.dart';
-import '../services/net.dart';
 import '../services/mobile_image_decoder.dart';
 import '../services/animated_detector.dart';
 import '../services/live_photo.dart';
@@ -771,9 +774,8 @@ class _ViewerPageState extends State<_ViewerPage>
   /// decode). Feeds the info sheet and the "1:1" affordance.
   void _watchDecodedSize() {
     if (_sizeListener != null) return;
-    final stream = _FullResImageProvider(
-      widget.item.url,
-    ).resolve(ImageConfiguration.empty);
+    final stream = _FullResImageProvider(widget.item.url)
+        .resolve(ImageConfiguration.empty);
     _sizeStream = stream;
     _sizeListener = ImageStreamListener((info, _) {
       final size = Size(
@@ -934,10 +936,7 @@ class _ViewerPageState extends State<_ViewerPage>
         e != 'heif') {
       return;
     }
-    final animated = await isAnimatedUrl(
-      widget.item.url,
-      headers: sharedAuthHeader,
-    );
+    final animated = await isAnimatedUrl(widget.item.url);
     if (mounted && animated) {
       setState(() => _confirmedAnimated = true);
       widget.onAnimated();
@@ -1031,19 +1030,29 @@ class _ViewerPageState extends State<_ViewerPage>
   bool _liveReady = false;
   StreamSubscription<dynamic>? _liveReadySub;
   StreamSubscription<dynamic>? _liveDurSub;
+  // Bumped on every play request and on every stop. An in-flight `_playLive`
+  // captures it before its network round-trip and abandons the result if the
+  // value changed while it was away — that is what stops a late `createLiveMedia`
+  // response from reopening a video the user already stopped or replaced.
+  int _liveGen = 0;
 
   Future<void> _playLive() async {
     if (!mounted) return;
-    final media = await createLiveMedia(
-      widget.item.url,
-      headers: sharedAuthHeader,
-    );
+    // Capture the generation up front: any `_stopLive` (user tap, auto-stop
+    // timer) or a second play issued during the round-trip invalidates this run.
+    final myGen = ++_liveGen;
+    final media = await createLiveMedia(widget.item.url);
     if (!mounted) {
       // Screen went away while the payload was being registered — drop it
       // instead of leaving it in the proxy until LRU evicts it.
       LiveMediaServer.instance.release(media?.uri);
       return;
     }
+    // A `_stopLive` (user tap / auto-stop timer) or a newer play superseded
+    // this run. The newer flow owns the lifecycle now and may reuse the same
+    // uri, so do NOT release here — releasing could tear down media the live
+    // play is about to open. Just drop our stale result.
+    if (myGen != _liveGen) return;
     if (media == null) return;
     LiveMediaServer.instance.release(_liveMediaUri);
     _liveMediaUri = media.uri;
@@ -1093,6 +1102,7 @@ class _ViewerPageState extends State<_ViewerPage>
   }
 
   void _stopLive() {
+    _liveGen++; // invalidate any in-flight `_playLive` so its late result is dropped
     _liveDoneTimer?.cancel();
     _liveDoneTimer = null;
     _liveReadySub?.cancel();
@@ -1324,10 +1334,7 @@ class _ViewerPageState extends State<_ViewerPage>
         onLongPressStart: isMobile && (_animatable || _couldBeLive)
             ? (_) async {
                 if (_couldBeLive && _mode != _ViewerMode.live) {
-                  final isLive = await isLivePhotoUrl(
-                    widget.item.url,
-                    headers: sharedAuthHeader,
-                  );
+                  final isLive = await isLivePhotoUrl(widget.item.url);
                   if (isLive) {
                     _playLive();
                     return;
@@ -1401,10 +1408,7 @@ class _ViewerPageState extends State<_ViewerPage>
                 bottom: _chipBottom,
                 child: _chromeChip(
                   FutureBuilder<bool>(
-                    future: isLivePhotoUrl(
-                      widget.item.url,
-                      headers: sharedAuthHeader,
-                    ),
+                    future: isLivePhotoUrl(widget.item.url),
                     builder: (_, snap) {
                       if (snap.data != true) return const SizedBox.shrink();
                       return GestureDetector(
@@ -1434,10 +1438,7 @@ class _ViewerPageState extends State<_ViewerPage>
                 bottom: _chipBottom,
                 child: _chromeChip(
                   FutureBuilder<bool>(
-                    future: isLivePhotoUrl(
-                      widget.item.url,
-                      headers: sharedAuthHeader,
-                    ),
+                    future: isLivePhotoUrl(widget.item.url),
                     builder: (_, snap) {
                       if (snap.data != true) return const SizedBox.shrink();
                       return GestureDetector(
@@ -1446,10 +1447,7 @@ class _ViewerPageState extends State<_ViewerPage>
                             _stopLive();
                             return;
                           }
-                          final isLive = await isLivePhotoUrl(
-                            widget.item.url,
-                            headers: sharedAuthHeader,
-                          );
+                          final isLive = await isLivePhotoUrl(widget.item.url);
                           if (!mounted || !isLive) return;
                           _playLive();
                         },

@@ -37,10 +37,25 @@ const Duration kBoundedFetchStall = Duration(seconds: 15);
 const Duration kBoundedFetchDeadline = Duration(seconds: 120);
 
 /// Fetches [url] into a Dart list, with the shared auth header, bounded end to
-/// end. Returns the body bytes of a 200 (possibly empty) and throws otherwise.
+/// end. Returns the body bytes of a 200 (or 206, for a ranged request) and
+/// throws otherwise.
 ///
-/// [stallTimeout] caps the silence between chunks; [totalTimeout] caps the whole
-/// request. A server that refuses or goes quiet raises `HttpException` /
+/// [range] is an optional `Range` header value, e.g. `bytes=0-4095`. The
+/// server is allowed to answer a range that covers the whole file with 200
+/// (not 206), so both 200 and 206 are accepted for ranged requests — the
+/// [maxBytes] cap is what keeps a "small range" call from downloading (and
+/// buffering) a much larger body if a server ignores the range, including the
+/// trailer ranges `live_photo.dart` extracts, where a wrong/oversized body
+/// would otherwise be handed to the player.
+/// [maxBytes] optionally caps the collected body; exceeding it throws instead
+/// of buffering an unbounded response. [truncateToMax] changes that to "keep
+/// exactly the first [maxBytes] bytes" — for a *probe* that only reads a head
+/// (live-photo XMP, animated-format header, HEIC box scan), a server that
+/// ignores Range and answers 200 with the whole file still yields exactly the
+/// bytes a compliant 206 would have returned. Payload extraction must NOT use
+/// it: a truncated trailer would be the wrong bytes, not a smaller truth.
+/// [stallTimeout] caps the silence between chunks; [totalTimeout] caps the
+/// whole request. A server that refuses or goes quiet raises `HttpException` /
 /// `TimeoutException` respectively — never a pending future.
 ///
 /// The body is read by hand rather than with
@@ -51,6 +66,9 @@ const Duration kBoundedFetchDeadline = Duration(seconds: 120);
 /// instead of that one-liner.
 Future<Uint8List> fetchBoundedBytes(
   String url, {
+  String? range,
+  int? maxBytes,
+  bool truncateToMax = false,
   Duration stallTimeout = kBoundedFetchStall,
   Duration totalTimeout = kBoundedFetchDeadline,
 }) async {
@@ -72,12 +90,13 @@ Future<Uint8List> fetchBoundedBytes(
   // `%XX`, so an already encoded URL (the cast proxy's `?path=...`) is safe too.
   final uri = Uri.parse(url);
   final request = await sharedHttpClient.getUrl(uri).timeout(remaining());
+  if (range != null) request.headers.set(HttpHeaders.rangeHeader, range);
   // The map exists but is not guaranteed to carry the key; a missing header must
   // not turn into a null-check throw on the fetch path.
   final token = sharedAuthHeader?['Authorization'];
   if (token != null) request.headers.set('Authorization', token);
   final response = await request.close().timeout(remaining());
-  if (response.statusCode != 200) {
+  if (response.statusCode != 200 && response.statusCode != 206) {
     // Read the body off the socket so the connection can return to the pool
     // instead of being torn down — but only for as long as one stall, because
     // the caller is waiting for this error, not for a body it will discard.
@@ -96,6 +115,49 @@ Future<Uint8List> fetchBoundedBytes(
       throw TimeoutException('body exceeded $totalTimeout fetching $url');
     }
     builder.add(chunk);
+    if (maxBytes != null && builder.length > maxBytes) {
+      if (truncateToMax) {
+        // A head probe only wants a prefix. Returning it (and cancelling the
+        // rest of the stream) is the honest equivalent of a compliant 206,
+        // while never buffering more than the cap.
+        return Uint8List.sublistView(builder.takeBytes(), 0, maxBytes);
+      }
+      throw HttpException(
+        'response exceeded $maxBytes bytes fetching $url',
+        uri: uri,
+      );
+    }
   }
   return builder.takeBytes();
+}
+
+/// The size of [url] in bytes, with the shared auth header, bounded end to
+/// end. Returns 0 when the server does not say.
+///
+/// A HEAD, so the body is never transferred — the size is the only thing the
+/// caller wants.
+Future<int> fetchBoundedContentLength(
+  String url, {
+  Duration stallTimeout = kBoundedFetchStall,
+  Duration totalTimeout = kBoundedFetchDeadline,
+}) async {
+  final deadline = DateTime.now().add(totalTimeout);
+  Duration remaining() {
+    final left = deadline.difference(DateTime.now());
+    return left.isNegative ? Duration.zero : left;
+  }
+
+  final uri = Uri.parse(url);
+  final request = await sharedHttpClient.headUrl(uri).timeout(remaining());
+  final token = sharedAuthHeader?['Authorization'];
+  if (token != null) request.headers.set('Authorization', token);
+  final response = await request.close().timeout(remaining());
+  if (response.statusCode != 200) {
+    final drainBudget = remaining() < stallTimeout ? remaining() : stallTimeout;
+    await response.drain<void>().timeout(drainBudget).catchError((_) {});
+    throw HttpException('HTTP ${response.statusCode} fetching $url', uri: uri);
+  }
+  final raw = response.headers.value('content-length');
+  final n = raw == null ? 0 : (int.tryParse(raw) ?? 0);
+  return n > 0 ? n : 0;
 }

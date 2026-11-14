@@ -13,7 +13,7 @@
 
 import 'dart:typed_data';
 
-import 'net.dart';
+import 'bounded_fetch.dart';
 
 // ── Result type ─────────────────────────────────────────────────
 
@@ -56,31 +56,6 @@ final _animatedPending = <String, Future<bool>>{};
 void clearAnimatedCache() {
   _animatedCache.clear();
   _animatedPending.clear();
-}
-
-// ── HTTP helper ─────────────────────────────────────────────────
-
-Future<Uint8List> _headerFetch(
-  String url,
-  int len, {
-  Map<String, String>? headers,
-}) async {
-  final client = createTrustAwareHttpClient();
-  try {
-    final req = await client.openUrl('GET', Uri.parse(url));
-    req.headers.set('Range', 'bytes=0-${len - 1}');
-    if (headers != null) {
-      headers.forEach((k, v) => req.headers.set(k, v));
-    }
-    final resp = await req.close();
-    final bb = BytesBuilder(copy: false);
-    await for (final chunk in resp) {
-      bb.add(chunk);
-    }
-    return bb.toBytes();
-  } finally {
-    client.close();
-  }
 }
 
 // ── Detection functions ─────────────────────────────────────────
@@ -221,7 +196,7 @@ int _readU32LE(Uint8List b, int i) =>
 ///   AVIF:    ftyp major/compat brand `avis`.
 ///   HEIC:    ftyp major/compat brand `hevc`/`hevs`/`hevm`.
 /// Falls back to false on any error or unsupported format.
-Future<bool> isAnimatedUrl(String url, {Map<String, String>? headers}) async {
+Future<bool> isAnimatedUrl(String url) async {
   // Quick format check — only formats that COULD be animated
   final uri = Uri.parse(url);
   final path = uri.path;
@@ -234,7 +209,7 @@ Future<bool> isAnimatedUrl(String url, {Map<String, String>? headers}) async {
   if (_animatedCache.containsKey(url)) return _animatedCache[url]!;
   if (_animatedPending.containsKey(url)) return _animatedPending[url]!;
 
-  final f = _detectAnimated(url, ext, headers: headers);
+  final f = _detectAnimated(url, ext);
   _animatedPending[url] = f;
   final r = await f;
   _animatedCache[url] = r;
@@ -242,15 +217,16 @@ Future<bool> isAnimatedUrl(String url, {Map<String, String>? headers}) async {
   return r;
 }
 
-Future<bool> _detectAnimated(
-  String url,
-  String ext, {
-  Map<String, String>? headers,
-}) async {
+Future<bool> _detectAnimated(String url, String ext) async {
   try {
     // 4 KB is enough for: ftyp box (~100 bytes), PNG IHDR+acTL (~50 bytes),
     // WebP RIFF header+ANIM (~60 bytes). Generous margin for exotic metadata.
-    final data = await _headerFetch(url, 4096, headers: headers);
+    final data = await fetchBoundedBytes(
+      url,
+      range: 'bytes=0-4095',
+      maxBytes: 4096,
+      truncateToMax: true,
+    );
     if (data.length < 16) return false;
 
     switch (ext) {

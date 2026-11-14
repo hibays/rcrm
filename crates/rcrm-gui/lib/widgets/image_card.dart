@@ -6,7 +6,6 @@ import 'package:material_ui/material_ui.dart';
 import '../models/media_item.dart';
 import '../services/animated_detector.dart';
 import '../services/live_photo.dart';
-import '../services/net.dart';
 import 'pooled_image.dart';
 
 class ImageCard extends StatelessWidget {
@@ -96,7 +95,7 @@ class ImageCard extends StatelessWidget {
                 left: 4,
                 bottom: 4,
                 child: FutureBuilder<bool>(
-                  future: isAnimatedUrl(item.url, headers: sharedAuthHeader),
+                  future: isAnimatedUrl(item.url),
                   builder: (_, snap) => snap.data == true
                       ? const DecoratedBox(
                           decoration: BoxDecoration(
@@ -120,7 +119,7 @@ class ImageCard extends StatelessWidget {
                 left: 4,
                 bottom: 4,
                 child: FutureBuilder<bool>(
-                  future: isLivePhotoUrl(item.url, headers: sharedAuthHeader),
+                  future: isLivePhotoUrl(item.url),
                   builder: (_, snap) => snap.data == true
                       ? const DecoratedBox(
                           decoration: BoxDecoration(
