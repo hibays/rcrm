@@ -616,3 +616,248 @@ Update report:
 	12) 用户反馈（修完空白瓦片后的真机复看）：点击完播卡片第一格（转圈的倒计时瓦片）不是立即播那个视频，而是**重放原片**。定位：`_autoOverlay` 的压暗层是裸 `ColoredBox(color: 0x73000000)`，而 `_RenderColoredBox` 的命中行为是 `HitTestBehavior.opaque`（Flutter 源码 basic.dart:8393）——整块瓦片的点击被压暗层吞掉，瓦片自己的 tap 永远进不了竞技场，点击沿祖先落到画面自己的手势处理器上；播完的文件上 `_togglePlayPause()` 按 mpv 的「播放列表已结束」语义**从 0 重放原片**。探针复现：点环中心 → `picked=null, wrapperTaps=1`（点普通瓦片则 `picked ✓, wrapperTaps=0`）
 	13) 修复：压暗层与圆环是装饰，包进 `IgnorePointer`（只有 `Cancel` 角标保留自己的处理器）；探针复测点环中心 → `picked=深探大健身房.mp4, wrapperTaps=0`。新增回归 1 例「tapping the ring tile plays THAT video」，断言点倒计时瓦片中心拾取的是 offer 本身
 	14) 顺带核对 DESIGN.md「The whole tile is the yes」条目，补上这个 widget 树陷阱的说明（装饰性覆盖层 + 透明 ColoredBox = 点击吞噬）
+
+27. 2026.11.13.3.50.PM.Friday
+	*本批为 Rust 端性能 / IO / 冷启动专项：先修掉未使用依赖告警，再用实测探针定位并修掉 6 处真实瓶颈*
+
+	1) 触发：用户贴出 `cargo build --release` 的唯一告警——`unused dependency 'windows-sys'`（`crates/rcrm-flutter-bridge/Cargo.toml:62`，声明了 `Win32_System_Threading` + `Win32_Foundation`），并要求顺带体检 Rust 端性能、IO 性能、冷启动性能
+	2) 告警根因与处理：全仓库 `.rs` **零处** `windows_sys` 引用（grep 确认），该依赖自第一个提交（7010bc6）起就没被用过 → 直接删除 `[target.'cfg(windows)'.dependencies]` 整段。`windows-sys` 仍作为 `anstyle-wincon` 等的**传递依赖**留在 Cargo.lock 里，不需要动
+	3) 先建测量工具再改代码：新增 `tests/perf_probe.rs`（3 个 `#[ignore]` 探针，不进门禁；`cargo test --release --test perf_probe -- --ignored --nocapture --test-threads=1`），分别测冷启动、字节流、WebDAV 三组；所有数字都是本机 release 实测，不靠估算
+	4) **accept 循环 50 ms 轮询（最大的一处）**：`Server::serve` 把 listener 设成 non-blocking 后 `accept()` 轮询，WouldBlock 就 `sleep(50ms)`。新连接落在两次轮询之间就得等满 50 ms。归因实验：新开连接 50.30 ms vs 同一连接上 keep-alive 再发 0.29 ms → 差额 50.0 ms 正是轮询间隔，与请求处理无关。改为**阻塞 accept**（连接到达即刻返回），另起一个 watchdog 线程在 shutdown 标志翻转时向 listener 连一次把 accept 唤醒（并用独立的 `watchdog_stop` 让 watchdog 随 `serve` 退出而退休，避免线程泄漏；唤醒目标在 0.0.0.0/:: 时改指 127.0.0.1/::1）。**50.30 ms → 0.52 ms**
+	5) **请求头逐字节读**：`read_until_double_crlf` 每次 `stream.read(&mut byte)` 只读 1 字节 → 每个 header 字节一次 `recv`（明文 TCP 下是一次 syscall）。改成 `HttpConn`（连接 + 8 KiB 读缓冲，`read_head` 找 `\r\n\r\n`、`read_body` 取 Content-Length），多读出来的字节留在缓冲里给下一次请求用（`Connection: close` 与 keep-alive 都不丢数据）。4 KiB header 的 keep-alive 延迟 **1.56 ms → 0.24 ms**
+	6) **冷启动跑了两遍 KDF**：`bridge/server.rs` 的 `start()` 在 Step 2（验密码）与 Step 3（起服务）各调一次 `build_manager`，两次都把每个密码重新跑一遍 Argon2id → 白白多花一整轮 KDF。Step 2 建好的 Manager 在 Step 3 原样复用（此时 `ACCEPTED_KEYS` 已并入本轮密码，键集完全相同）
+	7) **Argon2id 没开并行**：`rcrm-core` 的 `argon2` 依赖是 `default-features = false, features = ["alloc"]`，`parallel` 没开 → p=4 的 4 条 lane **单线程**串行算。打开 `parallel` 后 **84.0 ms → 31~36 ms**。rayon 已在 Cargo.lock 里（`heic` / `jxl-threadpool` 引入），**不新增任何包**
+	8) **KDF 参数是磁盘格式的一部分，但必须留出「以后为了安全调参」的路**（本条中途改过一次设计，见第 16 项）
+		① 事实：m=32768 KiB / t=7 / p=4 与 salt 推导都写进了文件头（`key_hash = BLAKE2b(derived_key ‖ file_size ‖ calibration ‖ salt)`），直接改会让全部存量文件解不开
+		② 但**不能**把派生密钥的十六进制钉死当守卫：那只会告诉你「格式变了」，却保护不了真正要保的东西（老文件还能读），而且直接把「以后调高 KDF」这条路堵死
+		③ 改成**多 profile**：新增 `rcrm_core::KdfProfile { m_cost, t_cost, p_cost, output_len }`，带 `V1`（现役）、`CURRENT`（新文件用）、`KNOWN`（读的时候逐个试）。`Manager` 内部每个密码存一个 `KeyRing { current, legacy }`——`current` 是当前 profile 派生的密钥，`legacy` 是旧 profile 派生的密钥。`read_file_header_any_key` 先试 `current` 再依次试 `legacy`，**命中文件头 `key_hash` 的那个就是它**
+		④ **文件头格式一点没变**：profile 不落盘，靠「试已知 profile」还原。将来提 KDF 的正确姿势：老 profile 留在 `KNOWN` 里，`CURRENT` 指向新的，新文件用新的、老文件照读
+		⑤ 代价：每个已知 profile 每个密码多一次 KDF（当前只有 1 个 profile → 仍是 1 次 KDF，冷启动成本不变，实测 37 ms 一致）
+		⑥ `read_file_header_any_key` 的返回类型从 `(FileHeader, u32)` 改成 `(FileHeader, Arc<LockedKey<32>>)`——直接带回**匹配的**那个密钥，`ProjectedFile::open` 不再绕索引反查（索引反查在新模型下会拿到 current profile 的密钥，对老 profile 的文件是错的）
+		⑦ `Manager` 新增两个公开字段 `current_profile` / `profiles`（默认 `KdfProfile::CURRENT` / `KNOWN`），供测试构造「升级后」的形态
+		⑧ **profile 要短路**：读文件头时**profile 在外、key 在内** —— 先拿当前 profile 试遍所有 key，一个都不中才轮到旧 profile。反过来（key 在外）的话，第一个 key 的旧 profile 尝试会排在后面 key 的当前 profile 尝试前面，而当前 profile 才是绝大多数文件的情况
+		⑨ `KeyRing` 改成按 profile 存（`by_profile: Vec<(KdfProfile, Arc<LockedKey>)>`）而不是把「当前」烤死进结构体：原来的 `current`/`legacy` 是在**注册时**定下的，之后再改 `current_profile` 就会拿错密钥去加密新文件；现在按 profile 查，改了也不会错位
+	9) **目录扫描每条目 3 次 stat**：`resolve_ne_path_from_dir*` 对每个路径先 `is_file()` 再 `is_dir()`，`is_supported_file` 内部还有第三次 `is_dir()`。改用 `DirEntry::file_type()`（Linux 直接用 readdir 带回的 `d_type`，Windows 一次 `GetFileAttributesEx`），并拆出 `is_supported_file_name` 免掉多余的 `is_dir()` 探测。**2000 文件：114.4 ms → 1.5 ms**（热缓存取 3 次最小值，规避首轮冷缓存偏差）。Windows 上差距尤其大，因为 `Path::is_file()` 走 `fs::metadata` 要**打开文件句柄**再查属性
+	10) **每请求的 metadata 探测**：`resolve_resource` 原本 `is_dir()` + `is_file()` + `fs::metadata()`（长度）+ `fs::metadata()`（mtime）共 4 次；`handle_propfind` 又 `is_dir()` + `exists()` 两次；FTP 的 `cmd_list` 同样两次。改为一次 `fs::metadata` 拿到长度与 mtime 并在各处复用（`Resolved` 改带 `meta` 字段）
+	11) **`Manager::add_key` 的 `panic!` 是设计契约，本批保留**（中途一度被改掉，已按设计改回）
+		① 契约内容：索引（crc32 of password）**就是密钥的身份**，`Manager` 用 `HashMap<u32, Arc<LockedKey<32>>>` 存密钥，同一索引注册两次 = 调用方弄丢了自己已经交过哪些密钥 → **必须炸**。而且「静默忽略第二次注册」对用户来说等价于「密码不管用」，是比崩溃更糟的失败模式
+		② 真正的 bug 不在 core，在**调用方**：桥接层的多密码流程把 `ACCEPTED_KEYS`（已接受的）与用户刚输的密码拼在一起，用户「再输一次刚才那个密码」就会注册同一索引两次 → panic 打死启动线程 → `START_STATUS` 停在 1 → Dart 侧永远轮询「starting」，而 `stop()`（跑在 Flutter UI 线程上）会**无限等待**。修法是**修调用方，不是削弱 core**
+		③ 把「索引即身份」这条规则提升成 core 的公开 API，调用方无法与 core 漂移：`rcrm_core::key_index(password) -> u32`（索引推导的唯一出处，`add_key` 也改用它）+ `Manager::has_key_index(idx) -> bool`。`has_key_index` 同时是 core 内部**唯一**回答「这个密钥注册过没有」的地方——`add_key` 的重复检查与 `use_key` 的存在性检查都走它，不再各自碰 `self.keys.contains_key`，membership 规则只有一处
+		④ 桥接层 `build_manager` 按索引去重（`ACCEPTED_KEYS ∪ 新输的密码` —— 这里的重复是**框架拼出来的**，不是用户输入，去重是「调用方没弄丢自己交过哪些密钥」）；**CLI 不做预检查**：用户重复输入同一个口令就是让 core 的 `panic!` 直接炸（见第 30 条第 3 项）
+		⑤ core 里只做了一处**不改变契约**的调整：panic 检查挪到 Argon2id 派生**之前**（原实现先派生再 panic，白白烧掉一整轮 KDF）。panic 的触发条件与消息 `Index ({}) of key exists!` 完全不变
+		⑥ 两个 crc32 碰撞（不同密码撞同一索引，~2^-32）现在按索引去重会丢掉第二个 → 它的文件仍锁着 → GUI 会再要一个密码 → 用户换个密码即可，**可恢复**，不会卡死
+		⑦ 启动线程仍整体套 `catch_unwind`：万一还有别的 panic 落到这里，落成 `-1`（error）而不是让状态永远停在「starting」；错误信息现在带上 panic 原文（唯一 realistically 能到这里的 panic 就是 `Index (...) of key exists!`）；`stop()` 的等待加了 10 s 上限，UI 线程不会被卡死
+	12) 顺带：accepted socket 加 `TCP_NODELAY`（FTP 数据连接本来就有，控制连接与 WebDAV 没有）；响应头与响应体分两次 `write_all`，有 Nagle 时第二次写要等前一次的 ACK
+	13) **未改的（查过，判定不动）**：`chacha20` 的 `StreamCipherSeek` 是 O(1)（只改 block counter + 丢一个 block），不存在「按 offset 重算密钥流」的问题；全加密文件的 1.79 GB/s 是 ChaCha20 单核吞吐的正常值（partial 模式 5.04 GB/s，因为只有头 2 KiB 走加密）；WebDAV 整文件 GET 的 280 MiB/s 是 **Windows loopback TCP 的天花板**（把传输块从 64 KiB 换到 256 KiB 无变化，投影读取本身有 4.8 GB/s，所以瓶颈在 socket 不在加解密），远高于 4K 码流所需；`ProjectedFile::open` 的 64 KiB `BufReader` 每次开文件分配一次，是瞬时的，不改
+	14) 测试与门禁：`tests/kdf_compat.rs` 8 例 + 1 个 fixture 生成器（`#[ignore]`）：
+		① **格式 fixture**（`tests/testdata/kdf_v1.bin`，164 字节，一个由旧版本用 V1 profile 加密的真实文件）——它必须永远能解开，且解出的明文（含一个多字节字符）、原始文件名、虚拟大小都要一致。这才是「存量库还能读」的真正守卫
+		② **迁移能力**：老 profile 写的文件，在新 profile 成为 current 之后仍能读；新 profile 写的文件，在老 profile 仍是 current 时也能读（两个方向都测）
+		③ **安全下限**：current profile 的 m_cost ≥ 32768 KiB、t_cost ≥ 7、p_cost ≥ 1、output_len == 32——**调高随便调，调低算事故**
+		④ `KNOWN` 必须包含 `CURRENT`；派生必须确定（同密码两个 Manager 派生结果一致）；不同密码不得碰撞
+		⑤ **重复注册同一密钥必须 panic**（`#[should_panic]`）+ 索引即身份（`has_key_index(key_index(pw))`）
+		⑥ 负向验证过这个 fixture 真的能挡住破坏：故意把 salt 推导的 `^` 改成 `+` → fixture 用例立刻红，其余用例仍绿（它们只测自洽性）——说明它测的确实是「格式」而不是「当前实现的哈希」
+		⑦ 其余：`tests/perf_probe.rs` 3 例（全部 `#[ignore]`，不进常规门禁）；`tests/perf_probe.rs` 3 例（全部 `#[ignore]`，不进常规门禁）；`cargo build --locked` 通过；`cargo test -- --skip compare_` 全绿；`cargo build --release --workspace` **零告警**（原 `windows-sys` 告警消失）；改动文件过 `rustfmt`（`src/main.rs` 顺带被 rustfmt 修正了 4 行既有排版）；WebDAV 集成 10 例全绿
+	15) **KDF 守卫的设计改过一次**（用户指出「以后可能会为了增加安全性更改 KDF 参数」）：第一版把派生密钥的十六进制钉死当守卫 —— 那实际上把「调高 KDF」的路堵死了，而且它保护的不是真正要保的东西。改成现在这套：多 profile 机制 + 格式 fixture。派生值的 pin 已全部删除
+	16) **KDF 耗时在这台机器上飘**：同一份代码背靠背测，Argon2id 单次派生在 37~70 ms 之间波动（第一次还要付 rayon 线程池的启动代价），机器负载高时明显变慢。比数字只能在同一次会话内背靠背比，别拿隔天的数直接对比
+	17) 未验证：未在 Android/iOS 真机上跑过（Android 交叉编译通过即可，但真机性能未测）；rayon 全局线程池在移动端会按 `num_cpus` 起线程，低端机的内存占用未实测；FTP 的实测延迟未单独量化（本批只按同样的「一次 metadata 探测」原则改了 `cmd_list`）；未跑 `flutter analyze` / `flutter test`（本批没动任何 Dart 代码）；`KNOWN` 超过 2 个 profile 时的启动成本没量过
+
+28. 2026.11.13.7.45.PM.Friday
+	*本批为安全审查后的修复批次：先审出 1 个 Critical（自己复现），再按严重度逐条修*
+
+	1) **Critical：Windows 上可读取挂载点之外的任意文件（路径穿越）** —— 本批最重要的修复
+		① 复现（临时探针，实测后删除）：`GET /..\outside\secret.txt` 与 `GET /..%5Coutside%5Csecret.txt` **都读到了根目录外的文件**；纯 `..` 的防护是有效的
+		② 根因：虚拟路径只按 `/` 切段，含 `\` 的整段被当成普通段 `disk.push(seg)`，**Windows 在 open 时才解析里面的 `..`**（实测 `C:\root\..\outside\secret.txt` 逃出 root）；`:` 驱动器前缀更狠——`PathBuf::push("C:")` 会**整体替换**路径，mount root 直接被丢弃。实测三种逃逸向量：`..\`、`..\.`、`C:`
+		③ 修法：新增 `segment_is_safe()` + `append_segments()`，段里带 `\` 或 `:` 一律拒绝（`..` 仍走原有的「不弹到 root 之外」逻辑），单根 / 多根 / `_in_cwd` 三处解析统一走它
+		④ 顺带：路径解析失败不再掐断连接。FTP 的 `CWD/LIST/MLSD/RETR/SIZE/MDTM` 改为回 550，WebDAV 改为回 404
+		⑤ 回归测试：`ftp_path_traversal_with_windows_separators_contained`（4 个向量 + RETR + 正向对照）、`webdav_path_traversal_with_windows_separators_contained`（7 个向量 + 正向对照）。**负向验证过**：去掉守卫后两个测试都变红（WebDAV 报 "leaked a file outside the root"，FTP 报 "SIZE ..\secret.txt should be refused, got 213 18"）
+	2) **High：FTP 明文口令进日志** —— `log_info!("CMD {} {}", verb, arg)` 把 `PASS <口令>` 原样打印，而默认日志级别就是 info。改为脱敏（`redact_arg()`，`PASS`/`ACCT` → `***`），并加单测钉住
+	3) **High：WebDAV 请求体无上限且在鉴权之前** —— `Content-Length` 直接 `vec![0u8; cl]`，声明 4 GB 即可未授权打爆内存。改为上限 1 MiB，超出回 413 并断连（请求体本来就没被使用）
+	4) **High：FTP 控制行无上限** —— 客户端不发 `\n` 即可单连接灌到 OOM（WebDAV 侧有 64 KiB 头上限，FTP 侧没有）。加 8 KiB 行长上限
+	5) **Medium：`require_tls` 是死配置** —— 没有任何参数能置 true，WebDAV 代码也从不读它；即使打开，FTP 也只有 `cmd_retr` 检查，明文外泄的仍包括**解密后的原文件名**。现在：WebDAV 明文请求一律 403；FTP 的 `PASS` 回 534（且检查前置到匿名分支之前）、`LIST/MLSD/RETR/SIZE/MDTM` 回 530；CLI 新增 `--require-tls`
+	6) **Medium：投影文件的 Content-Type 用错路径** —— 用的是磁盘名（`.<b72>`，无扩展名）→ 全部退化成 `application/octet-stream`，而 PROPFIND 用的是虚拟名 → 同一个文件两处报告的类型不一致，按 MIME 选解封装器的客户端会失败。改用虚拟名推导
+	7) **Medium：accept 循环里线程创建失败会终止整个服务器** —— `spawn()?` 直接把错误抛出去，服务整体退出，且 `active` 计数泄漏。改为拒绝该连接、继续 accept
+	8) **Medium：空口令能登录** —— `AuthConfig::with_credentials` 收到空口令时记成有效哈希，`Basic base64("user:")` 即通过。改为空口令 → `pass_hash: None`（fail-closed，所有校验一律失败），CLI 侧直接报错说明原因
+	9) **Medium：一次偶发 I/O 错误让文件整个进程生命周期不可读** —— `OnceLock` 把 head 初始化的 `Err` 也缓存了。改为**只缓存成功**，失败可重试
+	10) **Low：FTP 的 `REST`/`ABOR` 未鉴权** —— 补 `authed` 检查
+	11) **Low：解码后的 URL 里的控制字符可以伪造日志行** —— `%0A` 会还原成换行。日志输出前过滤控制字符
+	12) **查过但判定不动**：`read_at_with` 每 64 KiB 一次冗余 `lseek` + 一次 `ChaCha20` 重建 —— 实测读路径 1.55 GB/s（全加密）/ 4.57 GB/s（partial），而 WebDAV 整文件 GET 只有 203 MiB/s（socket 是瓶颈），**读路径有 7~20 倍余量**，这项优化只占读路径约 5%、端到端完全看不见；为它重构热路径的风险大于收益，不做
+	13) 门禁：`cargo build --locked` 通过；`cargo test -- --skip compare_` 全绿（10 个测试目标，新增 4 个安全回归测试 + 1 个脱敏单测）；`cargo build --release --workspace` 零告警；改动文件过 `rustfmt`
+	14) 未验证：未在 Android/iOS 真机上跑过（交叉编译通过）；`--require-tls` 的 FTPS 升级路径（`AUTH TLS` 后再 `PASS`）未做端到端测试；口令哈希仍是无盐 BLAKE2s（GUI 侧口令是随机的，爆破成本已高；CLI 侧用户自选口令仍偏弱，未改）
+
+29. 2026.11.13.8.35.PM.Friday
+	*本批撤销第 27 条引入的 KDF 多 profile 兼容机制——用户明确「KDF 的更新可以是 breaking change，不用考虑兼容性」*
+
+	1) **撤销理由**：第 27 条为了「以后调高 KDF 时老文件还能读」，引入了 `KdfProfile`（V1/CURRENT/KNOWN）+ `KeyRing`（按 profile 存密钥）+ `Manager.current_profile/profiles` + `ordered_profiles()` + 读路径的 profile 外层循环，约 300 行。既然 KDF 变更允许是 breaking，这套机制的唯一存在理由就没了
+	2) 现在的形态回到最简：`derive_key` 里三个常量 `KDF_M_COST=32768` / `KDF_T_COST=7` / `KDF_P_COST=4`（`pub`，供测试断言），`Manager.keys` 回到 `HashMap<u32, Arc<LockedKey<32>>>`，`read_file_header_any_key` 回到返回匹配索引
+	3) **保留的三样东西**（都不为兼容性服务）：
+		① `key_index()` + `has_key_index()` —— 索引就是密钥的身份，重复注册必须 panic（core 的设计契约）
+		② **KDF 安全下限**测试：`KDF_M_COST ≥ 32768` / `KDF_T_COST ≥ 7` —— 调高随便调，**调低算事故**（防止手滑把 KDF 削弱了）
+		③ **格式金丝雀** `tests/testdata/kdf_v1.bin`：一个由旧版本加密的真实文件。它解不开 = 格式变了 = 现有库全部需要重加密。这是**探测**而非**兼容**：KDF 真要改时按文档流程重新生成 fixture 即可
+	4) 测试文件改名 `tests/kdf_compat.rs` → `tests/kdf_guard.rs`（原名说的是「兼容」，现在说的是「守卫」），用例从 8 减到 6（删掉 profile 专属的三个：安全下限挪到常量断言、KNOWN 包含 CURRENT、旧 profile 文件可读）
+	5) 门禁：`cargo build --locked` 通过；`cargo test -- --skip compare_` 全绿（10 个测试目标）；`cargo build --release --workspace` 零告警；`cargo fmt --all --check` 0 差异
+	6) 顺带记一笔：**口令哈希**（HTTP Basic / FTP 登录用的那个，与文件加密密钥是两回事）现在仍是无盐 BLAKE2s-256 + 非常量时间比较——未改，见第 28 条第 14 项
+
+30. 2026.11.13.9.55.PM.Friday
+	*本批是「重复/冲突/性能」审查后的修复批次。审查清单里 9 条被我自己的实测否掉 7 条（见第 4 项），只留下 2 条真问题并修掉*
+
+	1) **R1：Live Photo / 动画检测各手抄了一份 fetch，抄的时候把保护丢了** —— 项目自己在文件头写明了标准（`net.dart`：「One shared HttpClient for all Dart-side fetches … keep-alive lets connections be reused」；`bounded_fetch.dart`：body 必须有 deadline，否则「服务器收下请求然后沉默 → future 永远 pending」），但 `live_photo.dart`（3 处）与 `animated_detector.dart`（1 处）各抄了一份旧的写法：每次请求新建一个 `HttpClient`、`grep timeout` 零命中
+		① `bounded_fetch.dart` 增加 `range` 参数（支持 `bytes=a-b`，并接受 206）与 `fetchBoundedContentLength()`（HEAD 取 content-length）
+		② `live_photo.dart` / `animated_detector.dart` 删掉手抄的 `_rangeFetch` / `_fileSize` / `_headerFetch`，改用 `bounded_fetch` → 共享 client、共享连接池、共享鉴权头、body 级 deadline 全部自动继承
+		③ 顺带去掉 `headers` 参数：所有调用点传的都是同一个全局 `sharedAuthHeader`，而 `bounded_fetch` 用的就是它 —— 纯重复。`isAnimatedUrl` / `isLivePhotoUrl` / `phaseLivePhoto` / `createLiveMedia` 的签名因此简化，7 处调用点同步更新
+		④ 净效果：这三个文件 **-130 行 / +71 行**
+	2) **R2：「当前使用的密钥」被当成注册密钥存进了 map** —— `use_key()` 把 `Arc::clone(&self.keys[idx])` 塞进 `keys[MAGIC_KEY_USING = 0]`，于是同一个密钥在 map 里出现两次（实测 `key_entries: 2`，一个口令就 2 个条目）
+		① 后果：`list_key_idxs()` 对一个口令返回 2 个索引（0 是假的，API 在说谎）；`read_file_header_any_key` 每个文件头把同一密钥验证两遍；口令的 crc32 索引若为 0 会与 magic 索引撞位 → 真密钥被覆盖 → 那个口令的文件静默打不开
+		② 改法：新增 `Manager.using_idx: Option<u32>` 记录「当前选用哪个」，`keys` 里只留真密钥。`use_key()` 变成「选中」而不是「复制一份」；`use_provided_key()`（无任何调用点，且语义是「注册一个不在索引里的密钥」）删除；`MAGIC_KEY_USING` 常量删除
+		③ CLI 侧 `if idx == Manager::MAGIC_KEY_USING { continue; }` 一并删除 —— 它本来会**跳过 crc32 恰好为 0 的真实密钥**
+		④ 回归测试 `the_registry_holds_only_real_keys`（一个口令 → 索引表只有 1 条；`using_idx` 指向真实索引；再注册一个口令 → 2 条；切换选中不增加条目）
+	3) **补 R2 漏掉的一半：「正在使用的 key 被删掉」怎么办**（用户提出）
+		① 之前 `drop_key()` 只从 map 里删，不动 `using_idx` → 删掉正在用的那个之后，`using_idx` 指向一个不存在的索引，manager 声称自己有一个当前密钥、其实没有
+		② 现在 `drop_key()` 在删掉被选中的那个时**同时清空选中**（`using_idx = None`），不变量「`using_idx` 要么为空、要么指向 `keys` 里真实存在的密钥」始终成立
+		③ **「没有选中的密钥」是一个合法状态，不该用 panic 表达**：`get_using_key()` / `using_key()` 改成返回 `io::Result`，无选中时给出 `no key is currently selected`。原来 panic 的 `No current key` 既会在服务线程里炸掉连接，也把「本来就没选」和「选错了」混为一谈
+		④ 顺带把 `drop_all_keys()` 的语义保住：CLI 在 crypt 结束后用它擦掉内存里的派生密钥 —— 若改成「选中时拒绝删」，这个擦除动作反而做不干净
+		⑤ 回归测试 `dropping_the_selected_key_clears_the_selection`：删掉选中的 → `using_idx == None`、注册表里也没有了、`using_key()` 返回 Err 而非 panic；删掉**没被选中**的那个 → 选中不变、`using_key()` 仍然可用
+		⑥ 写测试时才发现 `use_added_key()` 会**切换**选中（它本来就是「注册并使用」），所以「删掉另一个 key 不影响选中」这条必须先切回第一个 key 再删 —— 这条语义现在有测试钉住了
+	3) **CLI 不预检查重复口令 —— 让 core 的 panic 直接炸**（用户明确要求）
+		① 我先前在 CLI 的两处 `use_added_key` 之前加了 `has_key_index(key_index(pwd))` 预检查，把重复口令变成「这个密码已经试过了，换一个?」然后回到提示符 —— 这等于把 core「重复注册必须炸」的契约在调用侧悄悄废掉了
+		② 已撤回：`run_crypt` 的重试循环与 `verify_encryption_passwords` 的补充密码，两处都恢复成直接 `use_added_key` → 重复口令由 `Manager::add_key` 的 `panic!("Index ({}) of key exists!")` 直接炸掉（这本来就是本项目既有的行为）
+		③ 桥接层的去重**保留**：那里的重复是框架把 `ACCEPTED_KEYS` 和新输的密码拼在一起造成的，属于「调用方弄丢了自己交过哪些密钥」，去重才是修调用方而不是削弱 core
+		④ 顺带把 `main.rs` 里一处与本批无关的 rustfmt 重排（一个 `&&` 链）也还原了，diff 里只留真改动
+	4) 门禁：Rust `cargo build --locked` 通过、`cargo test -- --skip compare_` 全绿（10 个测试目标）、`cargo build --release --workspace` 零告警；Dart `flutter analyze lib` **No issues found**、`flutter test` **774 例全绿**；Android arm64（含 mobile-decode）交叉编译通过
+	4) **审查中被实测否掉的 7 条**（我第一版清单里的，保留记录以免再犯）：① crc32==0 撞位 —— 2^-32，且重复验证的开销实测在噪声以下（同样 200 个头，重复跑 11.6~22.5 ms 飘），拿噪声当性能问题是错的 ② WebDavClient 绕过连接数上限 —— `_scanRecursive` 里 `await` 在循环中，扫描是**串行**的，并发 PROPFIND 恒为 1~2，碰不到服务端 32/50 的上限 ③ FileCache 锁中毒 —— 临界区里只有 HashMap 操作，没有能 panic 的代码；HashMap 的 OOM 是 abort 不是 unwind ④ FileCache 陈旧 —— `cryptFolderOp` 全项目**没有任何调用点**，GUI 不会在服务器运行时改盘 ⑤ `_headCache`/`_headPending` 无上限 —— 换库时 `clear()`，上限就是库大小 ⑥ `CertTrust.lastRejected` 全局单槽 —— 两张被拒证书都来自同一个服务器，钉错哪张都还是它 ⑦ 未命中全量扫父目录的 O(N²) —— 实测 300 文件目录，一次未命中 0.89 ms vs 命中 0.45 ms，多出的只是一次 `read_dir` + 300 次 map 查找（`virtual_name()` 只取已存的 `&str`，不重新解密），300 张照片总共多 132 ms，看不出来
+
+31. 2026-11-13.11.45.PM.Friday
+	*本批把 `--require-tls` 这个开关去掉，改用 FTP 协议原生的机制表达「必须加密」。协议细节按 RFC 4217 核对过*
+
+	1) **先查协议（RFC 4217）**，几条结论：
+		① `AUTH TLS` 只保护**控制连接**；**数据连接**的保护级别由 `PBSZ` + `PROT` 单独协商（§8：To protect the data channel as well, the PBSZ command, followed by the PROT command sequence, MUST be used）
+		② 保护级别只有两个在用：`P`（Private，数据连接单独做 TLS 握手）与 `C`（Clear，数据连接不加密）；`S`/`E` 在 RFC 4217 里明确不用
+		③ **数据连接的初始保护级别是 Clear**（§9：The initial state of the data connection MUST be 'Clear'）
+		④ 服务器有权要求数据必须加密（§10.2 第 3 条策略：Insist on data protection）；级别不合适时 §9 给的响应码是 **521**（data connection cannot be opened with this PROT setting），§11.4 描述的 **522** 用于「当前保护级别不足以完成这次传输」
+		⑤ `PROT` **必须**在 `PBSZ` 之后（§9：the PROT command MUST be preceded by a PBSZ command），且 FTPS 的 `PBSZ` 参数**必须是 0**（流式，无缓冲）
+		⑥ 服务器可以「拒绝某些命令直到会话达到它能接受的安全级别」来实现自己的策略（§4.2）—— 这就是本次用来替代开关的机制
+		⑦ RFC 4217 **没有定义隐式 FTPS**，也没有规定隐式 FTPS 必须拒绝 `PROT C`（那是服务器自己的策略）
+	2) **去掉 `--require-tls`**（CLI flag + `ServerContext.require_tls` 字段 + WebDAV 的 403 检查 + 桥接层 + 4 个测试/示例里的引用）。理由：
+		① 它和 `--ftps/--ftpes/--https` 表达同一件事（这台服务器能不能加密），两条路说同一件事
+		② 单独用（不带任何 TLS flag）会产出**死服务器**：plain HTTP 无升级机制 → 一切 403；plain FTP 没有 tls_config → 客户端连 `AUTH TLS` 都做不到 → 永远 530/534
+		③ 协议本身就有表达这个策略的原生机制（RFC 4217 §4.2），不需要第二个开关
+	3) **改用协议原生机制**：
+		① **显式 FTPS（`--ftpes`）**：口令只允许在 TLS 之后送 —— `PASS` 在 AUTH TLS 之前 → **534**。依据 RFC 4217 §4.2「拒绝某些命令直到会话被保护」。判据是「服务器配了 TLS 且不是隐式模式」，从协议推导，不再是独立开关
+		② **`PROT C` 在隐式 FTPS 下 → 521**（原来用 534）。RFC 4217 §9 给的正是这个码：data connection cannot be opened with this PROT setting
+		③ **`PROT` 必须在 `PBSZ` 之后**（显式模式，§9 的 MUST）；**`PBSZ` 参数必须是 0**（§9）
+		④ WebDAV 侧不需要任何开关：`--https` 就是 TLS，`--http` 是用户明确选了明文
+	4) **查代码时发现我之前说错了一条并已修正**：
+		① 我上一轮说「隐式 FTPS 的数据通道默认是明文，除非客户端发 `PROT P`」—— **错**。代码里隐式模式的 `data_tls` 初值就是 `true`（`Stream::Tls(...), true, true, // Implicit FTPS → data connections default to encrypted`），客户端要降级必须显式发 `PROT C`，而那个本来就被拒。所以隐式 FTPS **本来就端到端加密** ✓
+		② 因此「数据通道必须 PROT P（522）」这条检查是**不可达的死代码**，没有加；FEAT 里给隐式模式宣告 `PROT` 反而会引诱客户端去协商一个我们随后拒绝的降级，也没有加
+	5) 新增/更新测试：`explicit_ftps_refuses_a_password_before_tls`（AUTH TLS 之前 PASS → 534）、`explicit_ftps_pbsz_must_be_zero`（PBSZ 1 → 504、PBSZ 0 → 200）、`implicit_ftps_rejects_prot_c`（534 → **521**）；删掉 `ftp_require_tls_refuses_plaintext` 与 `webdav_require_tls_refuses_plaintext`（开关没了）
+	6) 门禁：`cargo build --locked` 通过；`cargo test -- --skip compare_` 全绿（10 个测试目标，ftps_integration 6 例）；`cargo build --release --workspace` 零告警；`cargo fmt --all --check` 0 差异（`main.rs` 里一处仓库既有的 rustfmt 重排被格式化）；Android arm64（含 mobile-decode）交叉编译通过
+	7) **行为变化提醒**：显式 FTPS 现在拒绝在 AUTH TLS 之前送口令。FileZilla / curl / lftp 都是先发 `AUTH TLS` 再发 USER/PASS（RFC 4217 §12.1 的时序图就是这个顺序），不受影响；但「先 USER/PASS 再 AUTH TLS」的老客户端会收到 534
+
+32. 2026-11-14.0.05.SAT.Saturday
+	*本批按各家 RFC 把协议逐条核了一遍，核出两个真问题并修掉*
+
+	1) **先更正我上一轮的引用错误**：我以为 **RFC 7151**（2023）是更新 FTPS 的那份 —— **错了**。RFC 7151 的主题是 **`HOST` 命令**（多虚拟主机），元数据只有 `Updates: 959`，**没有**改动 `AUTH`/`PBSZ`/`PROT`/数据连接保护级别。**RFC 4217 仍是 FTPS 的权威规范** ✓（我上轮引它是对的）。RFC 2228（FTP 安全扩展）给出 AUTH 的回复码体系：502 未实现 / 504 不认识机制 / 534 不愿接受 / 431 资源不可用 / 334 需要更多安全数据 / **234 已接受**
+	2) **核出真问题 ①：匿名模式下 `USER` 一条就认证 —— 显式 FTPS 可以全程明文**（我上一轮删掉 `--require-tls` 后留下的漏洞）
+		① `cmd_user` 在匿名模式（`auth.user.is_none()`）直接 `self.authed = true` 并回 230 —— **不需要口令**
+		② 我上一轮只在 `cmd_pass` 上加了 TLS 闸 → 匿名模式下客户端根本不用发 PASS → `USER` → 230 → `PASV`+`RETR` → **解密后的文件名和媒体字节全程明文过网**
+		③ 修法：TLS 闸同时覆盖 `cmd_user`。判据仍是「显式 FTPS」（`tls_config.is_some() && !implicit_tls`），从协议推导
+	3) **核出真问题 ②：`AUTH TLS` 之后没有复位认证状态**
+		① RFC 4217 §4.2：「the FTP protocol insists on a USER command be used … the USER command MUST still be issued by the client」；RFC 2228：接受 AUTH 会复位安全命令引起的状态变化，**服务器必须要求用户重新核准**
+		② 原来的 `cmd_auth` 只换流、置 `use_tls`，`authed`/`username` 原样保留 → 升级前拿到的授权会跨过 TLS 升级继续有效
+		③ 修法：`cmd_auth` 成功后 `authed = false; username = None;` → 客户端必须重新 USER/PASS
+	4) **逐条核对过、确认本来就对的**（记录以免重复查）：
+		- **RFC 2428 EPSV**：回复 `229 Entering Extended Passive Mode (|||port|)` ✓（地址字段留空）
+		- **RFC 3659 MLSD**：事实名 `type=`/`size=`/`modify=` ✓，`modify` 为 14 位 `YYYYMMDDHHMMSS` ✓
+		- **RFC 3659 REST**：`350 Restarting at <offset>` ✓，且 `rest_offset.take()` → **一次性语义** ✓（只用一次）
+		- **RFC 3659 SIZE/MDTM**：`213 <size>` ✓ / `213 YYYYMMDDHHMMSS` ✓
+		- **RFC 2640 UTF8**：FEAT 宣告 `UTF8` 且 `OPTS UTF8` → 200 ✓ 一致
+		- **RFC 2228 CCC/ADAT**：未实现 → 502 ✓（拒绝 CCC 正是显式 FTPS 想要的）
+		- **RFC 7151 HOST**：未实现 → 502 ✓（RFC 允许 500 或 502）
+		- **RFC 9110 HTTP Basic**：401 + `WWW-Authenticate: Basic realm="rcrm"` ✓
+		- **RFC 4918 WebDAV**：PROPFIND → 207 Multi-Status ✓，`<D:multistatus xmlns:D="DAV:">` ✓，`<D:status>` 用已声明的 `D` 前缀（无未声明命名空间）✓
+	5) 新增/更新测试：`explicit_ftps_refuses_credentials_before_tls`（AUTH TLS 之前 USER 与 PASS 都 → 534；升级后 USER → 230）、`explicit_ftps_auth_resets_the_session`（升级后 `SIZE` → 530 未授权，必须重新 USER）；ftps_integration 共 7 例全绿
+	6) 门禁：`cargo build --locked` 通过；`cargo test -- --skip compare_` 全绿（10 个测试目标）；`cargo build --release --workspace` 零告警；`cargo fmt --all --check` 0 差异；Android arm64（含 mobile-decode）交叉编译通过
+
+33. 2026.11.14.0.31.SAT.Saturday
+	*本批是 fetch 整合（第 30 批 R1）之后的健壮性收尾。用户指出整合后的 Dart fetch 仍「不健壮、不幂等」，要求「各方面的健壮性测试」。写测试时又核出一个真问题并修掉*
+
+	1) **真问题：`isLivePhotoUrl` / `phaseLivePhoto` 在源文件 404/超时时会抛出，违背「兜底是 false / 返回 none」的契约** —— 第 30 批把 `_hasMovCompanion` 包了 try，但 Samsung 分支的 `_findMpvdBox` 与 `_phase` 里取源文件大小的那次 `fetchBoundedContentLength(url)` **没有包**，源文件一 404 就一路抛到调用方
+		① 后果：`isLivePhotoUrl` 本该「永远返回 false 兜底」，实际会抛 `HttpException`；`createLiveMedia` 调 `phaseLivePhoto` 时源文件 404 → 崩溃而非返回 null
+		② 修法：这两处 `fetchBoundedContentLength(url)` 改为 `.catchError((_) => 0)` → 0 触发既有的 `< 256`（`_findMpvdBox`）/ `< 1024`（`_phase`）提前返回 none，与「文件太小不是实况/动图」同一条路径汇合。Apple 分支的 `_hasMovCompanion` 本来就已兜底，未动
+		③ `isAnimatedUrl` 本来就在 `_detectAnimated` 里整体 try/catch → false，不受影响，本批新测试把它钉住（见第 3 项）
+	2) **「带 range 必须回 206」这个守卫的回归被显式钉住**（上一轮我加过、被用户否掉的那个）：本服对覆盖整文件的 Range 回的是 200（`RangeSpec::Full`），若再加 206 硬校验，会把小文件的实况/动图检测全打死。本批测试断言「整文件 Range 回 200 仍被接受」，防止该守卫悄悄回来
+	3) **新增 3 个健壮性测试文件，共 17 例**：
+		① `test/bounded_fetch_robustness_test.dart`（10）：206 整段返回、整文件 Range 回 200 仍接受、忽略 Range 且超 maxBytes 抛（不 OOM）、body 恰好等于 maxBytes 被接受、416→异常；`fetchBoundedContentLength` 返回 CL / 用 HEAD 而非 GET / 缺 CL 给 0 不崩 / 404→异常
+		② `test/live_photo_robustness_test.dart`（6）：非空 companion→true（恰好 1 次 HEAD）、companion 404→false、0 字节 companion→false（回归 >0 检查）、`phaseLivePhoto` 缓存（第 2 次零网络）、`isLivePhotoUrl` 与 `phaseLivePhoto` 共享 companion 缓存、非实况结果也缓存（回归「所有结果都记忆」）
+		③ `test/animated_detector_robustness_test.dart`（2）：整文件 200 小 body→isFalse（不挂起/OOM）、404→isFalse（不崩）
+	4) **写测试时顺手修了一个测试桩 bug**（不影响生产）：`url('/x')` 拼出双斜杠 `http://host//x` → `Uri.path == '//x'` → 既破坏服务端路径匹配，又让 `live_photo` 把 companion 推导成 `//x.mov` 而命中不到。修正 `url()` 去掉前导斜杠；并让 `serveCompanion` 按路径路由（源文件恒 200 + 小 body），精确测「companion 缺失但文件在」而非把源文件 404 与 companion 404 混为一谈
+	5) 门禁：`flutter analyze lib test` **No issues found**；新增 17 例全绿；既有 `bounded_fetch_test.dart` / `webdav_head_test.dart` 全绿，无回归（未跑全量 774 例：`TEMP` 已重定向到全新目录规避 `flutter_test_listener.*` 删除竞态，改动只在 fetch/检测层，已被针对性用例 + analyze 覆盖）
+
+34. 2026.11.14.11.23.SAT.Saturday
+	*本批按 RFC 9110 / 9112 逐条核对 WebDAV 的 HEAD 语义，把「HEAD 不得发送 content」下沉为唯一写出规则，并审查所有同类分支*
+
+	1) **先查权威原文**（下载 RFC 纯文本核条文，不凭印象）：
+		① RFC 9110 §9.3.2：「The HEAD method is identical to GET except that the server **MUST NOT** send content in the response」；且 SHOULD 发送与 GET 相同的头字段
+		② RFC 9110 §8.6：HEAD 响应 MAY 带 Content-Length，但 **MUST NOT** 带一个不等于「等价 GET 本应发送的 content 字节数」的值 → 不能图省事把 HEAD 的 CL 写成 0，必须保留完整 body 长度，只抑制字节
+		③ RFC 9112 §6.3 第 1 条：对 HEAD 的响应「is always terminated by the first empty line after the header fields, regardless of the header fields present in the message, and thus cannot contain a message body」→ 服务端写出的 body 对合规客户端不可见，会残留在 keep-alive socket 上，被读成下一个响应的状态行（落在响应拆分 / 请求走私的风险面）
+	2) **触发背景**：上一批 live 图徽标排障实测到，HEAD 一个不存在的 `.mov` 得到 404 + 39B HTML；随后的 Range GET 在共享 keep-alive 连接上读到它 → `Invalid request method` → 徽标判定被吞成 false。当时在 Dart 侧用 `Connection: close` 隔离连接池，本批修上游
+	3) **根因**：`write_response()` 无条件 `stream.write_all(body)`。`handle_get(head_only=true)` 虽在 4 个 RangeSpec 分支正确跳过了 `stream_body`，但 virtual root / `Resolved::NotFound` / `Resolved::Directory` 三处、以及 `not_found()`、401（鉴权在方法分派之前）、413、500 全部绕过 `head_only`
+	4) **修法：单一 choke point + 编译器强制表态**
+		① `write_response()` 增加必需参数 `head_only: bool`；`body` 仍是完整 GET 表示，`Content-Length` 照旧按 `body.len()` 生成（§8.6），只有字节写出被抑制（§9.3.2）。所有 17 个调用点逐一显式传值，漏一个就编译不过（本次编译确实抓出两处缩进不同的分支）
+		② `dispatch()` 统一算 `head_only = req.method.eq_ignore_ascii_case("HEAD")`，覆盖 401 / 403 / 501；`handle_get` 三处、`handle_propfind` 全部传入
+		③ `not_found()` 改为接 `&Request`，自己从 method 推导；两个调用点（handle_get 路径解析失败 / PROPFIND）不再需要各自记规则
+		④ **413 在读请求体阶段失败、此时没有 `Request` 值** → `HttpConn` 新增 `last_method`，在解析出 method 后立即记录，413 用它判定；500 用已解析的 `req.method`
+		⑤ `handle_propfind` 原先 4 处 `write_response_head + write_all + flush` 旁路统一收进 `write_response`，消除「绕过唯一写出点」这类同类缺陷的温床；`handle_get` 的 4 个 RangeSpec 分支保留直写（投影文件可达 GB 级，不能物化成 `Vec`），补注释钉住「头与 GET 完全一致、只跳过 `stream_body`」
+		⑥ OPTIONS 恒无 body，显式传 `false` 并注明原因
+	5) **同类分支逐条核对（记录以免重复查）**：416 分支 CL=0、两方法都无 content ✓；200/206 的 `Content-Length` / `Content-Range` 与 GET 一致 ✓；`read_request` 对带 Content-Length 的 HEAD 请求仍按长度读掉 body（符合 RFC 9112 帧规则）✓；401 / 403 / 501 / 413 / 500 已全部覆盖 ✓；FTP 无 HEAD 方法，无对应面
+	6) **新增 3 例集成测试**（`tests/webdav_integration.rs`，11 → 14）：
+		① `webdav_head_never_sends_content_but_keeps_get_metadata`：4 条 HEAD 可达路径（缺失文件 404 / 路径拒绝 404 / 目录 HTML / 普通文件），逐条断言 HEAD 无 content、状态码与 GET 一致、`Content-Length` 与 GET 一致
+		② `webdav_head_404_does_not_poison_the_next_keep_alive_request`：同一条 TCP 连接先 HEAD 404 再 GET，断言头后第一个字节直接是下一响应的状态行且 GET 正常返回 —— 直接钉住上一批 Dart 侧踩的坑，回退服务端修复即红
+		③ `webdav_head_errors_carry_no_content`：401（分派前）与 413（无 `Request` 值）都无 content、CL 与 GET 一致
+		④ 测试辅助 `http_response_raw` **不按 Content-Length 读 body**（HEAD 合规响应声明了 GET 长度却无 content，按 CL 读会永久阻塞）；`start_webdav_server` 拆出 `start_webdav_server_with_auth` 供 401 用例复用，既有调用点行为不变
+		⑤ **负向验证过守卫真的挡得住回归**：临时去掉 `write_response` 的 `!head_only` 条件（恢复修复前行为）→ 3 个新用例全红，keep-alive 用例直接报 `"<html><body>404 Not Found</body></html>HTTP/1.1 200 OK..."`，`webdav_head_returns_virtual_size` 仍绿（它走的是本来正确的流式分支）；恢复条件后 14 例全绿。说明测的确实是 HEAD 帧规则，不是测试桩自洽
+	7) **Dart 侧 `Connection: close` 保留**：服务端已合规，但第三方 cloud WebDAV 仍可能对 HEAD 写 body，该防御继续隔离连接池；代价只是尺寸探测不复用连接。不回退，以免拆掉已有的回归守卫
+	8) 门禁：`cargo build --locked` 通过；`cargo test -- --skip compare_` 全绿（WebDAV 集成 14 例）；`cargo fmt --all --check` 0 差异；`cargo build --release --workspace` 零告警；`flutter analyze lib test` No issues；`flutter test` 794 例全绿
+	9) 未验证：未在真实第三方 WebDAV（Nextcloud / 群晖等）上验证其 HEAD 行为；HTTPS 下 `Connection: close` 带来的额外 TLS 握手成本未实测；未跑 Android/iOS 真机
+
+35. 2026.11.14.11.48.SAT.Saturday
+	*本批把响应策略收拢为请求级 `Responder`、按 RFC 9110/9112 写表驱动边界测试，并在审查中修掉 3 个真实缺陷*
+
+	1) **抽象重构**：第 34 批把 `head_only` 做成 `write_response()` 的必需参数，17 个调用点各自传布尔、各自手写 `Connection` 头 —— 请求级语义被摊成样板。改为 `Responder<'a>` 值对象：一次从 `&Request` 派生 `head_only` + `close_after` 并持有 `stream`，所有响应经 `respond()` / `respond_stream()` 写出
+		① `write_head()` 是 `Content-Length` 与 `Connection` 的唯一真相源：调用点传来的这两个头一律过滤；CL 恒按 GET 表示的长度生成（§8.6），**空 body 也发 0**（否则 keep-alive 客户端无法定界）
+		② `respond()` 抑制 HEAD 字节；`respond_stream()` 用闭包产出 GB 级投影流且 HEAD 时完全不调用闭包 —— 原先 4 个 `write_response_head + stream_body + flush` 旁路全部收编，`None | Full` 两个等价分支合并
+		③ `dispatch()` 里 GET/HEAD 合并为同一 handler；`not_found()` 不再接 `&Request`；`handle_options()` 从 5 个参数缩到 1 个；`head_only` / `conn_header` 从所有 handler 签名消失
+		④ 413/500 无 `Request` 值时用 `Responder::for_error(stream, method)`，`HttpConn.last_method` 提供 HEAD 判定
+	2) **按规范审出并修掉的 3 个真实缺陷**：
+		① **请求帧定界（RFC 9112 §6.3(3)/(5)）**：原 `read_request` 用 `v.parse::<usize>().ok()` **静默忽略**非法 `Content-Length`，且完全不读 `Transfer-Encoding: chunked` 的请求体 → 未读字节残留在 keep-alive socket 上被解析成下一个请求（请求走私面）。现在 CL 非法 / TE+CL 共存 / TE 非 chunked → `InvalidData` → **400 + close**；TE: chunked → 新增 `read_line()` + `read_chunked_body()` 按 §7.1 解码并丢弃（含 chunk-ext 与 trailer，同受 1 MiB 上限）；"连接中途关闭"从 `InvalidData` 改回 `UnexpectedEof`，避免在已关闭的 socket 上写 400
+		② **认证方案大小写（RFC 9110 §11.6.1）**：`h_strip()` 只认字面量 `Basic ` / `basic `，`BASIC` / `bAsIc` / 多空格全被拒。改为 `split_once(char::is_whitespace)` + `eq_ignore_ascii_case("Basic")`
+		③ **空 body 响应的 Content-Length**：原 `write_response` 仅在 body 非空时补 CL，靠每个调用点自觉显式给 0；现由 `write_head()` 结构性保证
+		④ **Connection token 列表（RFC 9110 §7.6.1）**：`Responder::new` 原用 `eq_ignore_ascii_case("close")` 判整个头值，`keep-alive, close` 会被当成 keep-alive 而多处理一个请求。改为按逗号切分逐 token 判定
+		⑤ **零长度表示的 Range 下溢防护（RFC 9110 §14.2）**：核对 `parse_range_header` 的 `start >= content_length` 与后缀范围 `content_length == 0` 两处提前返回确实先于 `content_length - 1`，补 4 个空文件用例钉住
+	3) **表驱动边界测试**（`tests/webdav_integration.rs` 14 → 24 例，内部约 75 个 case）：
+		① `webdav_range_boundaries_follow_rfc9110`（17 case）：单点 / 开放 / 后缀 / 整文件 Range、end 越界 clamp、start≥size / start>end / `-0` → 416 且 `bytes */N`、非法语法与多段 Range → 忽略并 200 全文件；每例同时断言 `Content-Range`、body 切片与 `Content-Length == body.len()`（§14.2 / §14.4 / §15.3.7 / §8.6）
+		② `webdav_head_matches_get_header_fields`（5 case）：200 / 206 / 416 与 Range 忽略路径下，**整个头集合**与 GET 逐项相同、HEAD 无 content（§9.3.2）
+		③ `webdav_request_framing_errors_are_rejected`（8 case）：非法 CL（`abc` / `-1` / `1, 1` / `1.5` / 空）、TE+CL、TE 非 chunked / chunked 非最终编码 → 400 + `Connection: close`
+		④ `webdav_chunked_and_head_bodies_are_consumed`（2 case）：chunked（含 ext 与 trailer）、HEAD 带 CL body，之后同连接再发 GET 仍须收到完整的第二个响应（§6.3 / §7.1 / §9.3.2）
+		⑤ `webdav_basic_auth_scheme_is_case_insensitive`（7 case）：5 种大小写 / 空格拼写 → 200；Bearer / 错误口令 → 401 且带 `WWW-Authenticate`（§11.6.1）
+		⑥ `webdav_every_response_declares_content_length`（10 case）：GET/HEAD × 文件 / 404 / 目录 / OPTIONS / PROPFIND / PUT / 未知方法，全部声明 CL，非 HEAD 时 CL == body 长度
+		⑦ `webdav_request_body_limit_boundary`：恰好 1 MiB → 200，1 MiB+1 → 413 + close
+		⑧ 新增 `http_pipeline`（一条连接连发多请求）与 `spec_fixture`（统一明文样本）；`http_response_raw` 继续**不按 CL 读 body**，否则合规 HEAD 会让辅助函数永久阻塞
+		⑨ `webdav_connection_token_list_is_parsed`（3 case）：`keep-alive, close` / `CLOSE` / `close, keep-alive` 三种写法后同连接再发一个请求，必须只收到 1 个响应（不依赖超时，避免假阳性）
+		⑩ `webdav_empty_file_ranges_do_not_underflow`（4 case）：0 字节文件上 `bytes=0-` / `-1` / `0-0` / `1-2` 全部 → 416 + `bytes */0`，验证 `content_length - 1` 不下溢
+		⑪ `webdav_chunked_framing_errors_are_rejected`（3 case）：非法 chunk size、缺 CRLF、超大 chunk → 400 / 400 / 413 且关闭连接
+	4) **负向验证（两轮，证明守卫非假阳性）**：
+		① 同时临时回退 `h_strip` 与 chunked 消费 → 19 绿 / **2 红**，chunked 用例直接打印出残留字节被解析成 `HTTP/1.1 400 Bad Request`；恢复后全绿
+		② 临时回退 `Connection` token 解析 → `webdav_connection_token_list_is_parsed` 红（实测 `left: 2, right: 1`，即多处理了一个请求）；恢复后全绿
+	5) 门禁：`cargo fmt --all --check` 0 差异；`cargo build --locked` 通过；`cargo test -- --skip compare_` 全绿（WebDAV 集成 24 例）；`cargo build --release --workspace` 零告警；`flutter analyze lib test` No issues；`flutter test` 794 例全绿（Dart 未改，仍跑全量确认无回归）
+	6) 未验证：未在真实第三方 WebDAV 客户端（curl / FileZilla / WebDAV 挂载）上做互操作验证；chunked 请求体仅按 §7.1 的最小形态（chunk-ext、trailer、1 MiB 上限）测试，未覆盖所有畸形 chunk 语法；未跑 Android/iOS 真机
+
+36. 2026.11.14.12.08.SAT.Saturday
+	*本批清理 Dart 端在服务端 HEAD 修复之前设置的补偿性补丁*
+
+	1) **移除 `fetchBoundedContentLength` 的 `Connection: close`**：第 34 批加它是为绕开服务端「HEAD 404 也写 body」造成的连接池污染（脏字节被紧随的 Range GET 读成状态行）。服务端已在第 34 批按 RFC 9110 §9.3.2 改成 HEAD 不写 content（`Responder` 统一持有该规则），补丁只剩成本：每次尺寸探测都新建连接，HTTPS 下多一次 TLS 握手
+	2) **回退 `isLivePhotoUrl` 的「只缓存 true」**：那是「假阴性可能被永久固化」前提下的取舍。服务端修好后不再需要，恢复「所有结果都记忆」——网格每次 rebuild 重查每个瓦片，未缓存的否结果会重复两次探测（companion HEAD + 64 KiB Range GET）。保留 `try/finally` 清理 `_isLivePending`：异常不得留下 poisoned future
+	3) **回退对应测试**：`bounded_fetch_robustness_test.dart` 的 HEAD 用例恢复为只断言「用 HEAD 而非 GET」；删除 `live_photo_robustness_test.dart` 里字节级 raw socket 用例（它守卫的正是该补丁）。服务端 HEAD 帧行为仍由 `webdav_head_404_does_not_poison_the_next_keep_alive_request` 守卫
+	4) **保留项（不属本类补丁）**：`truncateToMax`（对应「第三方服务器忽略 Range」，与服务端 HEAD 修复无关）、`clearLivePhotoCache()` 补齐清两个徽标缓存、`phaseLivePhoto` 缓存全部结果、`_findMpvdBox`/`_phase` 的 `.catchError` 兜底
+	5) **端到端复验**：真实 `rcrm-server` 挂载该文件副本（临时 example，验证后已删），撤补丁后 `isLivePhotoUrl = true`、`phase = androidEmbedded`（offset 5896902），与修复前一致
+	6) 门禁：`flutter analyze lib test` No issues；针对性 33 例全绿；全量 `flutter test` **793 例**全绿（794 − 1 个被删用例）；Rust 未改
+	7) 已知取舍：第三方 cloud WebDAV 若仍对 HEAD 写 body，复用连接会被污染。该行为不在 rcrm 控制范围内，本轮按「服务端负责合规、客户端不做补偿」的架构处理，未在真实第三方服务器上验证
