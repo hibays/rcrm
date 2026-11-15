@@ -6,14 +6,16 @@
 #   $env:ANDROID_NDK_HOME = "path/to/ndk"
 # Usage:
 #   .\scripts\build_android.ps1 -Release -SplitAbi
-#   .\scripts\build_android.ps1 -MobileDecode   # on by default; kept for symmetry
-#   .\scripts\build_android.ps1 -MPVPoster      # on by default; Rust mpv poster (blank/resize/WebP)
+#   .\scripts\build_android.ps1 -MobileDecode    # on by default; kept for symmetry
+#   .\scripts\build_android.ps1 -MPVPoster       # on by default; Rust screenshot poster encoder
+#   .\scripts\build_android.ps1 -LibMPVPoster    # on by default; libmpv direct posters
 
 param(
     [switch]$Release,
     [switch]$SplitAbi,  # Produce split APKs (smaller)
     [switch]$MobileDecode = $true,  # AVIF/JXL/HEIC software decode
-    [switch]$MPVPoster = $true      # Rust mpv poster: blank test + resize + WebP
+    [switch]$MPVPoster = $true,     # media_kit screenshot -> Rust poster encoder (fallback path)
+    [switch]$LibMPVPoster = $true   # libmpv renders the poster itself (Android's backend)
 )
 
 $ErrorActionPreference = "Stop"
@@ -87,6 +89,7 @@ $cargoArgs = @("build", "-p", "rcrm-flutter-bridge")
 $features = @()
 if ($MobileDecode) { $features += "mobile-decode" }
 if ($MPVPoster) { $features += "mpv-poster" }
+if ($LibMPVPoster) { $features += "libmpv-poster" }
 if ($features.Count -gt 0) {
     $cargoArgs += @("--features", ($features -join ","))
 }

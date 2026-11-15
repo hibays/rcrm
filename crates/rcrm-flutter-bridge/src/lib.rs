@@ -32,8 +32,19 @@ mod decode;
 mod heic;
 #[cfg(feature = "mobile-decode")]
 mod jxl;
-#[cfg(feature = "mpv-poster")]
+// The poster encoders: the media_kit screenshot path (iOS) needs the shared
+// resampler inside `poster`, the libmpv direct path does not. Both share the
+// blank band, the opaque-alpha pass and the WebP encoder, which is why the
+// module is compiled for either feature.
+#[cfg(any(feature = "mpv-poster", feature = "libmpv-poster"))]
 mod poster;
+
+// libmpv, loaded at runtime (every platform except iOS), and the poster job
+// built on it. `libmpv` is the only module that touches libmpv's C API.
+#[cfg(feature = "libmpv-poster")]
+mod libmpv;
+#[cfg(feature = "libmpv-poster")]
+mod libmpv_poster;
 
 mod crypt_ops;
 mod metadata;
@@ -860,7 +871,123 @@ pub unsafe extern "C" fn rcrm_generate_tv_cert() -> *mut c_char {
 }
 
 // =======================
-// WebP encoding — thumbnails (all platforms) + mobile poster encoder
+// Posters rendered by libmpv itself (every platform except iOS)
+// =======================
+
+/// Callback invoked from the spawned poster thread with the encoded poster.
+///
+/// `buffer` is null unless `status` is [`poster_status::OK`]. A non-null buffer
+/// must be freed with `rcrm_free_webp_buf`. `ctx` is passed through verbatim.
+#[cfg(feature = "libmpv-poster")]
+pub type PosterCallback = unsafe extern "C" fn(*mut webp::WebpBuf, i32, *mut std::ffi::c_void);
+
+/// The status codes a [`PosterCallback`] can receive.
+///
+/// The Dart side acts on [`UNAVAILABLE`]: it means this build has no usable
+/// libmpv, so the media_kit backend should produce the poster instead.
+#[cfg(feature = "libmpv-poster")]
+pub mod poster_status {
+	/// A poster was encoded; the buffer is non-null.
+	pub const OK: i32 = 0;
+	/// libmpv ran, but no candidate position produced a usable frame. Another
+	/// file may well work, so the caller should not change backends.
+	pub const NO_FRAME: i32 = 1;
+	/// This process has no usable libmpv: no shared library, a missing symbol,
+	/// or a client API older than the software renderer.
+	pub const UNAVAILABLE: i32 = 2;
+}
+
+/// Render a video poster with the system libmpv, asynchronously.
+///
+/// The poster is produced entirely inside Rust: libmpv seeks and renders into
+/// native memory, the blank test and the WebP encode read that same buffer, and
+/// only the finished bytes are handed back — no pixels pass through Dart. The
+/// blocking work runs on a spawned thread and answers through `callback`.
+///
+/// `url`, `headers` and `positions` are borrowed and copied immediately, so
+/// Dart may free them once this returns. `headers` is a CRLF-separated header
+/// block (empty for none) — the same shape the app's HTTP fetches use.
+/// `positions` is a comma-separated list of candidate timestamps in seconds,
+/// most promising first (the Dart side's `posterSeekPlan`). `target_width` is a
+/// maximum; a smaller video keeps its own size.
+///
+/// # Safety
+/// `url`, `headers` and `positions` must be null or point to nul-terminated
+/// UTF-8 strings. `callback` may be null (nothing is reported and nothing is
+/// rendered). `ctx` is passed through to the callback verbatim and must stay
+/// valid for its duration (it is an opaque integer id).
+#[cfg(feature = "libmpv-poster")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcrm_generate_poster_async(
+	url: *const c_char,
+	headers: *const c_char,
+	positions: *const c_char,
+	target_width: u32,
+	quality: u8,
+	callback: Option<PosterCallback>,
+	ctx: *mut std::ffi::c_void,
+) {
+	// Copied before any thread is spawned: the caller keeps ownership of its
+	// buffers and may free them as soon as this returns.
+	let url = unsafe { cstr_to_str(url) }.to_string();
+	let headers = unsafe { cstr_to_str(headers) }.to_string();
+	let candidates = unsafe { cstr_to_str(positions) };
+	let Ok(candidates) = libmpv_poster::parse_positions(candidates) else {
+		// Nothing to render and nothing to wait for: answer on this thread.
+		if let Some(callback) = callback {
+			unsafe { callback(std::ptr::null_mut(), poster_status::NO_FRAME, ctx) };
+		}
+		return;
+	};
+	let Some(callback) = callback else {
+		// Without a callback there is nobody to answer, so do not spend a
+		// thread decoding a frame nobody asked to hear about.
+		return;
+	};
+	let ctx_raw = ctx as usize;
+	let spawned = std::thread::Builder::new().spawn(move || {
+		// A panic on hostile media must not unwind out of this closure: it
+		// would kill the thread before the callback and leave the Dart future
+		// pending until its timeout. The Dart side answers null on a timeout,
+		// but a poster is never worth aborting the process either.
+		let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			libmpv_poster::generate(&url, &headers, &candidates, target_width, quality)
+		}));
+		let (buffer, status) = match outcome {
+			Ok(Ok(libmpv_poster::PosterFrame::Encoded(buffer))) => {
+				(Box::into_raw(buffer), poster_status::OK)
+			}
+			Ok(Ok(libmpv_poster::PosterFrame::NoFrame)) => {
+				rcrm_core::log_debug!("[poster] libmpv produced no usable frame for {url}");
+				(std::ptr::null_mut(), poster_status::NO_FRAME)
+			}
+			Ok(Err(error)) => {
+				rcrm_core::log_error!("[poster] libmpv failed for {url}: {error}");
+				let status = if error.is_unavailable() {
+					poster_status::UNAVAILABLE
+				} else {
+					poster_status::NO_FRAME
+				};
+				(std::ptr::null_mut(), status)
+			}
+			Err(_) => {
+				rcrm_core::log_error!("[poster] libmpv panicked while rendering {url}");
+				(std::ptr::null_mut(), poster_status::NO_FRAME)
+			}
+		};
+		unsafe { callback(buffer, status, ctx_raw as *mut std::ffi::c_void) };
+	});
+	// No thread could be created (under memory pressure or a thread limit):
+	// answer rather than leave the caller waiting for a callback that will
+	// never come.
+	if spawned.is_err() {
+		rcrm_core::log_error!("[poster] could not spawn a libmpv poster thread");
+		unsafe { callback(std::ptr::null_mut(), poster_status::NO_FRAME, ctx) };
+	}
+}
+
+// =======================
+// WebP encoding — thumbnails (all platforms) + the media_kit poster encoder
 // =======================
 
 /// Encode a poster from a raw mpv screenshot-raw frame (tight BGRA).

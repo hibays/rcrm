@@ -4,16 +4,16 @@
 // `ItemCacheLimit.videoPosterQueueMax` documented "Maximum queued poster
 // requests. Oldest evicted when exceeded." and had zero references in the
 // repository: `_posterQ` was appended to unconditionally, so a wall of failing
-// posters (desktop: ffmpeg ≥ 9 refuses our self-signed TLS, so all 16 attempts
-// per video fail) grew the queue without bound while every queued caller kept a
-// future open. `admitPosterJob` is the missing rule; the service calls it right
+// posters (a file libmpv cannot decode, a fetch the server refuses — every
+// visible card asks again) grew the queue without bound while every queued
+// caller kept a future open. `admitPosterJob` is the missing rule; the service calls it right
 // before enqueueing.
 //
-// The service itself cannot be driven from a test — on desktop it descends into
-// `Process.run('ffmpeg', …)` and on mobile into a media_kit `Player`, and the one
-// existing seam (`ThumbnailService.suppressPosterGeneration`) returns before the
-// queue is touched, so nothing here can observe it. That is why the decision is
-// a pure function, following `advanceScrubPreview` / `planPlayerControlBar`.
+// The service itself cannot be driven from a test — a backend run descends into
+// a libmpv render (Rust) or a media_kit `Player`, and the one existing seam
+// (`ThumbnailService.suppressPosterGeneration`) returns before the queue is
+// touched, so nothing here can observe it. That is why the decision is a pure
+// function, following `advanceScrubPreview` / `planPlayerControlBar`.
 
 import 'dart:async';
 import 'dart:typed_data';

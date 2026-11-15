@@ -6,9 +6,9 @@
 // `ItemCacheLimit.videoPosterQueueMax` documented "Maximum queued poster
 // requests. Oldest evicted when exceeded." but had no reference anywhere, so the
 // queue grew without bound while each entry held a caller's future open. That is
-// not a theoretical leak — a failing poster is the normal case on desktop, where
-// ffmpeg ≥ 9 verifies TLS against our self-signed server, so all 16 attempts per
-// video fail and every visible card asks again.
+// not a theoretical leak: a failing poster is a normal case (a file libmpv
+// cannot decode, a fetch the server refuses), and every visible card asks
+// again.
 //
 // The second rule is the suspension gate: while the player route is installed
 // the UI must not start poster work at all, and a job that is already running
@@ -19,12 +19,40 @@
 //
 // Both rules live here rather than inside the service because the decision is
 // what can be wrong (which entry, whether at all), and this way they are testable
-// without an ffmpeg process or a media_kit Player — the same reason
+// without a libmpv render or a media_kit Player — the same reason
 // `advanceScrubPreview` and `planPlayerControlBar` are separated from their
 // handlers.
 
 import 'dart:async';
 import 'dart:typed_data';
+
+/// The suspension gate a RUNNING poster job parks at.
+///
+/// The media_kit backend holds media_kit's static `NativePlayer.lock` across
+/// `open` and across each `seek` + `screenshot`, and the playback player needs
+/// that same lock. A job that is already running when the player route is
+/// installed must therefore PARK — stop its player, wait for that route to go,
+/// then re-open — rather than answer "no poster", which `VideoCard` would paint
+/// as a permanent placeholder, because nothing retries a null.
+///
+/// `ThumbnailService` owns the queue and implements this; the backend only
+/// waits. Park and unpark are separate calls because the count they keep is what
+/// stops the queue from starting another player job, and the departure is what
+/// lets waiting work move again.
+abstract interface class PosterParking {
+  /// True while a player route owns the screen.
+  bool get suspended;
+
+  /// Register a job that is parking. It keeps its slot: the queue must not
+  /// start another player job while a parked one may be mid-`open`.
+  void park();
+
+  /// The parked job is done parking. Publishes the count and kicks the queue.
+  void unpark();
+
+  /// Resolves once [suspended] is false.
+  Future<void> waitForResume();
+}
 
 /// One poster request: waiting for a slot, or running.
 class PosterJob {
@@ -38,8 +66,8 @@ class PosterJob {
   /// placeholder.
   final Completer<Uint8List?> completer;
 
-  /// Runs the job: an `ffmpeg` process on desktop, a media_kit screenshot on
-  /// mobile.
+  /// Runs the job: one backend run (`services/poster_libmpv.dart` or
+  /// `services/poster_mpv.dart`).
   final void Function() run;
 
   /// Set by the runner when this job is handed a concurrency slot. A running job

@@ -2,11 +2,13 @@
 // The two pure decisions in video-poster generation: WHERE to look, and
 // whether the frame that came back is a new one.
 //
-// Everything that touches pixels — the blank test, the downscale and the WebP
-// encode — now lives in Rust (`poster.rs` / `rcrm_encode_poster_webp`). The
-// measurements that drove the Rust move are in CHANGELOG/AGENTS: a paused-seek
-// screenshot can be the previous frame, so the pipeline has to notice a stale
-// capture and ask again; and the first candidate must not be the black leader.
+// Both poster backends use this file: the libmpv one for the search order (Rust
+// skips any position past the duration it reads itself), the media_kit one for
+// both decisions. Everything that touches pixels — the blank test, the
+// downscale, the WebP encode — lives in Rust either way. The measurements behind
+// the search order are in CHANGELOG/AGENTS: a paused-seek screenshot can be the
+// previous frame, so the media_kit pipeline has to notice a stale capture and ask
+// again; and the first candidate must not be the black leader.
 //
 //   1. A screenshot taken right after a paused seek hands back the frame the
 //      video output ALREADY had while the seek's frame is still decoding.

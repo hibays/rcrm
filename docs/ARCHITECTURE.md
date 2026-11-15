@@ -92,7 +92,8 @@ Server start → generate random user:pass
   → All HTTP requests use header (never embedded in URL)
     → WebDavClient: .setHeader('Authorization')
     → AuthImage ImageProvider: header in ImageStreamCompleter
-    → ffmpeg CLI: -headers "Authorization: Basic ..."
+    → libmpv poster render: http-header-fields "Authorization: Basic ..."
+    → media_kit poster screenshot: Media.httpHeaders
 ```
 
 ### Media URL Encoding
@@ -109,8 +110,8 @@ is built, every path segment is encoded with `Uri.encodeComponent`:
 - `Uri.pathSegments` decodes first and would turn a literal `%20` in a file name
   back into a space, losing the distinction from a file named with a real space.
 
-Every fetch path (Dart `HttpClient`, media_kit/libmpv, ffmpeg, the cast proxy)
-parses the URL once and never re-encodes it. A file literally named
+Every fetch path (Dart `HttpClient`, media_kit/libmpv playback, the libmpv poster
+render, the cast proxy) parses the URL once and never re-encodes it. A file literally named
 `foo%20bar.wmv` travels as `foo%2520bar.wmv` and survives one server-side
 decode; a file named `foo bar.wmv` travels as `foo%20bar.wmv`.
 
@@ -464,20 +465,26 @@ meant `device` (and silently got `system`), `false` meant `fit`.
 > the target set in that same dialog (platform default 96 MB mobile / 512 MB
 > desktop).
 
-Video posters (ffmpeg / media_kit):
+Video posters (two backends, one queue — `utils/poster_backend.dart`):
 
 ```
 VideoCard.initState()
   → addPostFrameCallback → _loadPoster()
     → ThumbnailService.generatePoster(url)
       → In-flight dedup: same URL concurrent → reuse Completer
-      → 8 seek positions (loop until non-blank)
-        → ffmpeg stdout pipe → Uint8List (desktop; zero disk writes)
-        → media_kit Player pool → screenshot() (mobile)
-          → pool: free-list slots (1 mobile / 11 desktop)
-          → destroyed after 30s idle
-        → Rust FFI isBlankFrame (zune_jpeg luminance)
-        → LRU cache (max 32 mobile / 512 desktop)
+      → queue: at most ItemCacheLimit.videoPosterConcurrency jobs (1 / 4)
+      → choosePosterBackend(): libmpv everywhere it can load, else media_kit
+        → libmpv (Windows/Linux/macOS/Android):
+            rcrm_generate_poster_async (Rust thread)
+              → mpv_create/initialize + render context (MPV_RENDER_API_TYPE_SW)
+              → loadfile → seek absolute+exact per candidate position
+              → render the target-sized BGR0 frame into Rust memory
+              → opaque alpha + luma blank test + WebP encode, in place
+              → WebpBuf* back through a NativeCallable (no pixels in Dart)
+        → mpv (iOS, and builds without the export):
+            media_kit Player pool → screenshot() → Rust blank/resize/WebP
+              → free-list slots, destroyed after 30s idle
+      → LRU cache (max 32 mobile / 512 desktop) + ThumbCache when enabled
       → return bytes
 ```
 
@@ -540,7 +547,9 @@ long-press in the viewer → phaseLivePhoto(url) (HTTP Range / ISOBMFF probe)
 
 ### Auth via Header (not URL-embedded)
 
-All HTTP requests use `Authorization: Basic …` header via `sharedAuthHeader`. `AuthImage` replaces all `Image.network`/`NetworkImage`. ffmpeg gets `-headers` CLI flag. No credentials in URLs.
+All HTTP requests use `Authorization: Basic …` header via `sharedAuthHeader`. `AuthImage` replaces all `Image.network`/`NetworkImage`. The libmpv poster render gets it as `http-header-fields`, media_kit as `httpHeaders`. No credentials in URLs.
+
+(Fixed 2026-11: the header used to be dropped into an ffmpeg argv; that backend is gone with the ffmpeg CLI.)
 
 ### Zero-copy by construction
 
@@ -568,18 +577,33 @@ built to put it there exactly once:
 
 Primary player on all platforms. Supports all major formats via libmpv. Custom overlay controls auto-show/hide on hover (never while a panel or the speed menu is open), density chosen from the window's shortest side, width budget admits optional controls by priority. `Player.stop()` before navigation, `Player.dispose()` in `dispose()`.
 
-### Posters: system ffmpeg CLI (desktop) / media_kit pool (mobile)
+### Posters: libmpv direct (all but iOS) / media_kit screenshot (iOS)
 
-Zero disk writes — stdout pipe → `Uint8List` in RAM. Desktop uses `Process.run('ffmpeg', ...)` (up to 11 concurrent), mobile uses `media_kit Player.screenshot()` via a pool (1 serial, free-list slots, 30s idle timeout). In-flight dedup prevents duplicate requests for the same URL. Blank frame detection via Rust FFI `Isolate.run`.
+One pipeline, two backends, chosen by `utils/poster_backend.dart` from two facts:
+whether the platform can load libmpv at runtime, and whether the bridge was built
+with the `libmpv-poster` feature.
 
-> ffmpeg **≥ 9** verifies TLS peers by default (`tls_verify=1`), so posters from
-> an HTTPS server with the app's self-signed certificate fail at the handshake
-> unless the ffmpeg invocation opts out or is routed through a loopback relay.
-> `-tls_verify` is an option *of the `tls` protocol*, so the poster argv carries
-> it for `https://` only: ffmpeg resolves an input option's name against the
-> protocol the URL selects and aborts on a name that protocol does not define,
-> which would empty every plain-HTTP poster (the desktop app's own server is
-> `http://127.0.0.1:<port>`). See `docs/BUILDING.md` → Known toolchain issues.
+- **libmpv** (Windows, Linux, macOS, Android) — `rcrm_generate_poster_async`
+  (`libmpv_poster.rs`) loads the process's own libmpv, creates a software render
+  context, seeks to each candidate position and renders the frame straight into
+  a target-sized BGR0 buffer in Rust. The opaque-alpha pass, the blank test and
+  the WebP encode read that same buffer; no frame ever enters Dart, and libmpv
+  is reused across candidate positions within one job.
+- **media_kit** (iOS, whose libmpv is statically linked and cannot be dlopen'ed;
+  also any build without the export) — a pool of `Player`+`VideoController`
+  pairs takes `screenshot()` frames and Rust does the blank test, the downscale
+  and the encode (`mpv-poster`).
+
+Both backends share `utils/poster_frame.dart`'s seek plan (a fraction of the real
+length first, 0.0 last), `poster_log.dart`'s diagnostics, and the queue in
+`utils/poster_queue.dart` (concurrency cap, in-flight dedup, suspension while a
+player route owns the screen). Zero disk writes: posters live in RAM, plus the
+opt-in `ThumbCache`.
+
+> The libmpv path passes `tls-verify=no` for its own fetch, the same scoped
+> relaxation the old ffmpeg poster command made: the server's certificate is
+> self-signed and the app's pin lives in Dart (`net.dart`), which libmpv cannot
+> see. Nothing else in the app relaxes TLS; the player keeps its own settings.
 
 ### Images: AuthImage + in-memory cache
 

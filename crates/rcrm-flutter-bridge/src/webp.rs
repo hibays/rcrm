@@ -60,22 +60,55 @@ pub unsafe fn encode_rgba_webp(
 	height: u32,
 	quality: u8,
 ) -> Option<Box<WebpBuf>> {
-	if data.is_null() || len == 0 || width == 0 || height == 0 {
-		return None;
-	}
-	if len != (width as usize) * (height as usize) * 4 {
+	if data.is_null() || len == 0 {
 		return None;
 	}
 	let pixels = unsafe { std::slice::from_raw_parts(data, len) };
+	encode(pixels, PixelLayout::Rgba8, width, height, quality)
+}
+
+/// Encode BGR0/BGRA8 pixels (`width * height * 4` bytes) as lossy WebP.
+///
+/// This is libmpv's surface layout (`MPV_RENDER_PARAM_SW_FORMAT = "bgr0"`), and
+/// the encoder converts it to YUV directly — no channel swap, no second buffer.
+/// The fourth byte is the alpha channel, so the caller must have made it opaque
+/// (see `poster::make_opaque_and_mean_luma_bgra`): mpv leaves it at 0, which a
+/// WebP would read as fully transparent.
+#[cfg(feature = "libmpv-poster")]
+pub(crate) fn encode_bgra(
+	bgra: &[u8],
+	width: u32,
+	height: u32,
+	quality: u8,
+) -> Option<Box<WebpBuf>> {
+	encode(bgra, PixelLayout::Bgra8, width, height, quality)
+}
+
+/// The one encoder both layouts go through.
+fn encode(
+	pixels: &[u8],
+	layout: PixelLayout,
+	width: u32,
+	height: u32,
+	quality: u8,
+) -> Option<Box<WebpBuf>> {
+	if width == 0 || height == 0 {
+		return None;
+	}
+	let expected = (width as usize)
+		.checked_mul(height as usize)
+		.and_then(|pixels| pixels.checked_mul(4))?;
+	if pixels.len() != expected {
+		return None;
+	}
 
 	let cfg = LossyConfig::new()
 		.with_quality(quality.clamp(0, 100) as f32)
 		.with_method(5); // speed/quality balance (0 = fast, 6 = best)
-	let encoded =
-		match EncodeRequest::lossy(&cfg, pixels, PixelLayout::Rgba8, width, height).encode() {
-			Ok(b) => b,
-			Err(_) => return None,
-		};
+	let encoded = match EncodeRequest::lossy(&cfg, pixels, layout, width, height).encode() {
+		Ok(bytes) => bytes,
+		Err(_) => return None,
+	};
 	Some(vec_into_webp_buf(encoded))
 }
 

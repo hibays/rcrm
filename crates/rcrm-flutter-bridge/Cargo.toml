@@ -18,10 +18,17 @@ mobile-decode = ["dep:rav1d", "dep:jxl-oxide", "dep:jxl-render", "dep:heic"]
 # Raw mpv screenshot poster path: blank test + bilinear downscale + WebP in
 # Rust. Deliberately SEPARATE from mobile-decode: it needs only the shared
 # resampler (decode.rs) and the WebP encoder, not the AVIF/JXL/HEIC decoders.
-# Android/iOS enable both; desktop sends posters through ffmpeg and omits this.
-# The Dart worker looks the symbol up optionally, so a build without it falls
-# back to media_kit's JPEG screenshot.
+# iOS enables it: that platform's poster backend is media_kit (its libmpv is
+# statically linked, so it cannot be dlopen'ed) and this encoder is how those
+# screenshots become WebP without a Dart pixel loop.
 mpv-poster = []
+
+# Direct libmpv poster path: load the system libmpv at runtime, seek with
+# `absolute+exact`, draw the frame into Rust memory with
+# MPV_RENDER_API_TYPE_SW, and encode it in place. Every platform except iOS
+# uses it; a build without this feature (or a machine without libmpv) keeps the
+# symbol absent, which the Dart side reads as "use the media_kit backend".
+libmpv-poster = ["dep:libloading"]
 
 [dependencies]
 rcrm-core = { path = "../rcrm-core" }
@@ -65,6 +72,10 @@ heic = { git = "https://github.com/imazen/heic", rev = "db52055b4d5e74dff848060b
 # ~2x faster (the zxing/rxing cross-benchmark on 4900 degraded images). Build
 # needs a C++ toolchain + CMake; Android/iOS shims live in scripts/cmake/.
 zxing-cpp = { version = "0.5.3", features = ["bundled"] }
+# Runtime loading of the system libmpv (the `libmpv-poster` feature). The
+# library is the one media_kit already loaded for playback; nothing links
+# against it at build time.
+libloading = { version = "0.8", optional = true }
 
 [dev-dependencies]
 jpeg-encoder = "0.7.1"

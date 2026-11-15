@@ -6,8 +6,6 @@
 // package:flutter/foundation.dart, so the chain reaches dart:ui.)
 // Widget tests live in test/widgets/ and use `flutter test`.
 
-import 'dart:io';
-
 import 'package:test/test.dart';
 
 import 'package:rcrm_gui/models/album.dart';
@@ -267,7 +265,7 @@ void main() {
       expect(client.authHeader, isNull);
     });
 
-    test('authenticatedUrl embeds creds for ffmpeg', () {
+    test('authenticatedUrl embeds creds in the URL form', () {
       final client = WebDavClient(
         baseUrl: 'http://127.0.0.1:9090',
         username: 'u',
@@ -280,30 +278,9 @@ void main() {
   });
 
   // ═══════════════════════════════════════════════════════════
-  // 5. ffmpeg pipeline — real thumbnail/preview test
+  // 5. URL encoding
   // ═══════════════════════════════════════════════════════════
-  group('ffmpeg pipeline', () {
-    test('ffmpeg generates poster from test pattern', () async {
-      final out =
-          '${Directory.current.path}${Platform.pathSeparator}test_poster.jpg';
-      try {
-        File(out).deleteSync();
-      } catch (_) {}
-      final r = await Process.run('ffmpeg', [
-        '-f',
-        'lavfi',
-        '-i',
-        'color=c=red:s=640x360:d=1',
-        '-vframes',
-        '1',
-        out,
-        '-y',
-      ]);
-      expect(r.exitCode, 0, reason: 'ffmpeg not on PATH. stderr: ${r.stderr}');
-      expect(File(out).existsSync(), isTrue);
-      File(out).deleteSync();
-    });
-
+  group('poster URL encoding', () {
     test('URL encoding preserves @ in auth URL', () {
       final u = Uri.parse(
         'http://user:pass@127.0.0.1:8080/test.mp4',

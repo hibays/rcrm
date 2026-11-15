@@ -50,8 +50,10 @@ class WebDavClient {
   Map<String, String>? get authHeader =>
       _authHeader != null ? {'Authorization': _authHeader!} : null;
 
-  /// Construct a URL with embedded Basic Auth for tools that need it
-  /// (e.g. ffmpeg CLI which only supports URLs).
+  /// Construct a URL with embedded Basic Auth, for the places that need the
+  /// credentials in the URL rather than in a header (the tests that decode it,
+  /// and anything outside the app handed a single string). The poster backends
+  /// do NOT use this: they take `authHeader` and keep the URL clean.
   ///
   /// The path goes through [mediaUrl] like every other URL in the app; the
   /// credentials are the only part added here, and they are percent-encoded so

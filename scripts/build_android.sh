@@ -9,20 +9,23 @@
 #   ./scripts/build_android.sh              # debug
 #   ./scripts/build_android.sh -r           # release
 #   ./scripts/build_android.sh -r -s        # release + split APKs
-#   ./scripts/build_android.sh --mobile-decode  # on by default; kept for symmetry
-#   ./scripts/build_android.sh --mpv-poster     # on by default; Rust mpv poster
+#   ./scripts/build_android.sh --mobile-decode   # on by default; kept for symmetry
+#   ./scripts/build_android.sh --mpv-poster      # on by default; screenshot poster encoder
+#   ./scripts/build_android.sh --libmpv-poster   # on by default; libmpv direct posters
 set -euo pipefail
 
 MODE="debug"
 SPLIT=false
 MOBILE_DECODE=true
 MPV_POSTER=true
+LIBMPV_POSTER=true
 while [[ $# -gt 0 ]]; do case "$1" in
   -r|--release) MODE="release"; shift ;;
   -s|--split)   SPLIT=true; shift ;;
-  --mobile-decode) MOBILE_DECODE=true; shift ;;
-  --mpv-poster)    MPV_POSTER=true; shift ;;
-  *) echo "Usage: $0 [-r|--release] [-s|--split] [--mobile-decode] [--mpv-poster]"; exit 1 ;;
+  --mobile-decode)  MOBILE_DECODE=true; shift ;;
+  --mpv-poster)     MPV_POSTER=true; shift ;;
+  --libmpv-poster)  LIBMPV_POSTER=true; shift ;;
+  *) echo "Usage: $0 [-r|--release] [-s|--split] [--mobile-decode] [--mpv-poster] [--libmpv-poster]"; exit 1 ;;
 esac; done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -84,6 +87,7 @@ CARGO_ARGS=(build -p rcrm-flutter-bridge)
 FEATURES=()
 if $MOBILE_DECODE; then FEATURES+=(mobile-decode); fi
 if $MPV_POSTER; then FEATURES+=(mpv-poster); fi
+if $LIBMPV_POSTER; then FEATURES+=(libmpv-poster); fi
 if [[ ${#FEATURES[@]} -gt 0 ]]; then
   FEATURE_LIST=$(IFS=,; echo "${FEATURES[*]}")
   CARGO_ARGS+=(--features "$FEATURE_LIST")

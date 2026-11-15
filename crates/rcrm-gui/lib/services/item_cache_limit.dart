@@ -13,10 +13,21 @@ class ItemCacheLimit {
   // ── Video poster (ThumbnailService) ──────────────────────────
 
   /// How many poster generation slots run concurrently.
-  static final int videoPosterConcurrency = _isMobile ? 1 : 11;
+  ///
+  /// One on a phone. Four on a desktop rather than the eleven the ffmpeg-era
+  /// pipeline used: each slot is now a whole mpv context (libmpv path) or a
+  /// media_kit Player, decoding a full-resolution frame, so eleven of them at
+  /// once cost a 4K film's decoder each — and the eval that measured the libmpv
+  /// backend recommended starting at 2-4 workers (docs/MPV_POSTER_EVAL.md §8).
+  static final int videoPosterConcurrency = _isMobile ? 1 : 4;
 
   /// Maximum queued poster requests. Oldest evicted when exceeded.
-  static final int videoPosterQueueMax = _isMobile ? 50 : 200;
+  ///
+  /// Kept BELOW [videoPosterMemoryCacheMax] on both platforms (24 < 32,
+  /// 128 < 512): an evicted request is answered with null and never retried, so
+  /// a queue deeper than the cache it feeds would spend slots on work whose
+  /// results the cache could not even hold.
+  static final int videoPosterQueueMax = _isMobile ? 24 : 128;
 
   /// In-memory LRU poster cache entry count.
   static final int videoPosterMemoryCacheMax = _isMobile ? 32 : 512;

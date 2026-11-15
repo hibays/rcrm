@@ -42,6 +42,9 @@ $env:CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios = "$root\scripts\cmake\ios-device.cm
 $env:CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios_sim = "$root\scripts\cmake\ios-sim.cmake"
 
 $cargoArgs = @("build", "--release", "-p", "rcrm-flutter-bridge")
+# No libmpv-poster on iOS, on purpose: media_kit links libmpv statically into
+# the app, so there is no shared library to load at runtime. iOS posters come
+# from media_kit's own screenshot, encoded by the mpv-poster Rust code.
 $features = @()
 if ($MobileDecode) { $features += "mobile-decode" }
 if ($MPVPoster) { $features += "mpv-poster" }

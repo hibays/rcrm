@@ -43,24 +43,9 @@ import 'package:flutter/foundation.dart';
 import '../ffi/rust_bridge.dart';
 import 'native_bytes.dart';
 
-/// Mirrors Rust `webp::WebpBuf { data_len: usize, data: *mut u8 }`.
-final class _WebpBuf extends Struct {
-  @IntPtr()
-  external int dataLen;
-  external Pointer<Uint8> data;
-}
-
-/// Auto-frees Rust WebP output buffers when the Dart view is GC'd, so the
-/// encoded bytes are returned to Dart with ZERO copies (native memory is
-/// read in place; the finalizer releases it later).
-Pointer<NativeFunction<RcrmFreeWebpBufC>>? _webpFreeFn;
-
-void _ensureWebpFinalizer() {
-  if (_webpFreeFn != null) return;
-  final addr = RustBridge.freeWebpBufAddr;
-  if (addr == 0) return;
-  _webpFreeFn = Pointer<NativeFunction<RcrmFreeWebpBufC>>.fromAddress(addr);
-}
+// The Rust output struct and the zero-copy hand-off live in
+// `ffi/rust_bridge.dart` (`RustWebpBuf`, `RustBridge.webpBufBytes`), so the
+// libmpv poster backend and this worker read a WebP result the same way.
 
 final class _EncodeReply {
   final int bufPtr;
@@ -503,26 +488,10 @@ class ThumbWebpWorker {
   /// Wrap the worker's native WebP output in a zero-copy Dart view; the
   /// finalizer frees the Rust buffer when the view is GC'd.
   static Uint8List? _attachFinalizerView(int bufPtr, int len) {
-    final bridge = _loadedBridge();
-    if (bridge == null) return null;
-    final structPtr = Pointer<Void>.fromAddress(bufPtr).cast<_WebpBuf>();
-    if (structPtr.ref.data == nullptr || len <= 0) {
-      bridge.freeWebpBuf(structPtr.cast<Void>());
-      return null;
-    }
-    _ensureWebpFinalizer();
-    final fin = _webpFreeFn;
-    if (fin != null) {
-      return structPtr.ref.data.asTypedList(
-        len,
-        finalizer: fin,
-        token: structPtr.cast<Void>(),
-      );
-    }
-    // Fallback (finalizer unavailable): copy + free immediately.
-    final bytes = Uint8List.fromList(structPtr.ref.data.asTypedList(len));
-    bridge.freeWebpBuf(structPtr.cast<Void>());
-    return bytes;
+    if (bufPtr == 0 || len <= 0) return null;
+    return RustBridge.webpBufBytes(
+      Pointer<Void>.fromAddress(bufPtr).cast<RustWebpBuf>(),
+    );
   }
 
   static RustBridge? _loadedBridge() {
@@ -560,20 +529,7 @@ class ThumbWebpWorker {
     final ptr = bridge.encodeThumbWebp(owned.ptr, rgba.length, w, h, quality);
     if (reuse == null) owned.free();
     if (ptr == nullptr) return null;
-    final buf = ptr.cast<_WebpBuf>().ref;
-    final len = buf.dataLen;
-    if (buf.data == nullptr || len <= 0) {
-      bridge.freeWebpBuf(ptr);
-      return null;
-    }
-    _ensureWebpFinalizer();
-    final fin = _webpFreeFn;
-    if (fin != null) {
-      return buf.data.asTypedList(len, finalizer: fin, token: ptr);
-    }
-    final bytes = Uint8List.fromList(buf.data.asTypedList(len));
-    bridge.freeWebpBuf(ptr);
-    return bytes;
+    return RustBridge.webpBufBytes(ptr.cast<RustWebpBuf>());
   }
 }
 
@@ -614,7 +570,7 @@ void thumbWebpWorkerMain(SendPort mainPort) {
           req[6] as int,
         );
         out = result;
-        if (result != nullptr) outLen = result.cast<_WebpBuf>().ref.dataLen;
+        if (result != nullptr) outLen = result.cast<RustWebpBuf>().ref.dataLen;
       } else if (op == _opEncodePosterBgra) {
         final address = RustBridge.encodePosterWebpAddr;
         if (address != 0) {
@@ -635,7 +591,7 @@ void thumbWebpWorkerMain(SendPort mainPort) {
             );
             out = result;
             if (result != nullptr) {
-              outLen = result.cast<_WebpBuf>().ref.dataLen;
+              outLen = result.cast<RustWebpBuf>().ref.dataLen;
             }
             blank = outBlank.value;
           } finally {
@@ -656,7 +612,7 @@ void thumbWebpWorkerMain(SendPort mainPort) {
           req[6] as int,
         );
         out = result;
-        if (result != nullptr) outLen = result.cast<_WebpBuf>().ref.dataLen;
+        if (result != nullptr) outLen = result.cast<RustWebpBuf>().ref.dataLen;
       }
     } catch (_) {
       out = nullptr;

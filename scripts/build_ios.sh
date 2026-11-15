@@ -45,6 +45,9 @@ echo "[1/4] Building Rust bridge for iOS..."
   export CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios="$ROOT/scripts/cmake/ios-device.cmake"
   export CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios_sim="$ROOT/scripts/cmake/ios-sim.cmake"
   CARGO_ARGS=(build --release -p rcrm-flutter-bridge)
+  # No libmpv-poster on iOS, on purpose: media_kit links libmpv statically into
+  # the app, so there is no shared library to load at runtime. iOS posters come
+  # from media_kit's own screenshot, encoded by the mpv-poster Rust code.
   FEATURES=()
   if $MOBILE_DECODE; then FEATURES+=(mobile-decode); fi
   if $MPV_POSTER; then FEATURES+=(mpv-poster); fi

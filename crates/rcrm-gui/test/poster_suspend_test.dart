@@ -4,11 +4,12 @@
 //
 // What this file CAN drive: `planPosterKick` (a pure function) and
 // `ThumbnailService.suspend/resume` (static state with no player in it). What it
-// CANNOT drive is the mobile pool itself — `_posterMobile` needs a real media_kit
-// `Player`, and the only other seam, `ThumbnailService.suppressPosterGeneration`,
-// returns before the queue is touched. So the in-flight job below is a
-// stand-in for it: same queue, same completer, same "the answer is decided when
-// the job finishes, not when it parks" shape.
+// CANNOT drive is the backend pool itself — `MpvPoster.generate` needs a real
+// media_kit `Player`, and the only other seam,
+// `ThumbnailService.suppressPosterGeneration`, returns before the queue is
+// touched. So the in-flight job below is a stand-in for it: same queue, same
+// completer, same "the answer is decided when the job finishes, not when it
+// parks" shape.
 
 import 'dart:async';
 import 'dart:typed_data';
@@ -39,8 +40,8 @@ class _RunningJob {
 
   final completer = Completer<Uint8List?>();
 
-  /// The job's result, as `_posterMobile` builds it: the first frame that was
-  /// neither missing nor blank. Null only when no position produced one.
+  /// The job's result, as `MpvPoster.generate` builds it: the first frame that
+  /// was neither missing nor blank. Null only when no position produced one.
   Uint8List? result;
 
   /// The single future every duplicate request for [url] gets handed

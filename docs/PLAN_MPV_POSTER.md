@@ -2,7 +2,29 @@
 
 日期: 2026-11-15
 前置报告: `docs/MPV_POSTER_EVAL.md`
-状态: 方案待启动；当前生产仍使用 ffmpeg（桌面）/ media_kit + Rust（移动端）
+状态: **已实施（2026-11-15 同日）**；ffmpeg CLI 后端已删除
+
+## 0. 实施结果（与下方原计划的差异）
+
+计划是按"可选后端 + 保留 ffmpeg 回落"写的；实际决定改为**直接替换**，因此与计划第 2、3 节不同：
+
+- **ffmpeg CLI 后端整个删除**：`lib/utils/ffmpeg_thumb_args.dart`、桌面
+  `Process.run('ffmpeg', …)` 路径、依赖它的测试与文档全部移除。libmpv 比它快
+  （1280×720 warm 帧 47–88 ms 对 111–150 ms；本次在 640×853 竖屏上实测
+  seek 0 ms + frame 49 ms + encode 63 ms）且不需要 PATH 上的外部程序。
+- **分级从"desktop/mobile"改为按后端命名**：`utils/poster_backend.dart` 的
+  `PosterBackend` 只有两个值 —— `libmpv`（libmpv 自己渲染，iOS 以外的所有平台）
+  和 `mpv`（media_kit 的 `Player.screenshot` + Rust 编码，iOS，以及没有该导出的
+  旧 bridge）。`ThumbnailService` 不再按平台分叉。
+- **特性拆分**：新增 `libmpv-poster`（`libmpv.rs` + `libmpv_poster.rs` +
+  `rcrm_generate_poster_async` + `libloading`）；原 `mpv-poster` 保持不动，仍只负责
+  iOS 的截图编码。桌面脚本默认启用 `libmpv-poster`，iOS 故意不启用。
+- **复用**：blank band / 不透明 alpha / WebP 编码都在 `poster.rs`，两条后端共用；
+  `webp.rs` 新增 `encode_bgra`（原地编码，无通道交换）并与 `encode_rgba` 共用一个
+  编码函数；`webpBufBytes` 统一了 Dart 侧所有 `WebpBuf*` 的零拷贝包装。
+- **并发**：桌面 11 → 4（每个槽现在是一个完整的 mpv 解码上下文）。
+- **未做**：libmpv context 跨 job 复用（每个 poster 一个 context，job 内跨位置复用）、
+  独立 helper 进程隔离崩溃、许可证结论。
 
 ## 1. 目标
 
@@ -129,12 +151,13 @@ cargo clippy -p rcrm-flutter-bridge --features libmpv-poster --all-targets
 
 ## 10. 启动清单
 
-- [ ] 法务/许可证结论
-- [ ] 确认 Windows libmpv 加载路径
-- [ ] 新增 `libmpv-poster` feature 与 `libloading`
-- [ ] 实现 context + SW render + 正确的 update/seek 协议
-- [ ] 实现 BGRA 原地编码 + alpha/blank 一次遍历
-- [ ] 接入桌面 `_posterDesktop` 与 ffmpeg 回落
-- [ ] 加 `POSTER|backend=libmpv` 日志
-- [ ] 真实网络/4K/并发基准
-- [ ] 更新 CHANGELOG、API_REFERENCE、BUILDING、AGENTS
+- [ ] 法务/许可证结论（未做；libmpv 仍按 media_kit 既有姿态随包分发）
+- [x] 确认 Windows libmpv 加载路径（`libmpv-2.dll`，与 media_kit 同一个文件，实测）
+- [x] 新增 `libmpv-poster` feature 与 `libloading`
+- [x] 实现 context + SW render + 正确的 update/seek 协议（含 seek 前消费旧帧、
+  `time-pos` 校验、每阶段超时）
+- [x] 实现 BGRA 原地编码 + alpha/blank 一次遍历（`encode_poster_frame`）
+- [x] 接入 `ThumbnailService`（按后端，不按平台）并删除 ffmpeg 回落
+- [x] 日志：`POSTER|libmpv|…` 与 Rust 侧 `[poster] libmpv … loaded_ms/seek_ms/frame_ms/encode_ms`
+- [ ] 真实网络/4K/并发基准（只做了一次本地 720×960 单路实测）
+- [x] 更新 CHANGELOG、API_REFERENCE、BUILDING、ARCHITECTURE、PRODUCT、AGENTS

@@ -16,7 +16,7 @@ Move the Android toolchain versions together; verify a release APK, not just `gr
 | Compile SDK | **36** | ✅ | `android/app/build.gradle.kts` |
 | Min SDK | **24** | ✅ | `android/app/build.gradle.kts` |
 | MSVC | VS 2022 Build Tools v18 | ✅ | Visual Studio Installer |
-| ffmpeg | MSYS2 ucrt64 (system PATH), **9.x** | ⚠️ see Known issues | `ffmpeg -version` |
+| libmpv (posters) | the build media_kit already ships (0.36+) | ✅ | §libmpv-2.dll§ / §libmpv.so.2§ / §libmpv.dylib§ beside the app |
 | file_picker | 13.1.0 resolved (Android APK + Windows exe built) | ✅ | `pubspec.lock` |
 | `rav1d` (git) | rev `9f00b03b…` | ✅ | `crates/rcrm-flutter-bridge/Cargo.toml` |
 | `heic` (git) | rev `db52055b…` | ✅ | `crates/rcrm-flutter-bridge/Cargo.toml` |
@@ -106,7 +106,6 @@ single `--suggestions` diagnostic described above.
   is deprecated, so every Dart file imports `package:material_ui/material_ui.dart`
   (migrated with `dart fix --apply`). Do not add new `flutter/material.dart` imports.
 - Rust stable ≥ 1.89: `rustup toolchain install stable`
-- ffmpeg in PATH (video posters/previews) — see Known issues for ffmpeg ≥ 9
 - **CMake ≥ 3.21 and a C++ toolchain**: QR encode/decode is the C++ zxing-cpp,
   built by its official Rust wrapper (`zxing-cpp`, feature `bundled`). Desktop
   builds use the host compiler; Android and iOS add the toolchain shims in
@@ -131,22 +130,23 @@ single `--suggestions` diagnostic described above.
 - CMake + Ninja on PATH. The script points cmake-rs at the per-ABI shims in
   `scripts/cmake/` and adds the static C++ runtime link flags itself — a manual
   `cargo ndk` invocation has to do the same (see the script).
-- The Android/iOS scripts enable **two independent features** by default:
-  `mobile-decode` (AVIF + JXL + HEIC software decoding) and `mpv-poster`
-  (raw mpv screenshot → blank test + bilinear downscale + WebP, done in Rust).
-  `mpv-poster` deliberately does **not** require `mobile-decode`; it needs
-  only the shared resampler and the WebP encoder. The Windows/Linux/macOS
-  scripts accept both switches explicitly (`-MobileDecode` / `-MPVPoster`,
-  `--mobile-decode` / `--mpv-poster`) but default to omitting them; use them
-  there only for local testing, not for shipping desktop builds (desktop
-  posters come from ffmpeg). `heic` is a pure-Rust HEVC decoder
+- The poster features follow the backend each platform uses. **`libmpv-poster`**
+  (libmpv renders the poster itself) is enabled by every desktop script and by
+  the Android one; iOS omits it on purpose, because media_kit links libmpv
+  statically there and there is no shared library to load. **`mpv-poster`**
+  (raw mpv screenshot → blank test + bilinear downscale + WebP, done in Rust) is
+  the iOS encoder, and stays enabled on Android as the fallback encoder.
+  `mobile-decode` (AVIF + JXL + HEIC software decoding) is independent of both.
+  The desktop scripts accept `-MobileDecode` / `--mobile-decode` for local
+  testing only. `heic` is a pure-Rust HEVC decoder
   (`backend-rust`), chosen so no platform SDK is involved and
   cross-compilation keeps working; it is AGPL-3.0-only-or-commercial and
   HEVC/HEIF is patent-encumbered, so read its notices before shipping a build.
 
 ### Linux
 
-- `sudo apt install libgtk-3-dev libmpv-dev ffmpeg`
+- §sudo apt install libgtk-3-dev libmpv-dev§ (the poster renderer loads the
+  same libmpv the player does)
 
 ## China Network Setup
 
@@ -193,9 +193,9 @@ Also set `DEFAULT_MAVEN_HOST = "https://storage.flutter-io.cn"` in flutter SDK (
 # Debug
 .\scripts\build_windows.ps1
 
-# Optional: include the mobile software decoders / mpv poster for local testing
+# Optional: include the mobile software decoders for local testing
 .\scripts\build_windows.ps1 -Release -MobileDecode
-.\scripts\build_windows.ps1 -Release -MPVPoster
+# (libmpv-poster is always on here: posters are rendered by libmpv itself)
 ```
 
 Pipeline: cargo build `--release` `-p rcrm-flutter-bridge` (with `RUSTFLAGS=-C target-cpu=native`) → download mpv-dev + ANGLE DLLs → `flutter build windows` → copy DLLs + app.so + flutter_assets to runner output.
@@ -204,7 +204,7 @@ Pipeline: cargo build `--release` `-p rcrm-flutter-bridge` (with `RUSTFLAGS=-C t
 
 ```powershell
 $env:ANDROID_NDK_HOME = "D:\Dev\Android\Sdk\ndk\28.2.13676358"
-# mobile-decode (AVIF/JXL/HEIC) and mpv-poster are enabled by default
+# mobile-decode (AVIF/JXL/HEIC), libmpv-poster and mpv-poster are all on by default
 .\scripts\build_android.ps1 -Release -SplitAbi
 ```
 
@@ -214,8 +214,8 @@ Pipeline: `cargo-ndk` for 3 ABIs (aarch64, armv7, x86_64; zxing-cpp's C++ core i
 
 ```bash
 ./scripts/build_linux.sh -r
-# Optional: add --mobile-decode for the AVIF/JXL/HEIC Rust decoders,
-# and/or --mpv-poster for the Rust poster encoder
+# Optional: add --mobile-decode for the AVIF/JXL/HEIC Rust decoders.
+# libmpv-poster (posters rendered by libmpv itself) is always on.
 # Output: build/linux/x64/{debug,release}/bundle/rcrm_gui
 ```
 
@@ -223,15 +223,17 @@ Pipeline: `cargo-ndk` for 3 ABIs (aarch64, armv7, x86_64; zxing-cpp's C++ core i
 
 ```bash
 ./scripts/build_macos.sh -r
-# Optional: add --mobile-decode for the AVIF/JXL/HEIC Rust decoders,
-# and/or --mpv-poster for the Rust poster encoder
+# Optional: add --mobile-decode for the AVIF/JXL/HEIC Rust decoders.
+# libmpv-poster (posters rendered by libmpv itself) is always on.
 # Output: build/macos/Build/Products/{Debug,Release}/rcrm_gui.app
 ```
 
 ### iOS
 
 ```bash
-# mobile-decode (AVIF/JXL/HEIC) and mpv-poster are enabled by default
+# mobile-decode (AVIF/JXL/HEIC) and mpv-poster are enabled by default.
+# libmpv-poster is deliberately absent: iOS's libmpv is linked into the app,
+# so there is no shared library for the Rust poster renderer to load.
 ./scripts/build_ios.sh -r --no-codesign
 # Output: build/ios/iphoneos/Runner.app
 ```
@@ -267,45 +269,29 @@ wants a file path rather than a Flutter asset.
 Three environment-level changes bite builds even though the source is unchanged.
 None is a code bug in this repo; all were reproduced and diagnosed locally.
 
-### ffmpeg ≥ 9 verifies TLS peers by default
+### libmpv posters verify TLS peers (and why the generator opts out)
 
-FFmpeg 9.0 flipped the `tls_verify` default from `0` to `1`, so any HTTPS
-request now validates the certificate. RCrm's HTTPS server uses a **self-signed**
-ephemeral certificate (pinned by the app, which ffmpeg has no way to know
-about), so video poster generation over HTTPS fails with:
+The poster renderer makes its own HTTPS request to the app's server, which
+presents a **self-signed, ephemeral** certificate that the Dart client pins
+(§net.dart§). libmpv cannot know about that pin, so `rcrm_generate_poster_async`
+sets `tls-verify=no` for its one client — the same scoped relaxation the removed
+ffmpeg poster command made, and nothing else in the app relaxes TLS. The player
+keeps its own settings.
 
-```
-[tls @ …] Peer certificate failed verification
-Error opening input: I/O error
-```
+The alternatives, if that posture is ever revisited:
 
-Plain-HTTP (local mode) is unaffected by that default flip. Mobile posters use
-`media_kit` and are unaffected. The desktop video-thumbnail path passes
-`-hide_banner` on every fetch and `-tls_verify 0` **only for an `https://` URL**
-(`lib/utils/ffmpeg_thumb_args.dart`): option 3 below, scoped to that one
-subprocess — the Dart client still pins.
+1. Route the renderer through a loopback relay that performs the pinned HTTPS
+   upstream (what the cast receiver's proxy already does).
+2. Give the server a file-backed certificate and point libmpv at it with
+   `--ca-file` (the ephemeral certificate only covers `localhost`/`127.0.0.1`).
+3. Keep `tls-verify=no` (the status quo: the Rust side accepts any certificate
+   for this one fetch; the Dart side still pins everything else).
 
-The flag has to be conditional. ffmpeg resolves the *name* of an input option
-against the protocol the URL selects, after choosing it, and aborts the whole
-command when that protocol does not define the name:
-
-```
-file:     + -tls_verify 0  →  Option tls_verify not found.   (exit != 0, no output)
-http://   + -tls_verify 0  →  Option tls_verify not found.   (exit != 0, no output)
-http://   (no flag)        →  exit 0, JPEG
-https://  + -tls_verify 0  →  exit 0, JPEG
-https://  (no flag)        →  exit -5, Peer certificate failed verification
-```
-
-Measured on ffmpeg 9.0.2 with one file served over both schemes. The desktop
-app's own server is `http://127.0.0.1:<port>`, so an unconditional flag leaves
-*every* poster empty. The alternatives for the HTTPS case remain:
-
-1. Route ffmpeg to a loopback HTTP relay that performs the pinned HTTPS upstream.
-2. Pass `-ca_file <pem>` when the server's certificate is file-backed and its
-   hostname matches (the ephemeral certificate only covers `localhost`/`127.0.0.1`).
-3. Pass `-tls_verify 0` to keep the pre-9 behaviour (the subprocess then accepts
-   any certificate; the Dart side still pins).
+Note for anyone porting the old ffmpeg knowledge: ffmpeg ≥ 9 flipped
+`tls_verify` to 1 and its `-tls_verify` flag was an input option *of the tls
+protocol*, so it had to be conditional on `https://`. libmpv's `tls-verify` is a
+plain network option and is safe to set unconditionally — there is no per-protocol
+name resolution to trip over.
 
 ### Flutter 3.47+ (including 3.50) keeps Impeller as the default desktop renderer
 
@@ -433,23 +419,32 @@ cargo clippy --all                           # ZERO warnings enforced
 cargo test -p rcrm-flutter-bridge --features mobile-decode --release
 cargo clippy -p rcrm-flutter-bridge --features mobile-decode --all-targets
 
-# The poster feature is independent — this must build with no AVIF/JXL/HEIC deps
+# The poster features are independent — these must build with no AVIF/JXL/HEIC deps
 cargo test -p rcrm-flutter-bridge --features mpv-poster
 cargo clippy -p rcrm-flutter-bridge --features mpv-poster --all-targets
+cargo test -p rcrm-flutter-bridge --features libmpv-poster
+cargo clippy -p rcrm-flutter-bridge --features libmpv-poster --all-targets
+
+# The libmpv poster renderer's end-to-end test skips unless a local video is
+# named; point it at one to exercise load → seek → render → encode:
+$env:RCRM_MPV_POSTER_TEST_VIDEO = "D:\some\video.mp4"
+$env:PATH = "$PWD\crates\rcrm-gui\build\windows\x64\libmpv;$env:PATH"
+cargo test -p rcrm-flutter-bridge --features libmpv-poster renders_a_poster -- --nocapture
 ```
 
 ### Bridge Build
 
 ```bash
-# Desktop (no software decoders — Flutter's engine supplies pixels)
-cargo build --release -p rcrm-flutter-bridge
+# Desktop (no software decoders — Flutter's engine supplies pixels; libmpv
+# renders the posters, so the feature is on)
+cargo build --release -p rcrm-flutter-bridge --features libmpv-poster
 # Output: target/release/rcrm_flutter_bridge.dll (.so/.dylib)
 
 # Android (via cargo-ndk, with the software decoders)
 cargo ndk --target aarch64-linux-android --target armv7-linux-androideabi \
   --target x86_64-linux-android \
   -o crates/rcrm-gui/android/app/src/main/jniLibs \
-  build -p rcrm-flutter-bridge --features mobile-decode,mpv-poster --release
+  build -p rcrm-flutter-bridge --features mobile-decode,mpv-poster,libmpv-poster --release
 ```
 
 Cross-compile check without the NDK link step. `check` still runs
@@ -460,7 +455,7 @@ nothing is linked (the build script sets it; for a one-off command):
 $env:CMAKE_TOOLCHAIN_FILE_aarch64_linux_android = "$PWD/scripts/cmake/android-arm64-v8a.cmake"
 $env:CMAKE_GENERATOR = "Ninja"
 RUSTC_BOOTSTRAP=rav1d cargo ndk --target aarch64-linux-android check \
-  -p rcrm-flutter-bridge --features mobile-decode,mpv-poster
+  -p rcrm-flutter-bridge --features mobile-decode,mpv-poster,libmpv-poster
 ```
 
 ## Troubleshooting
@@ -471,8 +466,8 @@ RUSTC_BOOTSTRAP=rav1d cargo ndk --target aarch64-linux-android check \
 |-------|-------|-----|
 | `rcrm_flutter_bridge.dll` locked | Process holds bridge | Kill all `rcrm_gui.exe` before rebuild |
 | Videos won't play | Missing mpv DLLs | Build script downloads them automatically |
-| No thumbnails/previews | ffmpeg not in PATH | `ffmpeg -version` to verify |
-| No video posters over **https://** | ffmpeg ≥ 9 verifies the self-signed peer | See Known toolchain issues above |
+| No video posters, players fine | libmpv could not be loaded or is too old | Run with Rust log level 3 (`rcrm_set_log_level(3)`) and look for `[poster] libmpv`; the Dart side then falls back to media_kit on mobile |
+| No video posters over **https://** | libmpv verifying the self-signed peer | The renderer already passes `tls-verify=no`; see Known toolchain issues above |
 | AVIF/JXL/HEIC broken in the **Windows** app | Impeller is the default desktop renderer | See Known toolchain issues above |
 | Missing DLLs at runtime | DLL copy step failed | Re-run build or manually copy DLLs to runner dir |
 | Cargo can't fetch `rav1d`/`heic` | Restricted network | Add mirror entries to the local `.cargo/config.toml` |

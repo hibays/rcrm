@@ -3,9 +3,12 @@
 All C-ABI functions are exposed via `dart:ffi` through `RustBridge` in
 `ffi/rust_bridge.dart`. Symbols marked *mobile-decode* are compiled only when
 the `mobile-decode` Cargo feature is on (Android/iOS builds; desktop omits it).
-Symbols marked *mpv-poster* use the separate `mpv-poster` feature (Android/iOS
-enable it too; desktop omits it unless asked); it deliberately does **not**
-require `mobile-decode`.
+Symbols marked *mpv-poster* use the separate `mpv-poster` feature — the
+media_kit-screenshot poster encoder, enabled on iOS (where it is the poster
+backend) and on Android (the fallback encoder). Symbols marked *libmpv-poster*
+use the `libmpv-poster` feature — the direct libmpv renderer, enabled on
+Windows/Linux/macOS/Android and deliberately absent on iOS. Neither requires
+`mobile-decode`, and neither needs the other.
 
 ## Memory Ownership
 
@@ -17,6 +20,7 @@ Four shapes exist; picking the wrong one is a leak, a double free or worse.
 | **Passed string** | Dart | Dart — Rust copies immediately | `rcrm_start_server`, `rcrm_crypt_folder` |
 | **Owned buffer** (`DecodeBuf`) | Dart (`calloc`, or a copy-free native fetch) | **Rust**, when the decode finishes | `rcrm_decode_avif_async` / `_jxl_async` / `_heic_async` |
 | **Borrowed buffer** | Dart | Dart, after the call returns | `rcrm_encode_thumb_webp`, `rcrm_generate_thumb_webp_from_image`, `rcrm_encode_poster_webp` |
+| **Returned buffer** (`WebpBuf`) | Rust | Dart, via `rcrm_free_webp_buf` (or a `NativeFinalizer`) | every WebP producer, including `rcrm_generate_poster_async`'s callback |
 
 Rules that follow from the table:
 
@@ -141,13 +145,14 @@ Three generators, differing only in what they take. All return a `WebpBuf`
 |---|---|---|---|
 | `rcrm_encode_thumb_webp` | **raw RGBA** (`width*height*4`) | every platform | the engine-decoded path: all of desktop, and JPEG/PNG/WebP/HEIC-that-Rust-cannot-take on mobile |
 | `rcrm_generate_thumb_webp_from_image` | **an encoded image** (AVIF/JXL/HEIC) | *mobile-decode* | the on-disk thumbnail cache for software-decoded formats: Rust decodes → downscales → encodes, so no pixels enter Dart |
-| `rcrm_encode_poster_webp` | **raw BGRA** (mpv `screenshot-raw`) | *mpv-poster* | the mobile video poster: Rust blank-tests every pixel, downscales with the shared bilinear resampler and encodes WebP, so the Dart side never scans or resamples a frame |
+| `rcrm_encode_poster_webp` | **raw BGRA** (mpv `screenshot-raw`) | *mpv-poster* | the media_kit poster backend (iOS): Rust blank-tests every pixel, downscales with the shared bilinear resampler and encodes WebP, so the Dart side never scans or resamples a frame |
 
 | Function | Signature |
 |---|---|
 | `rcrm_encode_thumb_webp` | `(data, len, width, height, quality)` → `WebpBuf*` |
 | `rcrm_generate_thumb_webp_from_image` | `(data, len, target_width, quality, kind_hint)` → `WebpBuf*` |
 | `rcrm_encode_poster_webp` | `(data, len, width, height, target_width, quality, out_blank)` → `WebpBuf*` |
+| `rcrm_generate_poster_async` | `(url, headers, positions, target_width, quality, callback, ctx)` → void (see below) |
 | `rcrm_free_webp_buf` | `(ptr)` → void |
 
 `kind_hint` for the from-image generator: 1 = AVIF, 2 = JXL, 3 = HEIC/HEIF,
@@ -160,8 +165,49 @@ size. A null return with `out_blank == 0` is an encode error.
 
 Dart callers: `ThumbWebpWorker.encodeRgba` / `.generateThumbFromImage` /
 `.encodePosterBgra` (`services/thumb_webp_worker.dart`), driven by
-`DiskThumbImage` (`widgets/disk_thumb_image.dart`) and
-`ThumbnailService._posterMobile` (`services/thumbnail_service.dart`).
+`DiskThumbImage` (`widgets/disk_thumb_image.dart`) and `MpvPoster.generate`
+(`services/poster_mpv.dart`). Every WebP result is read through
+`RustBridge.webpBufBytes`, the one place that wraps a `WebpBuf*` in a Dart view
+with a freeing finalizer.
+
+## libmpv Posters
+
+`rcrm_generate_poster_async` (`libmpv-poster`, every platform except iOS) loads
+the system libmpv, renders one frame per candidate position with the software
+renderer and answers with a finished WebP. The frame never enters Dart.
+
+```c
+typedef void (*RcrmPosterCallback)(WebpBuf *buffer, int32_t status, void *ctx);
+void rcrm_generate_poster_async(const char *url,        /* borrowed, copied */
+                                const char *headers,    /* CRLF list, copied */
+                                const char *positions,  /* "30.000,15.000,…"  */
+                                uint32_t target_width,  /* maximum, no upscale */
+                                uint8_t quality,
+                                RcrmPosterCallback callback,
+                                void *ctx);
+```
+
+- `headers` is the CRLF-separated header block the Dart side already builds for
+  HTTP (`Authorization: Basic …`); Rust turns it into libmpv's
+  `http-header-fields` (comma-separated). A value containing a comma cannot be
+  expressed — the only header sent is Basic auth, whose alphabet has none.
+- `positions` are seconds, most promising first; they come from the same
+  `posterSeekPlan` the media_kit backend uses, and libmpv skips any position at
+  or past the duration it reads itself.
+- `status`: **0** = `buffer` is a finished WebP (`rcrm_free_webp_buf`); **1** =
+  libmpv ran but this file produced no usable frame (blank/undecodable — another
+  file may work); **2** = this process has no usable libmpv (no shared library, a
+  missing symbol, or a client API older than the software renderer), which tells
+  the Dart side to use the media_kit backend instead.
+- The callback arrives on a Rust-spawned thread; Dart routes it through a
+  `NativeCallable.listener`. A null callback renders nothing and reports nothing.
+- Internally: one mpv client + one `MPV_RENDER_API_TYPE_SW` render context per
+  job, created and destroyed on that thread (render.h's rule), reused across the
+  candidate positions of that job. Load 25 s, seek 5 s, frame 3 s, whole job
+  40 s — every stage answers, so a stuck file cannot hold a poster slot forever.
+
+Caller: `LibMpvPoster.generate` (`services/poster_libmpv.dart`), reached from
+`ThumbnailService` through `utils/poster_backend.dart`'s backend choice.
 
 ## QR / Cast
 

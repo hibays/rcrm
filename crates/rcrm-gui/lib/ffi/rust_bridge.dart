@@ -12,8 +12,10 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
 /// Native layout of the Rust `WebpBuf` struct (data_len + data pointer),
-/// returned by `rcrm_generate_qr_webp` and `rcrm_encode_thumb_webp`.
-final class _QrWebpBuf extends Struct {
+/// returned by every WebP producer: `rcrm_encode_thumb_webp`,
+/// `rcrm_generate_thumb_webp_from_image`, `rcrm_encode_poster_webp`,
+/// `rcrm_generate_qr_webp` and the libmpv poster export.
+final class RustWebpBuf extends Struct {
   @IntPtr()
   external int dataLen;
   external Pointer<Uint8> data;
@@ -249,6 +251,37 @@ typedef RcrmEncodePosterWebpDart =
       Pointer<Int32> outBlank,
     );
 
+/// Poster renderer that runs INSIDE libmpv: no frame ever crosses into Dart.
+///
+/// The three strings are copied synchronously (the caller frees its own
+/// buffers as soon as the call returns), the render happens on a Rust thread,
+/// and `(WebpBuf*, status, ctx)` comes back through a `NativeCallable`.
+/// `status` is 0 for a poster, 1 for "libmpv ran but this file gave no usable
+/// frame" and 2 for "this build has no usable libmpv".
+typedef RcrmPosterResultC =
+    Void Function(Pointer<Void> buf, Int32 status, Pointer<Void> ctx);
+
+typedef RcrmGeneratePosterAsyncC =
+    Void Function(
+      Pointer<Utf8> url,
+      Pointer<Utf8> headers,
+      Pointer<Utf8> positions,
+      Uint32 targetWidth,
+      Uint8 quality,
+      Pointer<NativeFunction<RcrmPosterResultC>> callback,
+      Pointer<Void> ctx,
+    );
+typedef RcrmGeneratePosterAsyncDart =
+    void Function(
+      Pointer<Utf8> url,
+      Pointer<Utf8> headers,
+      Pointer<Utf8> positions,
+      int targetWidth,
+      int quality,
+      Pointer<NativeFunction<RcrmPosterResultC>> callback,
+      Pointer<Void> ctx,
+    );
+
 typedef RcrmGenerateQrWebpC =
     Pointer<Void> Function(Pointer<Uint8> data, IntPtr len);
 typedef RcrmGenerateQrWebpDart =
@@ -318,6 +351,11 @@ class RustBridge {
   /// auto-frees WebP output buffers when the Dart view is GC'd (zero-copy
   /// return path).
   static int freeWebpBufAddr = 0;
+
+  /// Raw address of `rcrm_generate_poster_async` — the libmpv poster backend.
+  /// 0 when the loaded bridge was built without the `libmpv-poster` feature,
+  /// which `utils/poster_backend.dart` reads as "use the media_kit backend".
+  static int libmpvPosterAddr = 0;
 
   /// The native library handle — MobileImageDecoder reuses this to avoid a
   /// second dlopen. null until [load] is called.
@@ -434,6 +472,19 @@ class RustBridge {
           .address;
     } catch (_) {
       encodePosterWebpAddr = 0;
+    }
+    // The libmpv poster export exists only in `libmpv-poster` builds. Its
+    // absence is not a load failure: it is the signal that tells
+    // `choosePosterBackend` to keep the media_kit backend, which is how every
+    // iOS build (and any desktop build predating the feature) stays correct.
+    try {
+      libmpvPosterAddr = _lib!
+          .lookup<NativeFunction<RcrmGeneratePosterAsyncC>>(
+            'rcrm_generate_poster_async',
+          )
+          .address;
+    } catch (_) {
+      libmpvPosterAddr = 0;
     }
     // Metadata parsing is not feature-gated. The hand-off takes the caller's
     // native buffer without copying, and the export no longer takes a capacity
@@ -708,7 +759,7 @@ class RustBridge {
     try {
       final out = _generateQrWebp(ptr, bytes.length);
       if (out == nullptr) return null;
-      final buf = out.cast<_QrWebpBuf>().ref;
+      final buf = out.cast<RustWebpBuf>().ref;
       if (buf.data == nullptr || buf.dataLen <= 0) {
         freeWebpBuf(out);
         return null;
@@ -725,5 +776,46 @@ class RustBridge {
     } finally {
       calloc.free(ptr);
     }
+  }
+
+  /// Wrap a Rust `WebpBuf*` in a zero-copy `Uint8List`.
+  ///
+  /// The encoded bytes are read where Rust wrote them, and the native buffer is
+  /// released by the view's finalizer once it is collected — so this is the one
+  /// place that knows how a WebP result crosses back into Dart. Every producer
+  /// uses it: the WebP worker's encodes, the QR code and the libmpv poster.
+  ///
+  /// Returns null (and frees [buffer]) when the struct holds no bytes, because
+  /// a caller has nothing to show either way and a pending finalizer would
+  /// outlive the only reference to it.
+  ///
+  /// The one buffer this CANNOT free is one that arrives when the bridge itself
+  /// will not load here: `rcrm_free_webp_buf` is looked up through the same
+  /// library, so there is no legal way to release it. That is why the producers
+  /// (the WebP worker, the libmpv poster) only ever run in an isolate whose
+  /// bridge already answered a call — a null answer here is the tail of a
+  /// failure that has already been reported elsewhere.
+  static Uint8List? webpBufBytes(Pointer<RustWebpBuf> buffer) {
+    if (buffer == nullptr) return null;
+    final bridge = RustBridge();
+    if (!bridge.isLoaded) {
+      try {
+        bridge.load();
+      } catch (_) {
+        return null;
+      }
+    }
+    final data = buffer.ref.data;
+    final len = buffer.ref.dataLen;
+    final free = freeWebpBufAddr;
+    if (data == nullptr || len <= 0 || free == 0) {
+      bridge.freeWebpBuf(buffer.cast<Void>());
+      return null;
+    }
+    return data.asTypedList(
+      len,
+      finalizer: Pointer<NativeFunction<RcrmFreeWebpBufC>>.fromAddress(free),
+      token: buffer.cast<Void>(),
+    );
   }
 }

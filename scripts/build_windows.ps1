@@ -4,11 +4,13 @@
 #   .\scripts\build_windows.ps1             # debug
 #   .\scripts\build_windows.ps1 -Release    # release
 #   .\scripts\build_windows.ps1 -MobileDecode  # include AVIF/JXL/HEIC decode
-#   .\scripts\build_windows.ps1 -MPVPoster     # include Rust mpv poster (optional on desktop)
+#
+# Video posters are rendered by libmpv itself on this platform (in Rust, through
+# the app's own copy of libmpv-2.dll), so the bridge always carries the
+# libmpv-poster feature.
 param(
     [switch]$Release,
-    [switch]$MobileDecode,
-    [switch]$MPVPoster
+    [switch]$MobileDecode
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,9 +47,8 @@ Write-Host "[1/4] Building Rust bridge (release)..." -ForegroundColor Yellow
 # it into the fingerprint config hash; any mismatch forces a full rebuild.
 $env:RUSTC_BOOTSTRAP = "rav1d"
 $cargoArgs = @("build", "--release")
-$features = @()
+$features = @("libmpv-poster")
 if ($MobileDecode) { $features += "mobile-decode" }
-if ($MPVPoster) { $features += "mpv-poster" }
 if ($features.Count -gt 0) {
     $cargoArgs += @("--features", ($features -join ","))
 }

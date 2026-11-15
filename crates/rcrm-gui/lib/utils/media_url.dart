@@ -40,8 +40,9 @@ String mediaUrl(String baseUrl, String path) {
   return '$base${encodeMediaPath(p)}';
 }
 
-/// [url] without its `user:password@` part, for tools that authenticate with a
-/// header (ffmpeg's `-headers`).
+/// [url] without its `user:password@` part, for consumers that authenticate
+/// with a header instead (the poster backends: libmpv's
+/// `http-header-fields`, media_kit's `httpHeaders`).
 ///
 /// The path is already canonical and is carried verbatim: decoding and
 /// re-encoding it here is what would turn a literal `%20` filename into a

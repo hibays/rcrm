@@ -360,7 +360,8 @@ Future<NavigatorState> _hostWith(
 
 /// `ThumbnailService.resume()` re-arms the poster pool's 30s idle timer, and a
 /// timer still pending when the widget tree goes away fails the test. Firing it
-/// is the whole fix: `_tnDisposePool` disposes an empty pool and arms nothing.
+/// is the whole fix: `ThumbnailService._disposePool` disposes an empty pool and
+/// arms nothing.
 Future<void> _drainPosterIdleTimer(WidgetTester tester) =>
     tester.pump(const Duration(seconds: 31));
 

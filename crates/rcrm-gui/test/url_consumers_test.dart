@@ -1,7 +1,7 @@
 // test/url_consumers_test.dart
 // The URL util is only useful if every consumer hands it the same canonical
 // string. These tests pin the two Dart consumers that are easy to regress:
-// PROPFIND URL construction, the ffmpeg URL, and the thumbnail URL helper.
+// PROPFIND URL construction and the credential-free poster URL a backend gets.
 
 import 'dart:convert';
 
@@ -9,7 +9,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:rcrm_gui/services/thumbnail_service.dart';
 import 'package:rcrm_gui/services/webdav_client.dart';
-import 'package:rcrm_gui/utils/ffmpeg_thumb_args.dart';
 
 class _CaptureClient extends http.BaseClient {
   Uri? last;
@@ -51,24 +50,12 @@ void main() {
     });
   });
 
-  group('ffmpeg URL', () {
+  group('poster URL', () {
     test('safeUrl drops credentials but keeps the canonical path', () {
       expect(
         ThumbnailService.safeUrl('http://u:p@h:9/a%2520b.mkv?x=1'),
         'http://h:9/a%2520b.mkv?x=1',
       );
-    });
-
-    test('ffmpegThumbArgs passes the canonical path through unchanged', () {
-      final args = ffmpegThumbArgs(
-        url: 'http://h:9/a%2520b.mkv',
-        headers: const {'Authorization': 'Basic dTpw'},
-        seekSeconds: 0,
-        frames: 1,
-        width: 320,
-        inputSeek: true,
-      );
-      expect(args[args.indexOf('-i') + 1], 'http://h:9/a%2520b.mkv');
     });
   });
 }
