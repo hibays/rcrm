@@ -3,15 +3,17 @@
 # Full macOS build pipeline: Rust .dylib → Flutter app bundle
 # Prerequisites:
 #   rustup target add aarch64-apple-darwin x86_64-apple-darwin
-# Usage: ./scripts/build_macos.sh [-r|--release] [--mobile-decode]
+# Usage: ./scripts/build_macos.sh [-r|--release] [--mobile-decode] [--mpv-poster]
 set -euo pipefail
 
 MODE="debug"
 MOBILE_DECODE=false
+MPV_POSTER=false
 while [[ $# -gt 0 ]]; do case "$1" in
   -r|--release) MODE="release"; shift ;;
   --mobile-decode) MOBILE_DECODE=true; shift ;;
-  *) echo "Usage: $0 [-r|--release] [--mobile-decode]"; exit 1 ;;
+  --mpv-poster)    MPV_POSTER=true; shift ;;
+  *) echo "Usage: $0 [-r|--release] [--mobile-decode] [--mpv-poster]"; exit 1 ;;
 esac; done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -37,8 +39,12 @@ echo "[1/5] Building Rust bridge (release)..."
 (
   cd "$BRIDGE"
   CARGO_ARGS=(build "$CARGO_FLAG")
-  if $MOBILE_DECODE; then
-    CARGO_ARGS+=(--features mobile-decode)
+  FEATURES=()
+  if $MOBILE_DECODE; then FEATURES+=(mobile-decode); fi
+  if $MPV_POSTER; then FEATURES+=(mpv-poster); fi
+  if [[ ${#FEATURES[@]} -gt 0 ]]; then
+    FEATURE_LIST=$(IFS=,; echo "${FEATURES[*]}")
+    CARGO_ARGS+=(--features "$FEATURE_LIST")
   fi
   cargo "${CARGO_ARGS[@]}"
 )

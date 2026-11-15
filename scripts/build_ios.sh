@@ -9,16 +9,19 @@
 #   ./scripts/build_ios.sh -r           # release (device)
 #   ./scripts/build_ios.sh -r --no-codesign  # release without signing
 #   ./scripts/build_ios.sh --mobile-decode   # on by default; kept for symmetry
+#   ./scripts/build_ios.sh --mpv-poster      # on by default; Rust mpv poster
 set -euo pipefail
 
 MODE="debug"
 CODESIGN=true
 MOBILE_DECODE=true
+MPV_POSTER=true
 while [[ $# -gt 0 ]]; do case "$1" in
   -r|--release)     MODE="release"; shift ;;
   --no-codesign)   CODESIGN=false; shift ;;
   --mobile-decode) MOBILE_DECODE=true; shift ;;
-  *) echo "Usage: $0 [-r|--release] [--no-codesign] [--mobile-decode]"; exit 1 ;;
+  --mpv-poster)    MPV_POSTER=true; shift ;;
+  *) echo "Usage: $0 [-r|--release] [--no-codesign] [--mobile-decode] [--mpv-poster]"; exit 1 ;;
 esac; done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -42,8 +45,12 @@ echo "[1/4] Building Rust bridge for iOS..."
   export CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios="$ROOT/scripts/cmake/ios-device.cmake"
   export CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios_sim="$ROOT/scripts/cmake/ios-sim.cmake"
   CARGO_ARGS=(build --release -p rcrm-flutter-bridge)
-  if $MOBILE_DECODE; then
-    CARGO_ARGS+=(--features mobile-decode)
+  FEATURES=()
+  if $MOBILE_DECODE; then FEATURES+=(mobile-decode); fi
+  if $MPV_POSTER; then FEATURES+=(mpv-poster); fi
+  if [[ ${#FEATURES[@]} -gt 0 ]]; then
+    FEATURE_LIST=$(IFS=,; echo "${FEATURES[*]}")
+    CARGO_ARGS+=(--features "$FEATURE_LIST")
   fi
   cargo "${CARGO_ARGS[@]}" --target aarch64-apple-ios
   cargo "${CARGO_ARGS[@]}" --target aarch64-apple-ios-sim 2>/dev/null || echo "  (simulator target skipped)"

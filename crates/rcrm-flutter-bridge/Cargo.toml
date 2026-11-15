@@ -15,6 +15,14 @@ crate-type = ["cdylib", "staticlib"]
 # Host tests:   cargo test -p rcrm-flutter-bridge --features mobile-decode
 mobile-decode = ["dep:rav1d", "dep:jxl-oxide", "dep:jxl-render", "dep:heic"]
 
+# Raw mpv screenshot poster path: blank test + bilinear downscale + WebP in
+# Rust. Deliberately SEPARATE from mobile-decode: it needs only the shared
+# resampler (decode.rs) and the WebP encoder, not the AVIF/JXL/HEIC decoders.
+# Android/iOS enable both; desktop sends posters through ffmpeg and omits this.
+# The Dart worker looks the symbol up optionally, so a build without it falls
+# back to media_kit's JPEG screenshot.
+mpv-poster = []
+
 [dependencies]
 rcrm-core = { path = "../rcrm-core" }
 rcrm-server = { path = "../rcrm-server" }

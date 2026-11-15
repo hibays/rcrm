@@ -4,9 +4,11 @@
 #   .\scripts\build_windows.ps1             # debug
 #   .\scripts\build_windows.ps1 -Release    # release
 #   .\scripts\build_windows.ps1 -MobileDecode  # include AVIF/JXL/HEIC decode
+#   .\scripts\build_windows.ps1 -MPVPoster     # include Rust mpv poster (optional on desktop)
 param(
     [switch]$Release,
-    [switch]$MobileDecode
+    [switch]$MobileDecode,
+    [switch]$MPVPoster
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,8 +45,11 @@ Write-Host "[1/4] Building Rust bridge (release)..." -ForegroundColor Yellow
 # it into the fingerprint config hash; any mismatch forces a full rebuild.
 $env:RUSTC_BOOTSTRAP = "rav1d"
 $cargoArgs = @("build", "--release")
-if ($MobileDecode) {
-    $cargoArgs += @("--features", "mobile-decode")
+$features = @()
+if ($MobileDecode) { $features += "mobile-decode" }
+if ($MPVPoster) { $features += "mpv-poster" }
+if ($features.Count -gt 0) {
+    $cargoArgs += @("--features", ($features -join ","))
 }
 Push-Location $bridge
 & cargo @cargoArgs

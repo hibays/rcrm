@@ -20,7 +20,10 @@
 
 #[cfg(feature = "mobile-decode")]
 mod avif;
-#[cfg(feature = "mobile-decode")]
+// The shared pixel/resample helpers are used by the software decoders AND by
+// the mpv poster encoder, so this module is compiled for either feature. The
+// decoder dispatch functions inside it stay mobile-decode-only.
+#[cfg(any(feature = "mobile-decode", feature = "mpv-poster"))]
 mod decode;
 // HEIC/HEIF stills are part of the same software-decode path as AVIF/JXL (the
 // `heic` crate is one of `mobile-decode`'s dependencies), so a mobile build
@@ -29,6 +32,8 @@ mod decode;
 mod heic;
 #[cfg(feature = "mobile-decode")]
 mod jxl;
+#[cfg(feature = "mpv-poster")]
+mod poster;
 
 mod crypt_ops;
 mod metadata;
@@ -855,8 +860,66 @@ pub unsafe extern "C" fn rcrm_generate_tv_cert() -> *mut c_char {
 }
 
 // =======================
-// Thumbnail WebP encoding (all platforms — not gated to mobile-decode)
+// WebP encoding — thumbnails (all platforms) + mobile poster encoder
 // =======================
+
+/// Encode a poster from a raw mpv screenshot-raw frame (tight BGRA).
+///
+/// Blank test, bilinear downscale and WebP encode all happen here: the Dart
+/// caller never scans or resamples a pixel. This is the mobile poster path's
+/// consumer of the same primitives the thumbnail decoders use
+/// (decode::downscale_bgra_opaque_bilinear + webp::encode_rgba_webp).
+///
+/// target_width is a maximum; 0 means "keep the source size". The frame is
+/// rejected before encoding when its mean luma is outside 20..235.
+///
+/// out_blank is optional. It is set to 1 when the frame is blank (the return
+/// is then null), and 0 otherwise; a null return with 0 is an encode error.
+///
+/// Available on mpv-poster builds only (the shared downscaler is also used by
+/// the mobile decoders, but this feature does NOT require mobile-decode); Dart
+/// looks the symbol up optionally and falls back to media_kit's JPEG path when
+/// it is absent.
+///
+/// # Safety
+/// data must point to at least len bytes of tightly packed BGRA8 pixels,
+/// with len == width * height * 4; out_blank, when non-null, must be a valid
+/// pointer to one i32.
+#[cfg(feature = "mpv-poster")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcrm_encode_poster_webp(
+	data: *const u8,
+	len: usize,
+	width: u32,
+	height: u32,
+	target_width: u32,
+	quality: u8,
+	out_blank: *mut i32,
+) -> *mut webp::WebpBuf {
+	if !out_blank.is_null() {
+		unsafe { *out_blank = 0 };
+	}
+	if data.is_null() || len == 0 {
+		return std::ptr::null_mut();
+	}
+	let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+	// A decoder/encoder panic must not unwind across the FFI boundary; a poster
+	// is never worth aborting the app. Same policy as the image thumbnail
+	// export above.
+	let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		poster::encode_poster(bytes, width, height, target_width, quality)
+	}));
+	match result {
+		Ok(poster::PosterResult::Encoded(buf)) => Box::into_raw(buf),
+		Ok(poster::PosterResult::Blank) => {
+			if !out_blank.is_null() {
+				unsafe { *out_blank = 1 };
+			}
+			std::ptr::null_mut()
+		}
+		Ok(poster::PosterResult::Invalid) | Err(_) => std::ptr::null_mut(),
+	}
+}
 
 /// Encode raw RGBA pixels as lossy WebP (for the on-disk thumbnail cache).
 ///
@@ -897,7 +960,8 @@ pub unsafe extern "C" fn rcrm_encode_thumb_webp(
 }
 
 /// Free a `WebpBuf` returned by `rcrm_encode_thumb_webp`,
-/// `rcrm_generate_thumb_webp_from_image` or `rcrm_generate_qr_webp`.
+/// `rcrm_encode_poster_webp`, `rcrm_generate_thumb_webp_from_image` or
+/// `rcrm_generate_qr_webp`.
 ///
 /// # Safety
 /// `ptr` must be null or a pointer previously returned by one of those

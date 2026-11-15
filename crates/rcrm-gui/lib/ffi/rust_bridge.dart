@@ -222,6 +222,33 @@ typedef RcrmWebpBufDart =
       int quality,
     );
 
+/// Poster encoder for a raw mpv screenshot (tight BGRA): blank test and
+/// bilinear downscale happen in Rust, then the frame is encoded as WebP.
+///
+/// The input is BORROWED; the reply is a `WebpBuf` freed with
+/// `rcrm_free_webp_buf`. `outBlank` is set to 1 for a blank frame (null
+/// return), 0 otherwise.
+typedef RcrmEncodePosterWebpC =
+    Pointer<Void> Function(
+      Pointer<Uint8> data,
+      IntPtr len,
+      Uint32 width,
+      Uint32 height,
+      Uint32 targetWidth,
+      Uint8 quality,
+      Pointer<Int32> outBlank,
+    );
+typedef RcrmEncodePosterWebpDart =
+    Pointer<Void> Function(
+      Pointer<Uint8> data,
+      int len,
+      int width,
+      int height,
+      int targetWidth,
+      int quality,
+      Pointer<Int32> outBlank,
+    );
+
 typedef RcrmGenerateQrWebpC =
     Pointer<Void> Function(Pointer<Uint8> data, IntPtr len);
 typedef RcrmGenerateQrWebpDart =
@@ -280,6 +307,12 @@ class RustBridge {
   /// 0 when the loaded bridge predates it — callers then fall back to
   /// "no metadata" instead of failing.
   static int mediaMetadataAsyncAddr = 0;
+
+  /// Raw address of `rcrm_encode_poster_webp` — the mobile poster encoder
+  /// (BGRA blank test + bilinear downscale + WebP, all in Rust). 0 when the
+  /// loaded bridge does not have it; the poster path then falls back to
+  /// media_kit's JPEG screenshot.
+  static int encodePosterWebpAddr = 0;
 
   /// Raw address of `rcrm_free_webp_buf`, for the NativeFinalizer that
   /// auto-frees WebP output buffers when the Dart view is GC'd (zero-copy
@@ -390,6 +423,18 @@ class RustBridge {
     freeWebpBufAddr = _lib!
         .lookup<NativeFunction<RcrmFreeWebpBufC>>('rcrm_free_webp_buf')
         .address;
+    // Optional: the poster encoder only exists in mobile-decode builds. A
+    // desktop/older bridge must keep loading every other symbol, so a missing
+    // one degrades to the JPEG screenshot path instead of failing load().
+    try {
+      encodePosterWebpAddr = _lib!
+          .lookup<NativeFunction<RcrmEncodePosterWebpC>>(
+            'rcrm_encode_poster_webp',
+          )
+          .address;
+    } catch (_) {
+      encodePosterWebpAddr = 0;
+    }
     // Metadata parsing is not feature-gated. The hand-off takes the caller's
     // native buffer without copying, and the export no longer takes a capacity
     // (it frees exactly what `len` describes) — an arity change under a stable

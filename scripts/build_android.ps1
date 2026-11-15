@@ -7,11 +7,13 @@
 # Usage:
 #   .\scripts\build_android.ps1 -Release -SplitAbi
 #   .\scripts\build_android.ps1 -MobileDecode   # on by default; kept for symmetry
+#   .\scripts\build_android.ps1 -MPVPoster      # on by default; Rust mpv poster (blank/resize/WebP)
 
 param(
     [switch]$Release,
     [switch]$SplitAbi,  # Produce split APKs (smaller)
-    [switch]$MobileDecode = $true  # AVIF/JXL/HEIC software decode
+    [switch]$MobileDecode = $true,  # AVIF/JXL/HEIC software decode
+    [switch]$MPVPoster = $true      # Rust mpv poster: blank test + resize + WebP
 )
 
 $ErrorActionPreference = "Stop"
@@ -82,8 +84,11 @@ $env:CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS = "-L native=$(Join-Path $st
 $env:CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS = "-L native=$(Join-Path $stdcxxRoot 'x86_64') $libcxxFlags"
 
 $cargoArgs = @("build", "-p", "rcrm-flutter-bridge")
-if ($MobileDecode) {
-    $cargoArgs += @("--features", "mobile-decode")
+$features = @()
+if ($MobileDecode) { $features += "mobile-decode" }
+if ($MPVPoster) { $features += "mpv-poster" }
+if ($features.Count -gt 0) {
+    $cargoArgs += @("--features", ($features -join ","))
 }
 $cargoArgs += $cargoFlag
 

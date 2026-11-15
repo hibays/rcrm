@@ -9,10 +9,12 @@
 #   .\scripts\build_ios.ps1 -Release        # release (device)
 #   .\scripts\build_ios.ps1 -Release -NoSign # release without codesign
 #   .\scripts\build_ios.ps1 -MobileDecode   # on by default; kept for symmetry
+#   .\scripts\build_ios.ps1 -MPVPoster      # on by default; Rust mpv poster (blank/resize/WebP)
 param(
     [switch]$Release,
     [switch]$NoSign,  # Skip code signing
-    [switch]$MobileDecode = $true  # AVIF/JXL/HEIC software decode
+    [switch]$MobileDecode = $true,  # AVIF/JXL/HEIC software decode
+    [switch]$MPVPoster = $true      # Rust mpv poster: blank test + resize + WebP
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,8 +42,11 @@ $env:CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios = "$root\scripts\cmake\ios-device.cm
 $env:CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios_sim = "$root\scripts\cmake\ios-sim.cmake"
 
 $cargoArgs = @("build", "--release", "-p", "rcrm-flutter-bridge")
-if ($MobileDecode) {
-    $cargoArgs += @("--features", "mobile-decode")
+$features = @()
+if ($MobileDecode) { $features += "mobile-decode" }
+if ($MPVPoster) { $features += "mpv-poster" }
+if ($features.Count -gt 0) {
+    $cargoArgs += @("--features", ($features -join ","))
 }
 
 $deviceArgs = $cargoArgs + @("--target", "aarch64-apple-ios")

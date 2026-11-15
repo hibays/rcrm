@@ -12,7 +12,8 @@ import 'dart:typed_data';
 import 'dart:ffi';
 
 import 'package:ffi/ffi.dart';
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show ChangeNotifier, visibleForTesting, kDebugMode, debugPrint;
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
@@ -20,14 +21,34 @@ import '../ffi/rust_bridge.dart';
 import '../utils/ffmpeg_thumb_args.dart';
 import '../utils/media_url.dart';
 import '../utils/poster_queue.dart';
+import '../utils/poster_frame.dart';
 import 'item_cache_limit.dart';
 import 'player_factory.dart';
 import 'thumb_cache.dart';
+import 'thumb_webp_worker.dart';
 import 'net.dart';
+
+/// Bumped after a poster for a URL has been regenerated, so a mounted
+/// `VideoPoster` showing that URL reloads instead of keeping the frame it had.
+///
+/// A `ChangeNotifier` and not a `ValueNotifier<String?>`: the same URL is
+/// refreshed twice in a row often enough ("try again" after a failed decode),
+/// and two equal values would notify nobody.
+class PosterRefresh extends ChangeNotifier {
+  String? lastUrl;
+
+  void bump(String url) {
+    lastUrl = url;
+    notifyListeners();
+  }
+}
 
 class ThumbnailService {
   static final _posterCache = <String, Uint8List>{};
   static final _posterInflight = <String, Completer<Uint8List?>>{};
+
+  /// The item menu's "Regenerate thumbnail" writes here; `VideoPoster` listens.
+  static final PosterRefresh posterRefresh = PosterRefresh();
 
   /// Test hook: when true, generatePoster returns null immediately without
   /// enqueueing work or starting the 30s idle pool timer. Widget tests that
@@ -35,10 +56,37 @@ class ThumbnailService {
   @visibleForTesting
   static bool suppressPosterGeneration = false;
 
-  /// Poster width in pixels. Mobile constrains the Player surface to this
-  /// width (VideoControllerConfiguration); desktop passes it to ffmpeg
-  /// (`-vf scale=$_posterWidth:-1`). Both emit 640-wide JPEG.
+  /// Poster target width. Desktop passes it to ffmpeg (`-vf scale=640:-1`)
+  /// and gets a 640-wide JPEG; mobile passes it to the Rust poster encoder
+  /// (`rcrm_encode_poster_webp`), which downscales the raw BGRA screenshot and
+  /// returns a 640-wide WebP.
+  ///
+  /// The mobile player's `VideoControllerConfiguration(width: 640)` sizes the
+  /// texture, NOT `screenshot-raw`: that returns the decoded frame at the
+  /// video's own resolution (measured on a 1080p, a 720×1280 and a 640×360
+  /// sample — always the source size). The old path then let media_kit copy it
+  /// pixel by pixel into an `image` buffer and JPEG-encode it in pure Dart:
+  /// 8.3 MB and ~2 M iterations per attempt at 1080p. A `vf=scale=640:-2`
+  /// property does not help (mpv drops it on this build).
   static const int _posterWidth = 640;
+
+  /// Shot budget per position: the first ask plus two re-shots, 80ms apart,
+  /// for the case where the video output hands back the frame it already had.
+  /// On every sample measured, a missed 1080p seek landed on the first retry.
+  static const int _staleRetries = 3;
+  static const Duration _staleWait = Duration(milliseconds: 80);
+
+  /// Per-stage poster diagnostics.
+  ///
+  /// Debug builds only, `debugPrint` (never `print`): poster generation is the
+  /// one pipeline whose cost lives on the device rather than in a test, and
+  /// "the thumbnails are slow" is not reproducible from a bug report without
+  /// the stage numbers (shot / compare / encode / total). Tags mirror the probe
+  /// that produced the numbers in `poster_frame.dart`, so a phone run and a
+  /// desktop run read the same.
+  static void _posterLog(String line) {
+    if (kDebugMode) debugPrint('POSTER|$line');
+  }
 
   /// Throttle: mobile serializes (1) through a single reused Player to bound
   /// memory; desktop runs several ffmpeg processes in parallel.
@@ -157,6 +205,7 @@ class ThumbnailService {
   Future<Uint8List?> generatePoster(
     String videoUrl, {
     bool refresh = false,
+    int? durationSeconds,
   }) async {
     if (suppressPosterGeneration) return null;
     final id = ThumbCache.pathId(videoUrl);
@@ -198,8 +247,8 @@ class ThumbnailService {
       run: () async {
         try {
           final result = isMobile
-              ? await _posterMobile(videoUrl)
-              : await _posterDesktop(videoUrl);
+              ? await _posterMobile(videoUrl, durationSeconds)
+              : await _posterDesktop(videoUrl, durationSeconds);
           if (!completer.isCompleted) completer.complete(result);
         } catch (_) {
           if (!completer.isCompleted) completer.complete(null);
@@ -232,7 +281,10 @@ class ThumbnailService {
   }
 
   /// Desktop: system ffmpeg CLI, stdout pipe → RAM, blank-frame detection.
-  Future<Uint8List?> _posterDesktop(String videoUrl) async {
+  Future<Uint8List?> _posterDesktop(
+    String videoUrl,
+    int? durationSeconds,
+  ) async {
     final cached = _cacheGet(videoUrl);
     if (cached != null) return cached;
 
@@ -246,7 +298,15 @@ class ThumbnailService {
     final headers = {'Authorization': authVal};
     final safe = safeUrl(videoUrl); // no creds in URL
 
-    const positions = [0.0, 30.0, 15.0, 0.5, 3.0, 60.0, 120.0, 240.0];
+    // Where to look: `posterSeekPlan` — a fraction of the real length first,
+    // 0.0 last. The old fixed list started at 0.0, which is the frame no film
+    // advertises itself with; see that file for the measurement.
+    final positions = posterSeekPlan(
+      durationSeconds == null
+          ? Duration.zero
+          : Duration(seconds: durationSeconds),
+    );
+    final started = DateTime.now();
     for (final inputSeek in [true, false]) {
       for (final pos in positions) {
         // Built by `ffmpegThumbArgs` so the option ORDER and the conditional
@@ -283,11 +343,20 @@ class ThumbnailService {
             bytes.isNotEmpty &&
             bytes.length > 2000 &&
             !(await _isBlank(bytes))) {
+          _posterLog(
+            'desktop|hit|pos=$pos|inputSeek=$inputSeek'
+            '|bytes=${bytes.length}'
+            '|ms=${DateTime.now().difference(started).inMilliseconds}',
+          );
           await _cache(videoUrl, bytes);
           return bytes;
         }
       }
     }
+    _posterLog(
+      'desktop|no_frame|tried=${positions.length * 2}'
+      '|ms=${DateTime.now().difference(started).inMilliseconds}',
+    );
     return null;
   }
 
@@ -375,7 +444,22 @@ class ThumbnailService {
     }
   }
 
-  Future<Uint8List?> _posterMobile(String videoUrl) async {
+  /// One screenshot, bounded, with a failure as `null` — never a throw that
+  /// would abandon the rest of the position's attempts.
+  static Future<Uint8List?> _tryShot(Player player, String? format) async {
+    try {
+      return await player
+          .screenshot(format: format)
+          .timeout(const Duration(seconds: 9));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Uint8List?> _posterMobile(
+    String videoUrl,
+    int? durationSeconds,
+  ) async {
     final cached = _cacheGet(videoUrl);
     if (cached != null) return cached;
 
@@ -412,8 +496,37 @@ class ThumbnailService {
       } catch (_) {}
       player.pause();
 
-      final dur = player.state.duration;
-      const positions = [0.0, 30.0, 15.0, 0.5, 3.0, 60.0, 120.0, 240.0];
+      final dur = player.state.duration > Duration.zero
+          ? player.state.duration
+          : (durationSeconds == null
+                ? Duration.zero
+                : Duration(seconds: durationSeconds));
+      // The video's OWN pixel size, which is also the size `screenshot-raw`
+      // hands back (a `VideoControllerConfiguration(width: 640)` only sizes the
+      // texture). Null until a frame has been rendered, in which case every
+      // position falls back to media_kit's JPEG path.
+      final vw = player.state.width;
+      final vh = player.state.height;
+      final rawUsable = vw != null && vh != null && vw > 0 && vh > 0;
+      _posterLog('mobile|source=${vw}x$vh|target=$_posterWidth');
+      // Where to look: `poster_frame.dart`.
+      final positions = posterSeekPlan(dur);
+      _posterLog('mobile|plan=${positions.join(',')}');
+      final started = DateTime.now();
+      // The last RAW frame this job actually LOOKED at. It is seeded from a
+      // capture taken BEFORE the first seek: the player is paused on the
+      // pre-seek frame, and a seek can hand that same frame back (measured
+      // 25–75% of paused-seek screenshots). Without that baseline the FIRST
+      // candidate could not be noticed as stale — the old plan started at 0.0,
+      // where the pre-seek frame was the right one, but the new first candidate
+      // is content, so the first capture needs a baseline too.
+      //
+      // Raw and JPEG have separate baselines because their bytes are not
+      // comparable, and the raw frame is kept in the representation it arrived
+      // in (BGRA) — the channel swap, blank test and downscale are Rust's job.
+      Uint8List? previousRaw;
+      Uint8List? previousJpeg;
+      var baselined = false;
       for (final pos in positions) {
         // Yield point, taken BEFORE the seek: the player is between `open` and
         // the next lock-holding call, and each of seek/_waitForSeek/screenshot
@@ -454,27 +567,157 @@ class ThumbnailService {
             parked = false;
           }
         }
+        if (!baselined) {
+          baselined = true;
+          // The pre-seek frame, wanted only so the FIRST post-seek screenshot
+          // can be recognised as stale. One extra capture per poster job.
+          if (rawUsable) {
+            final base = await _tryShot(player, null);
+            if (base != null && base.length == vw * vh * 4) {
+              previousRaw = base;
+              _posterLog('mobile|baseline|raw|bytes=${base.length}');
+            }
+          }
+          if (previousRaw == null) {
+            final baseJpg = await _tryShot(player, 'image/jpeg');
+            if (baseJpg != null && baseJpg.isNotEmpty) {
+              previousJpeg = baseJpg;
+              _posterLog('mobile|baseline|jpeg|bytes=${baseJpg.length}');
+            }
+          }
+        }
         final seekTo = Duration(milliseconds: (pos * 1000).round());
-        if (dur > Duration.zero && seekTo > dur) continue;
+        if (dur > Duration.zero && seekTo >= dur) continue;
         try {
           await player.seek(seekTo).timeout(const Duration(seconds: 5));
           await _waitForSeek(player, seekTo);
         } catch (_) {}
         Uint8List? bytes;
-        try {
-          bytes = await player
-              .screenshot(format: 'image/jpeg')
-              .timeout(const Duration(seconds: 9));
-        } catch (_) {
-          bytes = null;
+        var blank = false;
+        for (var attempt = 0; attempt < _staleRetries; attempt++) {
+          // Path 1: the raw screenshot. The blank test, bilinear downscale and
+          // WebP encode all happen inside Rust (rcrm_encode_poster_webp), so
+          // neither isolate scans or resamples a pixel.
+          if (rawUsable) {
+            final shotStarted = DateTime.now();
+            final raw = await _tryShot(player, null);
+            final shotMs = DateTime.now()
+                .difference(shotStarted)
+                .inMilliseconds;
+            if (raw != null && raw.length == vw * vh * 4) {
+              final compareStarted = DateTime.now();
+              final stale = isStalePosterFrame(
+                position: pos,
+                previous: previousRaw,
+                current: raw,
+              );
+              final compareMs = DateTime.now()
+                  .difference(compareStarted)
+                  .inMilliseconds;
+              if (stale) {
+                _posterLog(
+                  'mobile|stale|pos=$pos|attempt=$attempt|raw'
+                  '|shot_ms=$shotMs|compare_ms=$compareMs',
+                );
+                await Future<void>.delayed(_staleWait);
+                continue;
+              }
+              previousRaw = raw;
+              final encodeStarted = DateTime.now();
+              final poster = await ThumbWebpWorker.instance.encodePosterBgra(
+                raw,
+                vw,
+                vh,
+                targetWidth: _posterWidth,
+              );
+              final encodeMs = DateTime.now()
+                  .difference(encodeStarted)
+                  .inMilliseconds;
+              if (poster != null) {
+                if (poster.blank) {
+                  _posterLog(
+                    'mobile|blank|pos=$pos|attempt=$attempt'
+                    '|shot_ms=$shotMs|encode_ms=$encodeMs|path=rust',
+                  );
+                  blank = true;
+                  break;
+                }
+                final webp = poster.bytes;
+                if (webp != null && webp.isNotEmpty) {
+                  _posterLog(
+                    'mobile|hit|pos=$pos|bytes=${webp.length}'
+                    '|path=rust|shot_ms=$shotMs|encode_ms=$encodeMs'
+                    '|total_ms=${DateTime.now().difference(started).inMilliseconds}',
+                  );
+                  bytes = webp;
+                  break;
+                }
+              } else {
+                _posterLog(
+                  'mobile|rust_unavailable|pos=$pos|attempt=$attempt'
+                  '|shot_ms=$shotMs',
+                );
+              }
+            }
+          }
+          // Path 2: media_kit's own JPEG, the contract of record. Used when the
+          // pixel size is unknown, the raw buffer is not tightly packed, or the
+          // Rust encoder/worker is unavailable. Its blank test is Rust too
+          // (rcrm_is_blank_frame); no Dart pixel loop here either.
+          final jpgStarted = DateTime.now();
+          final jpg = await _tryShot(player, 'image/jpeg');
+          final jpgMs = DateTime.now().difference(jpgStarted).inMilliseconds;
+          if (jpg == null || jpg.isEmpty) break;
+          if (isStalePosterFrame(
+            position: pos,
+            previous: previousJpeg,
+            current: jpg,
+          )) {
+            _posterLog(
+              'mobile|stale|pos=$pos|attempt=$attempt|jpeg'
+              '|shot_ms=$jpgMs',
+            );
+            await Future<void>.delayed(_staleWait);
+            continue;
+          }
+          previousJpeg = jpg;
+          bytes = jpg;
+          blank = jpg.length <= 2000 || await _isBlank(jpg);
+          if (blank) {
+            _posterLog(
+              'mobile|blank|pos=$pos|bytes=${jpg.length}'
+              '|path=jpeg|shot_ms=$jpgMs',
+            );
+          } else {
+            _posterLog(
+              'mobile|hit|pos=$pos|bytes=${jpg.length}'
+              '|path=jpeg|shot_ms=$jpgMs'
+              '|total_ms=${DateTime.now().difference(started).inMilliseconds}',
+            );
+          }
+          break;
         }
-        if (bytes == null || bytes.isEmpty) continue;
-        if (bytes.length > 2000 && !(await _isBlank(bytes))) {
-          await _cache(videoUrl, bytes);
-          result = bytes;
-          return result;
+        // Nothing usable at this position — no frame at all, a blank one, or
+        // every attempt handed back the frame the PREVIOUS position already
+        // showed. That last case is skipped on purpose: the stale frame is a
+        // real frame of this video, but it belongs to another position, and
+        // filing it here would both mis-attribute it and hide the fact that
+        // this seek produced nothing. The next position is the better bet.
+        if (bytes == null || bytes.isEmpty || blank) {
+          _posterLog(
+            'mobile|rejected|pos=$pos'
+            '|bytes=${bytes?.length ?? -1}|blank=$blank',
+          );
+          continue;
         }
+        await _cache(videoUrl, bytes);
+        result = bytes;
+        return result;
       }
+      _posterLog(
+        'mobile|no_frame|tried=${positions.length}'
+        '|ms=${DateTime.now().difference(started).inMilliseconds}',
+      );
     } catch (_) {
       try {
         await player.stop();

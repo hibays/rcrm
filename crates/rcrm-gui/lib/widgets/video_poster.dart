@@ -71,11 +71,33 @@ class _VideoPosterState extends State<VideoPoster> {
   @override
   void initState() {
     super.initState();
+    // A regenerated poster for THIS url must replace the frame on screen: the
+    // item menu's "Regenerate thumbnail" would otherwise only fill the cache
+    // and leave every mounted card showing what it had.
+    ThumbnailService.posterRefresh.addListener(_onPosterRefreshed);
     // After the frame, like `VideoCard` did: a wall of cards must not all start
     // generating posters inside the build that creates them.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _load();
     });
+  }
+
+  @override
+  void dispose() {
+    ThumbnailService.posterRefresh.removeListener(_onPosterRefreshed);
+    super.dispose();
+  }
+
+  void _onPosterRefreshed() {
+    if (!mounted) return;
+    if (ThumbnailService.posterRefresh.lastUrl != widget.item.url) return;
+    setState(() {
+      _poster = null;
+      _loading = true;
+    });
+    _retried = false;
+    _load();
+    _notify(false);
   }
 
   @override
@@ -115,7 +137,13 @@ class _VideoPosterState extends State<VideoPoster> {
     final gen = ++_gen;
     Uint8List? poster;
     try {
-      poster = await _ts.generatePoster(widget.item.url, refresh: refresh);
+      poster = await _ts.generatePoster(
+        widget.item.url,
+        refresh: refresh,
+        // Where to look is a fraction of the real length — without this the
+        // pipeline can only use absolute fallbacks (see `poster_frame.dart`).
+        durationSeconds: widget.item.durationSeconds,
+      );
     } catch (_) {
       poster = null;
     }

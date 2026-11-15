@@ -3,6 +3,9 @@
 All C-ABI functions are exposed via `dart:ffi` through `RustBridge` in
 `ffi/rust_bridge.dart`. Symbols marked *mobile-decode* are compiled only when
 the `mobile-decode` Cargo feature is on (Android/iOS builds; desktop omits it).
+Symbols marked *mpv-poster* use the separate `mpv-poster` feature (Android/iOS
+enable it too; desktop omits it unless asked); it deliberately does **not**
+require `mobile-decode`.
 
 ## Memory Ownership
 
@@ -13,7 +16,7 @@ Four shapes exist; picking the wrong one is a leak, a double free or worse.
 | **Returned string** | Rust (`str_to_cstring`) | Dart, via `rcrm_free_string` | `rcrm_get_server_url`, `rcrm_last_error`, `rcrm_version`, `rcrm_media_metadata_async`'s reply |
 | **Passed string** | Dart | Dart — Rust copies immediately | `rcrm_start_server`, `rcrm_crypt_folder` |
 | **Owned buffer** (`DecodeBuf`) | Dart (`calloc`, or a copy-free native fetch) | **Rust**, when the decode finishes | `rcrm_decode_avif_async` / `_jxl_async` / `_heic_async` |
-| **Borrowed buffer** | Dart | Dart, after the call returns | `rcrm_encode_thumb_webp`, `rcrm_generate_thumb_webp_from_image` |
+| **Borrowed buffer** | Dart | Dart, after the call returns | `rcrm_encode_thumb_webp`, `rcrm_generate_thumb_webp_from_image`, `rcrm_encode_poster_webp` |
 
 Rules that follow from the table:
 
@@ -130,7 +133,7 @@ mirror is `_DB` in `services/mobile_image_decoder.dart` (pinned by a test).
 
 ## WebP Thumbnails
 
-Two generators, differing only in what they take. Both return a `WebpBuf`
+Three generators, differing only in what they take. All return a `WebpBuf`
 (`{data_len, data}`) that Dart views in place and frees with
 `rcrm_free_webp_buf` (or a `NativeFinalizer`).
 
@@ -138,19 +141,27 @@ Two generators, differing only in what they take. Both return a `WebpBuf`
 |---|---|---|---|
 | `rcrm_encode_thumb_webp` | **raw RGBA** (`width*height*4`) | every platform | the engine-decoded path: all of desktop, and JPEG/PNG/WebP/HEIC-that-Rust-cannot-take on mobile |
 | `rcrm_generate_thumb_webp_from_image` | **an encoded image** (AVIF/JXL/HEIC) | *mobile-decode* | the on-disk thumbnail cache for software-decoded formats: Rust decodes → downscales → encodes, so no pixels enter Dart |
+| `rcrm_encode_poster_webp` | **raw BGRA** (mpv `screenshot-raw`) | *mpv-poster* | the mobile video poster: Rust blank-tests every pixel, downscales with the shared bilinear resampler and encodes WebP, so the Dart side never scans or resamples a frame |
 
 | Function | Signature |
 |---|---|
 | `rcrm_encode_thumb_webp` | `(data, len, width, height, quality)` → `WebpBuf*` |
 | `rcrm_generate_thumb_webp_from_image` | `(data, len, target_width, quality, kind_hint)` → `WebpBuf*` |
+| `rcrm_encode_poster_webp` | `(data, len, width, height, target_width, quality, out_blank)` → `WebpBuf*` |
 | `rcrm_free_webp_buf` | `(ptr)` → void |
 
 `kind_hint` for the from-image generator: 1 = AVIF, 2 = JXL, 3 = HEIC/HEIF,
-anything else sniffs the container header. Both inputs are **borrowed**.
+anything else sniffs the container header. All inputs are **borrowed**.
 
-Dart callers: `ThumbWebpWorker.encodeRgba` / `.generateThumbFromImage`
-(`services/thumb_webp_worker.dart`), driven by `DiskThumbImage`
-(`widgets/disk_thumb_image.dart`).
+`out_blank` for the poster encoder is an optional `*mut i32`: it becomes 1
+when the frame's mean BT.601 luma is outside 20..235 (the return is null and no
+WebP is encoded), 0 otherwise. `target_width` is a maximum; 0 keeps the source
+size. A null return with `out_blank == 0` is an encode error.
+
+Dart callers: `ThumbWebpWorker.encodeRgba` / `.generateThumbFromImage` /
+`.encodePosterBgra` (`services/thumb_webp_worker.dart`), driven by
+`DiskThumbImage` (`widgets/disk_thumb_image.dart`) and
+`ThumbnailService._posterMobile` (`services/thumbnail_service.dart`).
 
 ## QR / Cast
 
@@ -198,7 +209,7 @@ reasons; what changed is the string-based plumbing (below).
 
 ### What is already direct interop
 
-All 25 exports in `crates/rcrm-flutter-bridge/src/lib.rs` are handwritten
+All 26 exports in `crates/rcrm-flutter-bridge/src/lib.rs` are handwritten
 `extern "C"` functions reached through `dart:ffi` in `ffi/rust_bridge.dart`.
 They are synchronous, callable from any isolate (`Isolate.run` calls
 `RustBridge.load()`), zero-copy for media bytes (Memory Ownership above), and
@@ -243,7 +254,7 @@ argument keys, reply shape, `onChanged` push).
 
 **Migration path**: if Pigeon native interop reaches stable with Windows/Linux
 coverage and a solved `@FlutterApi` lifecycle, replace only
-`platform_bridge.dart`. The 25 C-ABI exports stay handwritten regardless; any
+`platform_bridge.dart`. The 26 C-ABI exports stay handwritten regardless; any
 generator used there must be a *validator* of the ownership contract, never the
 runtime binding.
 

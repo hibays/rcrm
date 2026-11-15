@@ -10,16 +10,19 @@
 #   ./scripts/build_android.sh -r           # release
 #   ./scripts/build_android.sh -r -s        # release + split APKs
 #   ./scripts/build_android.sh --mobile-decode  # on by default; kept for symmetry
+#   ./scripts/build_android.sh --mpv-poster     # on by default; Rust mpv poster
 set -euo pipefail
 
 MODE="debug"
 SPLIT=false
 MOBILE_DECODE=true
+MPV_POSTER=true
 while [[ $# -gt 0 ]]; do case "$1" in
   -r|--release) MODE="release"; shift ;;
   -s|--split)   SPLIT=true; shift ;;
   --mobile-decode) MOBILE_DECODE=true; shift ;;
-  *) echo "Usage: $0 [-r|--release] [-s|--split] [--mobile-decode]"; exit 1 ;;
+  --mpv-poster)    MPV_POSTER=true; shift ;;
+  *) echo "Usage: $0 [-r|--release] [-s|--split] [--mobile-decode] [--mpv-poster]"; exit 1 ;;
 esac; done
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -78,8 +81,12 @@ export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-L native=$STDCXX_ROOT/ar
 export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="-L native=$STDCXX_ROOT/x86_64 $LIBCXX_FLAGS"
 
 CARGO_ARGS=(build -p rcrm-flutter-bridge)
-if $MOBILE_DECODE; then
-  CARGO_ARGS+=(--features mobile-decode)
+FEATURES=()
+if $MOBILE_DECODE; then FEATURES+=(mobile-decode); fi
+if $MPV_POSTER; then FEATURES+=(mpv-poster); fi
+if [[ ${#FEATURES[@]} -gt 0 ]]; then
+  FEATURE_LIST=$(IFS=,; echo "${FEATURES[*]}")
+  CARGO_ARGS+=(--features "$FEATURE_LIST")
 fi
 CARGO_ARGS+=("$CARGO_FLAG")
 

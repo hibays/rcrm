@@ -131,14 +131,18 @@ single `--suggestions` diagnostic described above.
 - CMake + Ninja on PATH. The script points cmake-rs at the per-ABI shims in
   `scripts/cmake/` and adds the static C++ runtime link flags itself — a manual
   `cargo ndk` invocation has to do the same (see the script).
-- The Android/iOS scripts enable `mobile-decode` (AVIF + JXL + HEIC software
-  decoding) by default. The Windows/Linux/macOS scripts accept the same switch
-  explicitly (`-MobileDecode` / `--mobile-decode`) but default to omitting it;
-  use the switch there only for local decode testing, not for shipping desktop
-  builds. `heic` is a pure-Rust HEVC decoder (`backend-rust`), chosen so no
-  platform SDK is involved and cross-compilation keeps working; it is
-  AGPL-3.0-only-or-commercial and HEVC/HEIF is patent-encumbered, so read its
-  notices before shipping a build.
+- The Android/iOS scripts enable **two independent features** by default:
+  `mobile-decode` (AVIF + JXL + HEIC software decoding) and `mpv-poster`
+  (raw mpv screenshot → blank test + bilinear downscale + WebP, done in Rust).
+  `mpv-poster` deliberately does **not** require `mobile-decode`; it needs
+  only the shared resampler and the WebP encoder. The Windows/Linux/macOS
+  scripts accept both switches explicitly (`-MobileDecode` / `-MPVPoster`,
+  `--mobile-decode` / `--mpv-poster`) but default to omitting them; use them
+  there only for local testing, not for shipping desktop builds (desktop
+  posters come from ffmpeg). `heic` is a pure-Rust HEVC decoder
+  (`backend-rust`), chosen so no platform SDK is involved and
+  cross-compilation keeps working; it is AGPL-3.0-only-or-commercial and
+  HEVC/HEIF is patent-encumbered, so read its notices before shipping a build.
 
 ### Linux
 
@@ -189,8 +193,9 @@ Also set `DEFAULT_MAVEN_HOST = "https://storage.flutter-io.cn"` in flutter SDK (
 # Debug
 .\scripts\build_windows.ps1
 
-# Optional: include the mobile software decoders for local testing
+# Optional: include the mobile software decoders / mpv poster for local testing
 .\scripts\build_windows.ps1 -Release -MobileDecode
+.\scripts\build_windows.ps1 -Release -MPVPoster
 ```
 
 Pipeline: cargo build `--release` `-p rcrm-flutter-bridge` (with `RUSTFLAGS=-C target-cpu=native`) → download mpv-dev + ANGLE DLLs → `flutter build windows` → copy DLLs + app.so + flutter_assets to runner output.
@@ -199,7 +204,7 @@ Pipeline: cargo build `--release` `-p rcrm-flutter-bridge` (with `RUSTFLAGS=-C t
 
 ```powershell
 $env:ANDROID_NDK_HOME = "D:\Dev\Android\Sdk\ndk\28.2.13676358"
-# mobile-decode (AVIF/JXL/HEIC) is enabled by default
+# mobile-decode (AVIF/JXL/HEIC) and mpv-poster are enabled by default
 .\scripts\build_android.ps1 -Release -SplitAbi
 ```
 
@@ -209,7 +214,8 @@ Pipeline: `cargo-ndk` for 3 ABIs (aarch64, armv7, x86_64; zxing-cpp's C++ core i
 
 ```bash
 ./scripts/build_linux.sh -r
-# Optional: add --mobile-decode for the AVIF/JXL/HEIC Rust decoders
+# Optional: add --mobile-decode for the AVIF/JXL/HEIC Rust decoders,
+# and/or --mpv-poster for the Rust poster encoder
 # Output: build/linux/x64/{debug,release}/bundle/rcrm_gui
 ```
 
@@ -217,14 +223,15 @@ Pipeline: `cargo-ndk` for 3 ABIs (aarch64, armv7, x86_64; zxing-cpp's C++ core i
 
 ```bash
 ./scripts/build_macos.sh -r
-# Optional: add --mobile-decode for the AVIF/JXL/HEIC Rust decoders
+# Optional: add --mobile-decode for the AVIF/JXL/HEIC Rust decoders,
+# and/or --mpv-poster for the Rust poster encoder
 # Output: build/macos/Build/Products/{Debug,Release}/rcrm_gui.app
 ```
 
 ### iOS
 
 ```bash
-# mobile-decode (AVIF/JXL/HEIC) is enabled by default
+# mobile-decode (AVIF/JXL/HEIC) and mpv-poster are enabled by default
 ./scripts/build_ios.sh -r --no-codesign
 # Output: build/ios/iphoneos/Runner.app
 ```
@@ -425,6 +432,10 @@ cargo clippy --all                           # ZERO warnings enforced
 # Bridge, including the mobile-only software decoders (AVIF/JXL/HEIC)
 cargo test -p rcrm-flutter-bridge --features mobile-decode --release
 cargo clippy -p rcrm-flutter-bridge --features mobile-decode --all-targets
+
+# The poster feature is independent — this must build with no AVIF/JXL/HEIC deps
+cargo test -p rcrm-flutter-bridge --features mpv-poster
+cargo clippy -p rcrm-flutter-bridge --features mpv-poster --all-targets
 ```
 
 ### Bridge Build
@@ -438,7 +449,7 @@ cargo build --release -p rcrm-flutter-bridge
 cargo ndk --target aarch64-linux-android --target armv7-linux-androideabi \
   --target x86_64-linux-android \
   -o crates/rcrm-gui/android/app/src/main/jniLibs \
-  build -p rcrm-flutter-bridge --features mobile-decode --release
+  build -p rcrm-flutter-bridge --features mobile-decode,mpv-poster --release
 ```
 
 Cross-compile check without the NDK link step. `check` still runs
@@ -449,7 +460,7 @@ nothing is linked (the build script sets it; for a one-off command):
 $env:CMAKE_TOOLCHAIN_FILE_aarch64_linux_android = "$PWD/scripts/cmake/android-arm64-v8a.cmake"
 $env:CMAKE_GENERATOR = "Ninja"
 RUSTC_BOOTSTRAP=rav1d cargo ndk --target aarch64-linux-android check \
-  -p rcrm-flutter-bridge --features mobile-decode
+  -p rcrm-flutter-bridge --features mobile-decode,mpv-poster
 ```
 
 ## Troubleshooting
