@@ -4,6 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
 
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -38,6 +39,12 @@ class _RcrmAppState extends ConsumerState<RcrmApp> {
   @override
   void initState() {
     super.initState();
+    // Anchor popups open downward from the target widget's bottom-left edge
+    // (mirrors the native PopupMenuButton alignment). Player menus opt into
+    // the upward variant per-call via SmartPopupMenu(openUpward: true).
+    SmartDialog.config.attach = SmartConfigAttach(
+      attachAlignmentType: SmartAttachAlignmentType.inside,
+    );
     // Load persisted UI settings (image/video layout, columns, preview,
     // thumbnail cache) once at startup — without this they always reset to
     // defaults on launch. Also mirrors the cache flag into ThumbCache.enabled.
@@ -92,6 +99,7 @@ class _RcrmAppState extends ConsumerState<RcrmApp> {
         return MaterialApp(
           title: 'RCrm Media Library',
           navigatorKey: _navigatorKey,
+          navigatorObservers: [FlutterSmartDialog.observer],
           // Both are PURE builds. Which one Flutter picks (themeMode may be
           // system) is only known inside the builder below, where the runtime
           // RCrmColors snapshot is applied once.
@@ -108,11 +116,13 @@ class _RcrmAppState extends ConsumerState<RcrmApp> {
           // switch is a state change, not an animation: make it atomic.
           themeAnimationDuration: Duration.zero,
           debugShowCheckedModeBanner: false,
-          builder: (context, child) {
-            RCrmTheme.applyToContext(context, accent);
-            if (Platform.isAndroid || Platform.isIOS) return child!;
-            return TitleBarShell(child: child!);
-          },
+          builder: FlutterSmartDialog.init(
+            builder: (context, child) {
+              RCrmTheme.applyToContext(context, accent);
+              if (Platform.isAndroid || Platform.isIOS) return child!;
+              return TitleBarShell(child: child!);
+            },
+          ),
           home: _deployMode == null
               ? const DoubleBackExit(
                   child: Scaffold(

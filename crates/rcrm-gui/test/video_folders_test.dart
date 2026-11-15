@@ -12,6 +12,7 @@
 // instance's: the video tab passes its own classification in, which is what stops
 // a change made for videos from regrouping the photo tab.
 
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -27,6 +28,7 @@ import 'package:rcrm_gui/services/media_library.dart';
 import 'package:rcrm_gui/services/settings_service.dart';
 import 'package:rcrm_gui/services/thumbnail_service.dart';
 import 'package:rcrm_gui/services/webdav_client.dart';
+import 'package:rcrm_gui/widgets/smart_popup_menu.dart';
 import 'package:rcrm_gui/widgets/video_card.dart';
 import 'package:rcrm_gui/widgets/video_folder_card.dart';
 
@@ -93,6 +95,8 @@ Future<void> _pump(WidgetTester tester, ProviderContainer c) async {
       container: c,
       child: MaterialApp(
         theme: RCrmTheme.dark,
+        navigatorObservers: [FlutterSmartDialog.observer],
+        builder: FlutterSmartDialog.init(),
         home: const Scaffold(body: VideoScreen()),
       ),
     ),
@@ -256,9 +260,13 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.text('By folder'), findsOneWidget);
-      await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'By folder'));
+      await tester.tap(find.widgetWithText(SmartPopupMenuItem<String>, 'By folder'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
+      // SmartDialog's dismiss is async (animation -> post-frame -> future), so
+      // flush the continuation and the provider rebuild it triggers.
+      await tester.pump();
+      await tester.pump();
 
       expect(_folderCards(tester), ['Alpha', 'Bravo']);
       await tester.pump();
@@ -282,9 +290,12 @@ void main() {
       await tester.tap(find.byTooltip('Organize'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
-      await tester.tap(find.widgetWithText(PopupMenuItem<String>, 'Ungrouped'));
+      await tester.tap(find.widgetWithText(SmartPopupMenuItem<String>, 'Ungrouped'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
+      // Flush the async dismiss continuation before reading the new arrangement.
+      await tester.pump();
+      await tester.pump();
 
       expect(_folderCards(tester), isEmpty);
       expect(_videoCards(tester), [

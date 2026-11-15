@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -24,6 +25,7 @@ import '../services/thumbnail_service.dart';
 import '../utils/natural_sort.dart';
 import '../utils/format.dart';
 import '../widgets/cast_auto_next_panel.dart';
+import '../widgets/smart_popup_menu.dart';
 import '../widgets/pooled_image.dart';
 import '../widgets/video_card.dart';
 import 'cast_scan_screen.dart';
@@ -515,9 +517,10 @@ class _State extends ConsumerState<CastRemoteScreen>
       _awaitStartPath = null;
       _awaitStartSince = null;
       _ui.mutate(() => _ui.localPlaying = null);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Play failed: $e')));
+      SmartDialog.showNotify(
+        msg: 'Play failed: $e',
+        notifyType: NotifyType.error,
+      );
     } finally {
       _playInFlight = false;
     }
@@ -565,9 +568,10 @@ class _State extends ConsumerState<CastRemoteScreen>
       _ui.mutate(() => _ui.localPlaying = false);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Stop failed: $e')));
+      SmartDialog.showNotify(
+        msg: 'Stop failed: $e',
+        notifyType: NotifyType.error,
+      );
     }
   }
 
@@ -596,20 +600,19 @@ class _State extends ConsumerState<CastRemoteScreen>
   /// "Stop casting" flow: confirm, stop playback on the TV and end the
   /// session so the receiver goes back to a fresh QR.
   Future<void> _stopCasting() async {
-    final stop = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
+    final stop = await SmartDialog.show<bool>(
+      builder: (_) => AlertDialog(
         title: const Text('Exit cast?'),
         content: const Text(
           'Stops playback, unpairs, and the TV returns to its QR page.',
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
+            onPressed: () => SmartDialog.dismiss(result: false),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
+            onPressed: () => SmartDialog.dismiss(result: true),
             child: const Text('Exit cast'),
           ),
         ],
@@ -633,10 +636,9 @@ class _State extends ConsumerState<CastRemoteScreen>
       // alive and it still shows "Paired" with no QR. Keep the saved pairing
       // + relay so the user can resume later; wiping them would strand the
       // TV with no way to re-pair.
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('TV unreachable - not unpaired, connection kept'),
-        ),
+      SmartDialog.showNotify(
+        msg: 'TV unreachable - not unpaired, connection kept',
+        notifyType: NotifyType.warning,
       );
     }
     if (!mounted) return;
@@ -672,15 +674,14 @@ class _State extends ConsumerState<CastRemoteScreen>
           leading: BackButton(onPressed: _handleBack),
           title: const Text('Remote'),
           actions: [
-            PopupMenuButton<String>(
+            SmartPopupMenu<String>(
               tooltip: 'More',
-              icon: const Icon(Icons.more_vert),
               onSelected: (v) {
                 if (v == 'disconnect') _disconnectOnly();
                 if (v == 'stop') _stopCasting();
               },
-              itemBuilder: (context) => [
-                const PopupMenuItem(
+              items: const [
+                SmartPopupMenuItem(
                   value: 'disconnect',
                   child: ListTile(
                     dense: true,
@@ -689,7 +690,7 @@ class _State extends ConsumerState<CastRemoteScreen>
                     subtitle: Text('TV keeps playing'),
                   ),
                 ),
-                const PopupMenuItem(
+                SmartPopupMenuItem(
                   value: 'stop',
                   child: ListTile(
                     dense: true,
@@ -699,6 +700,7 @@ class _State extends ConsumerState<CastRemoteScreen>
                   ),
                 ),
               ],
+              child: const Icon(Icons.more_vert),
             ),
           ],
         ),

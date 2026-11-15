@@ -14,6 +14,7 @@
 // future caller meet it. That seam and its image-page twin
 // (`SettingsNotifier.setImageSort`) are covered below.
 
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -26,6 +27,7 @@ import 'package:rcrm_gui/providers/settings_provider.dart';
 import 'package:rcrm_gui/screens/video_screen.dart';
 import 'package:rcrm_gui/services/settings_service.dart';
 import 'package:rcrm_gui/services/thumbnail_service.dart';
+import 'package:rcrm_gui/widgets/smart_popup_menu.dart';
 import 'package:rcrm_gui/widgets/video_card.dart';
 
 const _ascending = ['alpha.mp4', 'bravo.mp4', 'charlie.mp4'];
@@ -75,6 +77,8 @@ Future<void> _pumpVideoScreen(WidgetTester tester, ProviderContainer c) async {
       container: c,
       child: MaterialApp(
         theme: RCrmTheme.dark,
+        navigatorObservers: [FlutterSmartDialog.observer],
+        builder: FlutterSmartDialog.init(),
         home: const Scaffold(body: VideoScreen()),
       ),
     ),
@@ -100,9 +104,9 @@ double _y(WidgetTester tester, String name) =>
 /// Pumps fixed durations rather than `pumpAndSettle`: the poster placeholders
 /// carry spinners that never settle.
 Future<void> _pickSortField(WidgetTester tester, String field) async {
-  // The sort chip is the first PopupMenuButton in the toolbar row; the
+  // The sort chip is the first SmartPopupMenu in the toolbar row; the
   // extension filter is the second.
-  await tester.tap(find.byType(PopupMenuButton<String>).first);
+  await tester.tap(find.byType(SmartPopupMenu<String>).first);
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 400));
   await tester.tap(find.text(field));

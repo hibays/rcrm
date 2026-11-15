@@ -1,0 +1,206 @@
+// widgets/smart_popup_menu.dart
+// A drop-in replacement for [PopupMenuButton] built on
+// `flutter_smart_dialog`'s anchored [SmartDialog.showAttach].
+//
+// Why not keep PopupMenuButton: the project is migrating every transient
+// surface (dialogs, snackbars, menus) onto flutter_smart_dialog so they all
+// share one overlay/lifecycle. showAttach anchors the menu to the trigger
+// widget and reuses the same mask/back-button handling as the dialogs.
+//
+// Behaviour mirrors the native control:
+//  - tap the [child] trigger to open;
+//  - the menu opens down from the trigger's bottom-left (like the default
+//    PopupMenuButton) unless [openUpward] is set, which flips it to open up;
+//  - tap an item -> [SmartDialog.dismiss(result: value)] -> [onSelected];
+//  - tap outside / back -> [onClosed] (the native `onCanceled` equivalent);
+//  - [onOpened] fires the moment the menu is asked to open.
+//
+// GEOMETRY is the native control's too, and that part is not cosmetic: the
+// anchor sizes the panel from its content, so an unconstrained menu stretches
+// to the screen (measured on Windows: the player's speed menu covered the
+// whole window width). PopupMenuButton's own model is reproduced here — loose
+// 112..280dp by default, an intrinsic-width body in 56dp steps, 8dp of menu
+// padding, and 48dp rows, because a menu is a list of choices, not a panel.
+//
+// Items are [SmartPopupMenuItem] widgets (not plain data) so tests can find a
+// row by type exactly as they used to find `PopupMenuItem<T>`; each one's
+// [SmartPopupMenuItem.child] is the full row content (check mark, icon, label,
+// trailing — whatever the caller wants), so the player's custom accent-coloured
+// rows are reproduced exactly rather than forced through a one-shape ListTile.
+
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
+import 'package:material_ui/material_ui.dart';
+
+import '../config/theme.dart';
+
+/// One selectable entry in a [SmartPopupMenu].
+///
+/// [child] is the entire row contents — build it exactly as you would the
+/// `child` of a `PopupMenuItem` (a `Row` with a leading icon, label, optional
+/// trailing check, etc.). [SmartPopupMenu] only wraps it in a tappable, padded
+/// surface; it never inspects or re-lays-out the content.
+class SmartPopupMenuItem<T> extends StatelessWidget {
+  final T value;
+  final Widget child;
+  final bool enabled;
+
+  /// Row padding. Horizontal 12dp mirrors Material 3's own menu item inset;
+  /// the vertical 6dp is this row's own air, because Material gives a menu item
+  /// NO vertical padding and a row that grows past the floor would otherwise
+  /// touch the next label.
+  final EdgeInsetsGeometry padding;
+
+  /// The row's floor. 48dp is one menu row (Material's minimum interactive
+  /// dimension), and it is a FLOOR: content that outgrows it grows the row.
+  final double minHeight;
+
+  const SmartPopupMenuItem({
+    super.key,
+    required this.value,
+    required this.child,
+    this.enabled = true,
+    this.padding = const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+    this.minHeight = 48,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: enabled ? () => SmartDialog.dismiss(result: value) : null,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minHeight: minHeight),
+        child: Padding(
+          padding: padding,
+          child: Align(
+            alignment: AlignmentDirectional.centerStart,
+            heightFactor: 1.0,
+            child: child,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class SmartPopupMenu<T> extends StatelessWidget {
+  /// The trigger shown in the parent layout. For an icon-only menu pass an
+  /// `Icon`; for the old `child:` (chip) form pass that same widget. It is
+  /// wrapped in a tappable ink surface and, when [tooltip] is set, a tooltip.
+  final Widget child;
+
+  final List<SmartPopupMenuItem<T>> items;
+
+  final ValueChanged<T>? onSelected;
+
+  /// Mirrors `PopupMenuButton.onOpened`.
+  final VoidCallback? onOpened;
+
+  /// Mirrors `PopupMenuButton.onCanceled` — fires whenever the menu closes
+  /// without a selection (outside tap, back button, mask).
+  final VoidCallback? onClosed;
+
+  /// Open upward from the trigger's top-left instead of downward. Used by the
+  /// player controls whose menus must clear the transport bar.
+  final bool openUpward;
+
+  final String? tooltip;
+
+  /// Surface colour of the menu panel. Defaults to the app's ash panel; the
+  /// player passes its own `playerSurface`.
+  final Color? backgroundColor;
+
+  final double elevation;
+  final BorderRadius? borderRadius;
+
+  /// Width constraints for the whole menu. Null means PopupMenuButton's own
+  /// default: loose 112..280dp around the content's intrinsic width.
+  final BoxConstraints? constraints;
+
+  const SmartPopupMenu({
+    super.key,
+    required this.child,
+    required this.items,
+    this.onSelected,
+    this.onOpened,
+    this.onClosed,
+    this.openUpward = false,
+    this.tooltip,
+    this.backgroundColor,
+    this.elevation = 6,
+    this.borderRadius,
+    this.constraints,
+  });
+
+  /// Material 3's own popup-menu shape (4dp). A caller that wants the app's
+  /// card radius (the player's menus do) passes [RCrmRadii.md] itself.
+  static const BorderRadius _nativeMenuRadius = BorderRadius.all(
+    Radius.circular(4),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final trigger = InkWell(
+      onTap: () => _open(context),
+      borderRadius: borderRadius ?? _nativeMenuRadius,
+      child: child,
+    );
+    return tooltip != null
+        ? Tooltip(message: tooltip!, child: trigger)
+        : trigger;
+  }
+
+  Future<void> _open(BuildContext context) async {
+    onOpened?.call();
+    final result = await SmartDialog.showAttach<T>(
+      // The trigger's own context is the anchor.
+      targetContext: context,
+      // bottomLeft = open downward, left-aligned (native default);
+      // topLeft + inside = open upward, left-aligned (player bars).
+      alignment: openUpward ? Alignment.topLeft : Alignment.bottomLeft,
+      // A menu has no dark scrim — the transparent mask still captures the
+      // outside tap so it dismisses, but the page beneath stays visible.
+      maskColor: Colors.transparent,
+      clickMaskDismiss: true,
+      onDismiss: onClosed,
+      builder: (_) => _buildMenu(context),
+    );
+    if (result != null) onSelected?.call(result);
+  }
+
+  Widget _buildMenu(BuildContext context) {
+    final theme = Theme.of(context);
+    final panel = Material(
+      // A menu is a card, and Material 3's own menu paints it with the surface
+      // tint DISABLED. Say so explicitly: the player's surface is a fixed Ash,
+      // and a future non-transparent tint default would wash it toward the
+      // theme's primary.
+      type: MaterialType.card,
+      color: backgroundColor ?? RCrmColors.ash,
+      surfaceTintColor: Colors.transparent,
+      elevation: elevation,
+      borderRadius: borderRadius ?? _nativeMenuRadius,
+      clipBehavior: Clip.antiAlias,
+      // PopupMenuItem painted its rows with the theme's `labelLarge` and the
+      // palette's `onSurface` ink. Keep that baseline: a caller that styles
+      // only its own values (the toolbar's plain labels) still looks like a
+      // menu row rather than like body copy.
+      textStyle: theme.textTheme.labelLarge,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [...items],
+        ),
+      ),
+    );
+    // IntrinsicWidth is what keeps a menu a menu: the anchored surface would
+    // otherwise hand the Column the whole screen width, and `stretch` would
+    // fill it (measured: the player's speed menu opened as a full-window slab).
+    return ConstrainedBox(
+      constraints:
+          constraints ?? const BoxConstraints(minWidth: 112, maxWidth: 280),
+      child: IntrinsicWidth(stepWidth: 56, child: panel),
+    );
+  }
+}

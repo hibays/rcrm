@@ -323,6 +323,14 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "3.5.0"
+  flutter_smart_dialog:
+    dependency: "direct main"
+    description:
+      name: flutter_smart_dialog
+      sha256: f397a3795797e29d64e1e61f05a779473d3d8f092cde0c24bbf56410e0d55d7f
+      url: "https://pub.flutter-io.cn"
+    source: hosted
+    version: "5.3.1"
   flutter_staggered_grid_view:
     dependency: "direct main"
     description:

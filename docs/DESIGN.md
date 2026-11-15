@@ -333,6 +333,19 @@ Surfaces are flat at rest. Shadows appear only as a response to state — hover,
 - **Background:** Ash surface in Night, cream ash in Day (from `dialogTheme`)
 - **OK button:** Standard text button
 
+### Overlays (flutter_smart_dialog)
+
+Every transient surface — dialogs, notifications, anchored menus, the viewer's info sheet — is rendered by `flutter_smart_dialog`, not by `showDialog` / `ScaffoldMessenger` / `PopupMenuButton` / `showModalBottomSheet`. The widget look is unchanged; only the overlay and its lifecycle moved, so all of them share one queue, one mask and one back-button policy.
+
+- **Dialogs:** `SmartDialog.show` wrapping the same Material `AlertDialog` / `SimpleDialogOption` content; dismissal is `SmartDialog.dismiss(result:)`, never `Navigator.pop`. A dialog that must not close on an outside tap sets `clickMaskDismiss: false` (the old `barrierDismissible: false`). Route-level back navigation stays `Navigator.pop`.
+- **Menus:** `SmartPopupMenu`, anchored with `showAttach` to the trigger's own context. Downward menus use `Alignment.bottomLeft`; the player's menus open upward with `Alignment.topLeft` (`openUpward: true`), so they clear the transport bar instead of covering the chip that opened them. The global `attachAlignmentType` is `inside`, which aligns the menu's left edge to the trigger's — the native `PopupMenuButton` reading.
+- **Menu geometry is the native menu's, not the anchor's:** an anchored surface hands its child the whole screen, so the panel is `IntrinsicWidth` (56dp steps) inside the native `112–280dp` bounds, with 8dp of menu padding and 48dp rows — the same numbers `PopupMenuButton` uses. Without that, a menu whose caller passes no width (the player's rate menu, the cast remote's More menu, the toolbar menus) opens as a full-window slab.
+- **Menu mask:** transparent, `clickMaskDismiss: true`. A menu does not dim the page the way a dialog does, but an outside tap is still what closes it.
+- **A dialog's content cannot use a `Navigator`:** `SmartDialog` renders above the app's `Navigator`, so content with no Navigator ancestor cannot push a route — a `DropdownButton` in a SmartDialog dialog did nothing when tapped (measured: "Navigator operation requested with a context that does not include a Navigator"). Controls that open a popup must use `SmartPopupMenu` (same overlay, no Navigator needed), as the thumbnail-cache dialog's trim target does.
+- **Menu selection:** each row is a `SmartPopupMenuItem` (a widget, so tests can find it by type) that calls `SmartDialog.dismiss(result: value)`; `SmartPopupMenu.onSelected` fires only for a real selection, while `onClosed` covers both selection and cancel (the old `onCanceled`).
+- **Notifications:** `SmartDialog.showNotify`, with severity carrying meaning — `error` for an action that failed, `warning` for a state the user should notice, `success` for a completed clean-up. The "press back again to exit" hint is `warning` at 1500 ms.
+- **Bottom sheets:** the viewer's info sheet is a bottom-anchored `SmartDialog.show` (`bottomCenter`, full width, black 35% scrim) rather than `showModalBottomSheet`.
+
 ### Format Badges (Image Cards)
 
 - **Background:** Semi-transparent black (`Colors.black54`), 4px radius

@@ -19,6 +19,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
+import 'smart_popup_menu.dart';
 
 import '../config/theme.dart';
 import '../utils/format.dart';
@@ -667,11 +668,6 @@ class PlayerControlBar extends StatefulWidget {
 class _PlayerControlBarState extends State<PlayerControlBar> {
   static const _speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
-  /// Row height of one speed entry and the menu's own padding — the popup's
-  /// upward offset is derived from these instead of repeating the numbers.
-  static const double _speedItemHeight = 40;
-  static const double _menuPadding = 16;
-
   /// Position the user is scrubbing to, or null when not dragging. Purely
   /// local interaction state — playback state stays in the screen.
   double? _scrub;
@@ -1084,32 +1080,24 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
     // the default: a video running at 1.5x should be answerable at a glance,
     // and at 1x the chip goes back to neutral. The Rarity Rule, in one control.
     final altered = (widget.speed - 1.0).abs() > 0.001;
-    return PopupMenuButton<double>(
-      initialValue: widget.speed,
-      onSelected: (s) {
-        widget.onMenuVisibilityChanged?.call(false);
-        widget.onSpeedChanged?.call(s);
-      },
+    return SmartPopupMenu<double>(
+      // Open upward, clear of the bar (replaces the old pixel `offset`).
+      openUpward: true,
+      // The Ash surface and a hairline of elevation, instead of Material's
+      // default menu tint — over video, a menu is a surface of THIS app.
+      backgroundColor: RCrmColors.playerSurface,
+      elevation: 8,
+      borderRadius: BorderRadius.circular(RCrmRadii.md),
+      tooltip: 'Playback speed',
       // The menu is a panel too: while it is open the bar must not fade out
       // from under it (the screen arms its idle timer from this).
       onOpened: () => widget.onMenuVisibilityChanged?.call(true),
-      onCanceled: () => widget.onMenuVisibilityChanged?.call(false),
-      tooltip: 'Playback speed',
-      // Open upward, clear of the bar, sized to the menu it will show.
-      offset: Offset(0, -(_speedItemHeight * _speeds.length + _menuPadding)),
-      // The Ash surface and a hairline of elevation, instead of Material's
-      // default menu tint — over video, a menu is a surface of THIS app.
-      color: RCrmColors.playerSurface,
-      surfaceTintColor: Colors.transparent,
-      elevation: 8,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(RCrmRadii.md),
-      ),
-      itemBuilder: (_) => _speeds
+      onClosed: () => widget.onMenuVisibilityChanged?.call(false),
+      onSelected: (s) => widget.onSpeedChanged?.call(s),
+      items: _speeds
           .map(
-            (s) => PopupMenuItem(
+            (s) => SmartPopupMenuItem(
               value: s,
-              height: _speedItemHeight,
               child: Row(
                 // No flex child: the menu is an IntrinsicWidth, and the widest
                 // row is what every row gets.
@@ -1178,40 +1166,10 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
     ),
   };
 
-  /// Row height of one mode entry. A FLOOR, not a height: `PopupMenuItem.height`
-  /// is a minimum, and Material 3 gives an item no vertical padding of its own,
-  /// so a note that wraps past this floor grows its own row (see
-  /// [_modeRowHeight], and [_modeRowBreathing] for the room it then needs to not
-  /// touch its neighbour).
-  ///
-  /// 48 is one menu row, not one explanation: the note is a line, so the row is
-  /// a row. It spent a while at 78 — and at 95/139 measured — because the note
-  /// was two sentences, and four of those turned the menu into a panel taller
-  /// than the video it covers.
-  static const double _modeItemHeight = 48;
-
   /// Widest the mode menu grows before a note wraps: wide enough for the longest
   /// of the four lines at the compact font, narrow enough for a landscape phone
   /// and for the menu to open above the bar on a short window.
   static const double _modeMenuMaxWidth = 300;
-
-  /// Material 3's own `PopupMenuItem` padding (12dp each side), which is what the
-  /// row's text really wraps inside. Copied rather than derived: the framework
-  /// owns the number, so if it ever changes, the note wraps differently than the
-  /// row was measured for — the same coupling the width budget accepts for
-  /// `_measure`, and the reason the wrap width is written down here at all.
-  static const double _modeItemPadding = 12;
-
-  /// The glyph column and the gap that follows it.
-  static const double _modeGlyphColumn = 18 + 12;
-
-  /// The check the selected row alone carries, and its gap.
-  static const double _modeCheckColumn = 8 + 15;
-
-  /// Air above and below a row's content once that content outgrows the floor —
-  /// 6dp each side. Material 3 hands a menu item NO vertical padding, so without
-  /// this a row at 1.6x text ends exactly where the next row's label begins.
-  static const double _modeRowBreathing = 12;
 
   /// The gap between a mode's label and its note — in the row AND in the
   /// measure that gives the row its height. One constant, or the two drift and
@@ -1242,52 +1200,6 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
     height: 1.35,
     color: RCrmColors.playerTextSecondary,
   );
-
-  /// The height one mode row really paints, at the width it will really get.
-  ///
-  /// Measured rather than assumed on purpose: the menu opens by a NEGATIVE
-  /// offset, so a row height that is only right at 1.0x text puts the last row
-  /// on top of the chip that opened it — a wrapped note adds a line, and a line
-  /// is 15dp at 1.0x and 24dp at 1.6x. The inner width is the menu's own max
-  /// width minus the item's padding and the row's furniture; the selected row
-  /// spends the extra on its check, so it gets less room for its note.
-  double _modeRowHeight(BuildContext context, PlaybackMode mode) {
-    final selected = widget.mode == mode;
-    final inner =
-        _modeMenuMaxWidth -
-        _modeItemPadding * 2 -
-        _modeGlyphColumn -
-        (selected ? _modeCheckColumn : 0);
-    // The rows are painted inside Material's own menu item, so the style they
-    // inherit is the theme's `labelLarge` — not this bar's `DefaultTextStyle`.
-    // That is not a hair-splitting difference: `labelLarge` carries a 0.1
-    // letter-spacing, which at 1.6x text is enough to wrap the longest note one
-    // line earlier than the bar's own style does, and a row measured one line
-    // short is a menu that lands on top of the chip that opened it.
-    final base = Theme.of(context).textTheme.labelLarge;
-    final content =
-        _measureHeight(
-          context,
-          mode.label,
-          selected ? _modeLabelActiveStyle : _modeLabelStyle,
-          inner,
-          base: base,
-        ) +
-        _modeLabelGap +
-        _measureHeight(context, mode.note, _modeNoteStyle, inner, base: base);
-    final grown = content + _modeRowBreathing;
-    return grown > _modeItemHeight ? grown : _modeItemHeight;
-  }
-
-  /// The height the whole menu will take — which is what decides how far above
-  /// the chip it has to open, so that "clear of the bar" stays true at every
-  /// text scale instead of only at the one it was computed for.
-  double _modeMenuHeight(BuildContext context) =>
-      PlaybackMode.values.fold<double>(
-        0,
-        (total, mode) => total + _modeRowHeight(context, mode),
-      ) +
-      _menuPadding;
 
   /// The playback mode, as the bar's second state-reporting chip.
   ///
@@ -1352,35 +1264,26 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
       return Tooltip(message: title(), child: chip());
     }
 
-    return PopupMenuButton<PlaybackMode>(
-      initialValue: widget.mode,
-      onSelected: (mode) {
-        widget.onMenuVisibilityChanged?.call(false);
-        widget.onModeChanged?.call(mode);
-      },
-      // The menu is a panel too: while it is open the bar must not fade out from
-      // under it (the screen arms its idle timer from this).
-      onOpened: () => widget.onMenuVisibilityChanged?.call(true),
-      onCanceled: () => widget.onMenuVisibilityChanged?.call(false),
-      tooltip: title(),
-      // Open upward, clear of the bar, sized to the menu it will really show.
-      // The height is measured, not `_modeItemHeight × 4`: see [_modeMenuHeight].
-      offset: Offset(0, -_modeMenuHeight(context)),
-      color: RCrmColors.playerSurface,
-      surfaceTintColor: Colors.transparent,
+    return SmartPopupMenu<PlaybackMode>(
+      // Open upward, clear of the bar (replaces the old pixel `offset`).
+      openUpward: true,
+      backgroundColor: RCrmColors.playerSurface,
       elevation: 8,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(RCrmRadii.md),
-      ),
+      borderRadius: BorderRadius.circular(RCrmRadii.md),
       constraints: const BoxConstraints(
         minWidth: 240,
         maxWidth: _modeMenuMaxWidth,
       ),
-      itemBuilder: (_) => PlaybackMode.values
+      tooltip: title(),
+      // The menu is a panel too: while it is open the bar must not fade out from
+      // under it (the screen arms its idle timer from this).
+      onOpened: () => widget.onMenuVisibilityChanged?.call(true),
+      onClosed: () => widget.onMenuVisibilityChanged?.call(false),
+      onSelected: (mode) => widget.onModeChanged?.call(mode),
+      items: PlaybackMode.values
           .map(
-            (mode) => PopupMenuItem(
+            (mode) => SmartPopupMenuItem(
               value: mode,
-              height: _modeRowHeight(context, mode),
               child: Row(
                 // A two-line row reads better with its glyph on the block's
                 // centre line than on the label's baseline.
@@ -1467,37 +1370,6 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
     return tp.width;
   }
 
-  /// Height of [text] wrapped at [maxWidth] — the same merge, the same scaler and
-  /// the same memoisation as [_measure], because a row measured in one font and
-  /// painted in another overflows in the other axis. [base] overrides the ambient
-  /// style where the widget that paints the text does not sit under this
-  /// context's `DefaultTextStyle` — the mode menu's rows are painted inside
-  /// Material's own menu item, whose text style is the theme's `labelLarge`.
-  static final Map<(String, TextStyle, double, double), double> _heightCache =
-      {};
-
-  static double _measureHeight(
-    BuildContext context,
-    String text,
-    TextStyle style,
-    double maxWidth, {
-    TextStyle? base,
-  }) {
-    final effective = (base ?? DefaultTextStyle.of(context).style).merge(style);
-    final scale = MediaQuery.textScalerOf(context);
-    final key = (text, effective, scale.scale(1), maxWidth);
-    final cached = _heightCache[key];
-    if (cached != null) return cached;
-    final tp = TextPainter(
-      text: TextSpan(text: text, style: effective),
-      textScaler: scale,
-      textDirection: TextDirection.ltr,
-    )..layout(maxWidth: maxWidth);
-    final height = tp.height;
-    if (_heightCache.length >= 128) _heightCache.clear();
-    _heightCache[key] = height;
-    return height;
-  }
 }
 
 // ── Fullscreen top bar ──────────────────────────────────────────────

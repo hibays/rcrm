@@ -7,6 +7,7 @@
 
 import 'package:material_ui/material_ui.dart';
 import 'column_button.dart';
+import 'smart_popup_menu.dart';
 
 /// The icon for each grouping, for the toolbar's button — the one place that has
 /// to pick an icon at RUNTIME.
@@ -177,11 +178,10 @@ class MediaToolbar extends StatelessWidget {
           // beside it carry no item icons, but their buttons do not change icon
           // with the selection either.)
           if (currentGrouping != null && onGroupingChanged != null)
-            PopupMenuButton<String>(
+            SmartPopupMenu<String>(
               tooltip: 'Organize',
-              icon: groupingIcon(currentGrouping!),
               onSelected: onGroupingChanged,
-              itemBuilder: (context) => [
+              items: [
                 // Written out rather than looped over a label map, and each icon
                 // a literal `const Icon`: the release icon tree-shaker keeps a
                 // glyph only when its `IconData` reaches it as a constant at a
@@ -190,7 +190,7 @@ class MediaToolbar extends StatelessWidget {
                 // while the hardcoded `Icons.folder` in the sort menu rendered.
                 // These three literals are what keeps all three glyphs in the
                 // font; the button below may then pick among them at runtime.
-                PopupMenuItem<String>(
+                SmartPopupMenuItem(
                   value: 'none',
                   child: _groupingRow(
                     context,
@@ -199,7 +199,7 @@ class MediaToolbar extends StatelessWidget {
                     label: 'Ungrouped',
                   ),
                 ),
-                PopupMenuItem<String>(
+                SmartPopupMenuItem(
                   value: 'folder',
                   child: _groupingRow(
                     context,
@@ -208,7 +208,7 @@ class MediaToolbar extends StatelessWidget {
                     label: 'By folder',
                   ),
                 ),
-                PopupMenuItem<String>(
+                SmartPopupMenuItem(
                   value: 'format',
                   child: _groupingRow(
                     context,
@@ -218,6 +218,7 @@ class MediaToolbar extends StatelessWidget {
                   ),
                 ),
               ],
+              child: groupingIcon(currentGrouping!),
             ),
 
           // Grid/List layout toggle (optional)
@@ -234,33 +235,35 @@ class MediaToolbar extends StatelessWidget {
   }
 
   Widget _sortChip(BuildContext context) {
-    return PopupMenuButton<String>(
+    return SmartPopupMenu<String>(
       // The chip's own chrome shows the field and the direction in effect, and
       // the menu's check marks the field that is active — neither says what
       // re-picking that field does. The tooltip is where the rule is stated;
-      // PopupMenuButton feeds the same string to the control's semantics, so
+      // SmartPopupMenu feeds the same string to the control's semantics, so
       // it is announced and not merely hovered.
       tooltip:
           'Sort: ${_capitalize(currentSort)} ${isAscending ? '↑' : '↓'} — '
           'pick ${_capitalize(currentSort)} again to reverse',
       onSelected: onSortChanged,
-      itemBuilder: (context) => sortOptions.map((opt) {
-        return PopupMenuItem(
-          value: opt,
-          child: Row(
-            children: [
-              if (opt == currentSort)
-                Icon(
-                  Icons.check,
-                  size: 16,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-              const SizedBox(width: 8),
-              Text(_capitalize(opt)),
-            ],
-          ),
-        );
-      }).toList(),
+      items: sortOptions
+          .map(
+            (opt) => SmartPopupMenuItem(
+              value: opt,
+              child: Row(
+                children: [
+                  if (opt == currentSort)
+                    Icon(
+                      Icons.check,
+                      size: 16,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                  const SizedBox(width: 8),
+                  Text(_capitalize(opt)),
+                ],
+              ),
+            ),
+          )
+          .toList(),
       child: Chip(
         avatar: const Icon(Icons.sort, size: 16),
         label: Text('${_capitalize(currentSort)} ${isAscending ? '↑' : '↓'}'),
@@ -270,47 +273,45 @@ class MediaToolbar extends StatelessWidget {
   }
 
   Widget _filterDropdown(BuildContext context) {
-    return PopupMenuButton<String>(
-      onSelected: (v) => onFilterChanged?.call(v),
-      itemBuilder: (context) {
-        final items = <PopupMenuItem<String>>[
-          PopupMenuItem(
-            value: '',
-            child: Row(
-              children: [
-                if (currentFilter == null || currentFilter!.isEmpty)
-                  Icon(
-                    Icons.check,
-                    size: 16,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                const SizedBox(width: 8),
-                const Text('All formats'),
-              ],
-            ),
-          ),
-        ];
-        for (final ext in extensions!) {
-          items.add(
-            PopupMenuItem(
-              value: ext,
-              child: Row(
-                children: [
-                  if (ext == currentFilter)
-                    Icon(
-                      Icons.check,
-                      size: 16,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                  const SizedBox(width: 8),
-                  Text(ext.toUpperCase()),
-                ],
+    final filterItems = <SmartPopupMenuItem<String>>[
+      SmartPopupMenuItem(
+        value: '',
+        child: Row(
+          children: [
+            if (currentFilter == null || currentFilter!.isEmpty)
+              Icon(
+                Icons.check,
+                size: 16,
+                color: Theme.of(context).colorScheme.primary,
               ),
-            ),
-          );
-        }
-        return items;
-      },
+            const SizedBox(width: 8),
+            const Text('All formats'),
+          ],
+        ),
+      ),
+    ];
+    for (final ext in extensions!) {
+      filterItems.add(
+        SmartPopupMenuItem(
+          value: ext,
+          child: Row(
+            children: [
+              if (ext == currentFilter)
+                Icon(
+                  Icons.check,
+                  size: 16,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+              const SizedBox(width: 8),
+              Text(ext.toUpperCase()),
+            ],
+          ),
+        ),
+      );
+    }
+    return SmartPopupMenu<String>(
+      onSelected: (v) => onFilterChanged?.call(v),
+      items: filterItems,
       child: Chip(
         avatar: const Icon(Icons.filter_list, size: 16),
         label: Text(

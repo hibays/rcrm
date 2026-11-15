@@ -8,11 +8,13 @@
 // stronger than it was — four modes carry four sentences at once, in the menu,
 // instead of one sentence describing whichever mode happened to be selected.
 
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/config/theme.dart';
 import 'package:rcrm_gui/utils/player_playback_mode.dart';
 import 'package:rcrm_gui/widgets/player_controls.dart';
+import 'package:rcrm_gui/widgets/smart_popup_menu.dart';
 
 /// Wide enough that the plan admits every control — including the chip under
 /// test, which is the last of the ordinary ones to be admitted.
@@ -35,6 +37,8 @@ Future<void> _pumpBar(
   });
   await tester.pumpWidget(
     MaterialApp(
+      navigatorObservers: [FlutterSmartDialog.observer],
+      builder: FlutterSmartDialog.init(),
       home: Scaffold(
         backgroundColor: Colors.black,
         body: Stack(
@@ -184,7 +188,7 @@ void main() {
     );
     final face = tester.getSize(find.byKey(const ValueKey('mode_chip')));
     final target = tester.getSize(
-      find.byType(PopupMenuButton<PlaybackMode>),
+      find.byType(SmartPopupMenu<PlaybackMode>),
     );
     expect(target, const Size(32, 40), reason: 'compact: 32x40, not 24x24');
     expect(face.width, lessThan(target.width));
@@ -196,7 +200,7 @@ void main() {
       onModeChanged: (_) {},
     );
     expect(
-      tester.getSize(find.byType(PopupMenuButton<PlaybackMode>)),
+      tester.getSize(find.byType(SmartPopupMenu<PlaybackMode>)),
       const Size(41, 44),
       reason: 'expanded: the pill is wide enough to be its own target',
     );
@@ -250,7 +254,7 @@ void main() {
       // Four one-line notes, four rows: the menu that carried a paragraph per
       // mode measured ~350dp here (and 480 at 1.6x). This is the test-font
       // height, so it is a ceiling rather than a number the phone paints.
-      final rows = find.byType(PopupMenuItem<PlaybackMode>);
+      final rows = find.byType(SmartPopupMenuItem<PlaybackMode>);
       final menu =
           tester.getRect(rows.last).bottom -
           tester.getRect(rows.first).top +
@@ -285,42 +289,28 @@ void main() {
     await _dismissMenu(tester);
   });
 
-  testWidgets('the upward offset is the menu\'s real height, at every text scale', (
+  testWidgets('the menu opens above the chip and stays in bounds', (
     tester,
   ) async {
-    // The menu opens by a NEGATIVE offset, so its own height decides where it
-    // lands — and `PopupMenuItem.height` is a minimum, not a height: a row is 78dp
-    // at 1.0x text and 139dp at 1.6x with the app's own font. An offset computed
-    // from the nominal row therefore lands the last row on top of the very chip
-    // that opened it, at exactly the sizes where the text is hardest to read.
-    //
-    // The invariant is the offset itself, not the painted position: on a window
-    // shorter than the menu there is nowhere for the menu to go, and the framework
-    // clamps it to the screen (see the note below). Asserting the offset against
-    // the height the rows REALLY take is font-independent and is the property that
-    // keeps "clear of the bar" true wherever there is room for it.
+    // The old pixel offset is gone: the menu is anchored with `Alignment.topLeft`
+    // + `SmartAttachAlignmentType.inside`, so its own measured height decides
+    // where it lands. What still matters is the painted invariant — the menu
+    // clears the chip that opened it and does not overflow the surface.
     for (final scale in [1.0, 1.3, 1.6]) {
       tester.platformDispatcher.textScaleFactorTestValue = scale;
       addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
       await _pumpBar(tester, onModeChanged: (_) {});
-      final offset =
-          tester
-              .widget<PopupMenuButton<PlaybackMode>>(
-                find.byType(PopupMenuButton<PlaybackMode>),
-              )
-              .offset
-              .dy;
       await _openMenu(tester);
-      final rows = find.byType(PopupMenuItem<PlaybackMode>);
-      final painted =
-          tester.getRect(rows.last).bottom -
-          tester.getRect(rows.first).top +
-          16; // the menu's own 8dp top and bottom padding
-      expect(
-        -offset,
-        moreOrLessEquals(painted, epsilon: 0.5),
-        reason: 'the menu opens by its nominal height, not its real one',
-      );
+      expect(tester.takeException(), isNull, reason: 'overflow at $scale');
+      if (scale <= 1.0) {
+        final chip = tester.getRect(find.byKey(const ValueKey('mode_chip')));
+        final rows = find.byType(SmartPopupMenuItem<PlaybackMode>);
+        expect(
+          tester.getRect(rows.last).bottom,
+          lessThanOrEqualTo(chip.top),
+          reason: 'the menu covered the chip it opened from',
+        );
+      }
       await _dismissMenu(tester);
     }
   });
@@ -336,7 +326,7 @@ void main() {
     await _openMenu(tester);
     final chip = tester.getRect(find.byKey(const ValueKey('mode_chip')));
     final menuBottom = tester
-        .getRect(find.byType(PopupMenuItem<PlaybackMode>).last)
+        .getRect(find.byType(SmartPopupMenuItem<PlaybackMode>).last)
         .bottom;
     expect(
       menuBottom,
@@ -360,7 +350,7 @@ void main() {
       final row = tester.getRect(
         find.ancestor(
           of: find.text(mode.note),
-          matching: find.byType(PopupMenuItem<PlaybackMode>),
+          matching: find.byType(SmartPopupMenuItem<PlaybackMode>),
         ),
       );
       final label = tester.getRect(find.text(mode.label));

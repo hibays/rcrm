@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
@@ -30,14 +31,14 @@ import '../services/media_metadata.dart';
 import '../widgets/pooled_image.dart';
 import '../widgets/viewer_zoom.dart';
 import '../widgets/image_info_sheet.dart';
+import '../utils/viewer_gesture.dart';
 
 enum _ViewerMode { still, animation, live }
 
-/// Which way a pointer gesture is committed to travel, decided once and never
-/// revisited (see [_ViewerPageState._decideGestureAxis]): a finger that curves
-/// mid-swipe keeps the axis it committed to, so the pull-to-dismiss and the
-/// pager can never both act on one gesture.
-enum _GestureAxis { undecided, page, pull }
+// The touch sequence's single owner (pager / pull / zoom) is
+// [ViewerGesture] in `utils/viewer_gesture.dart`: one state tree fed by both
+// the raw pointer Listener and the scale recognizer, so the pull-to-dismiss and
+// a pinch can never both act on one gesture.
 
 /// Keyboard shortcuts: ←/→ page between images, Esc closes the viewer.
 class _PrevIntent extends Intent {
@@ -214,30 +215,30 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
       item.url,
       kind: MetadataKind.image,
     );
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      // The panel is the point of this sheet — let it size to its content
-      // instead of the default half-screen cap (its own scroll view handles a
-      // short screen or a large text scale).
-      isScrollControlled: true,
+    SmartDialog.show(
+      // Bottom-anchored, full-width panel — mirrors the old bottom sheet.
+      alignment: Alignment.bottomCenter,
       // Light scrim: the photo stays the subject, the sheet is a layer over it.
-      barrierColor: Colors.black.withValues(alpha: 0.35),
-      builder: (sheetContext) => ImageInfoSheet(
-        item: item,
-        index: index + 1,
-        total: widget.items.length,
-        pixelSize: _pixelSizes[index],
-        metadata: metadata,
-        // Same verdict the badge and long-press use: the extension test, plus
-        // a container header that really confirmed animation frames.
-        animated: item.isAnimated || _animatedPages.contains(index),
-        onActualSize: viewport != null && viewport.canShowActualSize
-            ? () {
-                Navigator.of(sheetContext).pop();
-                viewport.zoomToActualSize();
-              }
-            : null,
+      maskColor: Colors.black.withValues(alpha: 0.35),
+      clickMaskDismiss: true,
+      builder: (_) => SizedBox(
+        width: double.infinity,
+        child: ImageInfoSheet(
+          item: item,
+          index: index + 1,
+          total: widget.items.length,
+          pixelSize: _pixelSizes[index],
+          metadata: metadata,
+          // Same verdict the badge and long-press use: the extension test, plus
+          // a container header that really confirmed animation frames.
+          animated: item.isAnimated || _animatedPages.contains(index),
+          onActualSize: viewport != null && viewport.canShowActualSize
+              ? () {
+                  SmartDialog.dismiss();
+                  viewport.zoomToActualSize();
+                }
+              : null,
+        ),
       ),
     );
   }
@@ -628,7 +629,6 @@ class _ViewerPage extends StatefulWidget {
 class _ViewerPageState extends State<_ViewerPage>
     with SingleTickerProviderStateMixin {
   _ViewerMode _mode = _ViewerMode.still;
-  bool _dragEngaged = false;
   bool _confirmedAnimated = false;
   Timer? _tapTimer;
   Offset _dismissOffset = Offset.zero;
@@ -654,14 +654,11 @@ class _ViewerPageState extends State<_ViewerPage>
     PointerDeviceKind.touch,
   );
 
-  /// Set while a pull-to-dismiss owns the gesture: the image must not pan at
-  /// the same time, or the photo moves twice as fast as the finger.
-  bool _pulling = false;
-
-  /// Which axis owns the current gesture. Reset on pointer down, then set the
-  /// first time the finger has travelled [_axisLockSlop] — and never changed
-  /// again for that gesture (see [_decideGestureAxis]).
-  _GestureAxis _axis = _GestureAxis.undecided;
+  /// The one state tree for the touch sequence in flight: which pointers are
+  /// down and who owns the gesture (the pager, the pull, or zoom/pan). Both
+  /// the raw pointer Listener and the scale recognizer feed it, so no two of
+  /// them can act on the same gesture — see `utils/viewer_gesture.dart`.
+  ViewerGesture _gesture = ViewerGesture.idle;
 
   /// Full-res stream subscription, for the decoded size.
   ImageStream? _sizeStream;
@@ -791,7 +788,11 @@ class _ViewerPageState extends State<_ViewerPage>
 
   void _onInteractionStart(ScaleStartDetails d) {
     // Zoomed or multi-touch: the gesture belongs to zoom/pan, never the page.
-    if (_isZoomed || d.pointerCount > 1) {
+    // The scale recognizer is the second half of the one gesture model, so a
+    // second finger it reports promotes the same state tree the pointer
+    // Listener is feeding (and clears the pager's anchor for this sequence).
+    if (d.pointerCount > 1) _gesture = _gesture.zoomNow();
+    if (_isZoomed || _gesture.zoomOwnsGesture) {
       _dragStartGlobal = null;
       return;
     }
@@ -803,20 +804,18 @@ class _ViewerPageState extends State<_ViewerPage>
   }
 
   void _onInteractionUpdate(ScaleUpdateDetails d) {
-    if (_isZoomed) {
+    // Pinch: hand control to zoom. It stays zoom for the rest of the sequence
+    // even if one finger lifts, and the pager's anchor is dropped because the
+    // focal point jumps when a finger lands or lifts.
+    if (d.pointerCount != 1) _gesture = _gesture.zoomNow();
+    if (_isZoomed || _gesture.zoomOwnsGesture) {
       _dragStartGlobal = null;
       return;
     }
     // A pull-to-dismiss owns the whole gesture once it engages — including
     // any sideways drift the finger picks up afterwards. Dragging down and
     // drifting left must never also slide the pager to the next picture.
-    if (_pulling) {
-      _dragStartGlobal = null;
-      return;
-    }
-    if (d.pointerCount != 1) {
-      // Pinch: hand control to zoom. Re-anchor if it returns to one finger
-      // (the focal point jumps when a finger lands or lifts).
+    if (_gesture.pullOwnsGesture) {
       _dragStartGlobal = null;
       return;
     }
@@ -835,10 +834,6 @@ class _ViewerPageState extends State<_ViewerPage>
     }
   }
 
-  /// Set while a pull-to-dismiss owns the current gesture: the page drag and
-  /// the picture's own panning both stand down for the rest of it.
-  bool _pullGesture = false;
-
   /// Snap the pager onto the nearest page without changing which one it is.
   void _settlePager() {
     if (!widget.pageController.hasClients) return;
@@ -855,18 +850,30 @@ class _ViewerPageState extends State<_ViewerPage>
   }
 
   void _onInteractionEnd(ScaleEndDetails d) {
+    // The last pointer lift is delivered to the Listener BEFORE the scale
+    // recognizer's end, so the state still records how the sequence ended:
+    // that is what settles a pager the pull (or a pinch) interrupted.
+    final endedAs = _gesture.owner;
+    final wasPageDrag = _dragStartGlobal != null;
+    _dragStartGlobal = null;
+    _gesture = _gesture.finish();
     // The route may have been popped mid-gesture (e.g. Esc while a swipe is
     // in flight): the controller is then detached, and any position access
     // would throw "PageController not attached".
     if (!mounted || !widget.pageController.hasClients) return;
-    final wasPull = _pullGesture;
-    final wasPageDrag = _dragStartGlobal != null;
-    _dragStartGlobal = null;
-    _pullGesture = false;
     // A pull never decides a page: put the pager back on the page it belongs
     // to (a sideways move can land before the pull is recognised, and the
     // pager must not be left parked between two pictures).
-    if (wasPull) {
+    if (endedAs == ViewerGestureOwner.pull) {
+      _settlePager();
+      setState(() {});
+      return;
+    }
+    // A pinch can interrupt a sideways page drag in the same way. The pager is
+    // parked mid-page with no owner left to finish the swipe, so settle it
+    // (the round-to-nearest rule the pull already uses) instead of leaving two
+    // half-visible pictures on screen.
+    if (endedAs == ViewerGestureOwner.zoom) {
       _settlePager();
       return;
     }
@@ -1124,13 +1131,32 @@ class _ViewerPageState extends State<_ViewerPage>
   }
 
   void _onPtrDown(PointerDownEvent e) {
-    _dragEngaged = false;
-    _pulling = false;
-    _pullGesture = false;
-    _axis = _GestureAxis.undecided;
-    _pointerStart = e.position;
-    _pullVelocity = VelocityTracker.withKind(e.kind)
-      ..addPosition(e.timeStamp, e.position);
+    final previous = _gesture;
+    final wasPulling = previous.pullOwnsGesture && previous.isActive;
+    final next = previous.pointerDown(e.pointer, zoomed: _isZoomed);
+    if (wasPulling && next.zoomOwnsGesture) {
+      // A second finger turns the sequence into a pinch. The pull stands down
+      // BEFORE it can translate (or dismiss) anything else, and the picture
+      // springs back instead of being stranded off-centre under the pinch.
+      _springBackPull();
+    }
+    _gesture = next;
+    // The origin belongs to the sequence's FIRST pointer. Resetting it on a
+    // second finger used to let that finger's own travel decide the axis,
+    // which is how one finger of a two-finger zoom could engage the pull.
+    if (next.pointers.length == 1) {
+      _pointerStart = e.position;
+      _pullVelocity = VelocityTracker.withKind(e.kind)
+        ..addPosition(e.timeStamp, e.position);
+    } else {
+      _pullVelocity.addPosition(e.timeStamp, e.position);
+    }
+    // A zoomed page is the only one that consults `panEnabled`; rebuild so a
+    // pull that just stood down (or a finished pull whose state is still the
+    // record of how it ended) cannot leave the next pan disabled.
+    if (_isZoomed || (previous.pullOwnsGesture && next.pointers.length == 1)) {
+      setState(() {});
+    }
   }
 
   /// A pull may only begin at rest — fit size, 1× — and never while a live
@@ -1144,57 +1170,27 @@ class _ViewerPageState extends State<_ViewerPage>
   bool _pullAllowed() =>
       pullAllowed(zoomed: _isZoomed, livePlaying: _mode == _ViewerMode.live);
 
-  /// Travel before the direction lock commits to an axis. Small enough that a
-  /// real swipe decides almost immediately, large enough to ignore the first
-  /// few pixels of finger tremor.
-  static const double _axisLockSlop = 8;
-
-  /// How far the leading axis must beat the other one to own the gesture.
-  static const double _axisDominance = 1.5;
-
-  /// The direction lock: which axis a finger's total [travel] since it went
-  /// down commits this gesture to. Decided once — a finger that curves later
-  /// keeps the axis it started on, because a gesture whose ownership can be
-  /// re-decided mid-flight is one where both gestures can fire.
-  ///
-  /// The case this exists for is a sideways page swipe whose finger sinks as it
-  /// goes: the pull used to be re-tested on every event against the finger's
-  /// total travel, so once the dip passed two thirds of the sideways travel it
-  /// took the gesture over mid-swipe — the photo slid down (and a long enough
-  /// dip dismissed the whole viewer) while the pager was switching pages. The
-  /// mirror case, a downward pull that drifts sideways, is why nothing here may
-  /// hand a vertical-leading gesture to the pager: it stays a pull, exactly as
-  /// it always was.
-  _GestureAxis _decideGestureAxis(Offset travel) {
-    final dx = travel.dx.abs();
-    // Sideways clearly dominates: the pager owns the gesture, so the pull must
-    // contribute nothing at all for the rest of it.
-    if (dx > _axisLockSlop && dx > travel.dy.abs() * _axisDominance) {
-      return _GestureAxis.page;
-    }
-    // Downward travel that dominates: the pull, on the rule it always used to
-    // engage (8px down, and not more than 1.5× sideways).
-    if (travel.dy >= _axisLockSlop && dx <= travel.dy * _axisDominance) {
-      return _GestureAxis.pull;
-    }
-    return _GestureAxis.undecided;
-  }
-
   void _onPtrMove(PointerMoveEvent e) {
     _pullVelocity.addPosition(e.timeStamp, e.position);
-    if (!_dragEngaged) {
-      if (!_pullAllowed()) return;
-      if (_axis == _GestureAxis.undecided) {
-        _axis = _decideGestureAxis(e.position - _pointerStart);
-      }
-      // The pager owns this gesture: no offset, no scale/fade, and no dismissal
-      // on release — `_dragEngaged` stays false, so `_onPtrUp` bails out
-      // however far down the finger then travels.
-      if (_axis == _GestureAxis.page) return;
-      if (_axis != _GestureAxis.pull) return;
-      _dragEngaged = true;
-      _pulling = true;
-      _pullGesture = true;
+    final before = _gesture;
+    final next = before.pointerMove(
+      e.position - _pointerStart,
+      pullAllowed: _pullAllowed(),
+    );
+    _gesture = next;
+
+    // Zoom/pan owns the sequence: the pager's anchor must not survive (the
+    // focal point jumps when a finger lands or lifts), and the pull must not
+    // translate a picture the fingers are already transforming.
+    if (next.zoomOwnsGesture) {
+      _dragStartGlobal = null;
+      return;
+    }
+    // The pager owns it; `_onInteractionUpdate` moves it from the focal point.
+    if (next.owner == ViewerGestureOwner.page) return;
+    if (!next.pullOwnsGesture) return;
+
+    if (!before.pullOwnsGesture) {
       // Drop any page drag that slipped in before the pull was recognised.
       _dragStartGlobal = null;
       widget.onHideUi();
@@ -1205,10 +1201,20 @@ class _ViewerPageState extends State<_ViewerPage>
     setState(() => _dismissOffset += pulled);
   }
 
+  /// The pull stood down without dismissing (a second finger arrived): return
+  /// the photo to rest at the speed a failed pull uses.
+  void _springBackPull() {
+    final from = _dismissOffset;
+    if (from == Offset.zero) return;
+    _dismissCtrl.duration = const Duration(milliseconds: 200);
+    _animateDismiss(
+      (t) => Offset.lerp(from, Offset.zero, Curves.easeOutCubic.transform(t))!,
+    );
+  }
+
   void _onPtrUp(PointerUpEvent e) {
-    final wasPulling = _dragEngaged;
-    _dragEngaged = false;
-    _pulling = false;
+    final wasPulling = _gesture.pullOwnsGesture && _gesture.isActive;
+    _gesture = _gesture.pointerUp(e.pointer);
     if (!wasPulling) return;
     if (_dismissOffset == Offset.zero) return;
 
@@ -1240,6 +1246,18 @@ class _ViewerPageState extends State<_ViewerPage>
         (t) =>
             Offset.lerp(from, Offset.zero, Curves.easeOutCubic.transform(t))!,
       );
+    }
+  }
+
+  void _onPtrCancel(PointerCancelEvent e) {
+    final wasPulling = _gesture.pullOwnsGesture && _gesture.isActive;
+    _gesture = _gesture.pointerUp(e.pointer);
+    if (wasPulling) _springBackPull();
+    if (!_gesture.isActive) {
+      // No scale end follows a cancelled pointer, so this is the only place
+      // that can finish the sequence and refresh `panEnabled`.
+      _gesture = _gesture.finish();
+      if (mounted) setState(() {});
     }
   }
 
@@ -1322,7 +1340,7 @@ class _ViewerPageState extends State<_ViewerPage>
       fallbackAspect: _imageSize == null
           ? PooledImage.knownAspectRatio(widget.item.url)
           : null,
-      panEnabled: !_pulling,
+      panEnabled: !(_gesture.pullOwnsGesture && _gesture.isActive),
       onZoomChanged: _onZoomChanged,
       onTapAt: _onTapAt,
       onScaleStart: _onInteractionStart,
@@ -1362,6 +1380,10 @@ class _ViewerPageState extends State<_ViewerPage>
         onPointerDown: _onPtrDown,
         onPointerMove: _onPtrMove,
         onPointerUp: _onPtrUp,
+        // A cancelled pointer (a system gesture taking over, a window losing
+        // the stream) must leave the state tree as cleanly as a lift: the
+        // pull springs back and the pointer set never keeps a dead finger.
+        onPointerCancel: _onPtrCancel,
         child: Stack(
           children: [
             // Only the picture lives inside the pull's transform: anything in

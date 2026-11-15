@@ -2,6 +2,7 @@
 // RCrm GUI — settings screen
 import 'dart:io';
 import 'package:flutter/foundation.dart' show listEquals;
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
@@ -85,8 +86,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     // directory is disk work that must not hold a tap hostage — and in a widget
     // test it cannot complete at all, which is what made an awaiting version of
     // this impossible to test.
-    final choice = await showDialog<ThumbCacheIntent>(
-      context: context,
+    final choice = await SmartDialog.show<ThumbCacheIntent>(
       builder: (_) => ThumbCacheDialog(
         plan: ThumbCache.preview(),
         initialLimitMb: ThumbCache.limitMb,
@@ -125,9 +125,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   void _snack(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    SmartDialog.showNotify(
+      msg: message,
+      notifyType: NotifyType.success,
+    );
   }
 
   Future<void> _loadDeployMode() async {
@@ -187,8 +188,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   ) async {
     if (_showingCertDialog) return;
     _showingCertDialog = true;
-    final t = await showDialog<bool>(
-      context: context,
+    final t = await SmartDialog.show<bool>(
       builder: (ctx) => AlertDialog(
         title: const Text('Untrusted Certificate'),
         content: SingleChildScrollView(
@@ -234,11 +234,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
+            onPressed: () => SmartDialog.dismiss(result: false),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
+            onPressed: () => SmartDialog.dismiss(result: true),
             child: const Text('Trust & Continue'),
           ),
         ],
@@ -1121,11 +1121,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     // The editor persists every add/remove itself — the dialog's button is Done,
     // not Save. Closing it (button or system back) still lands here, so the
     // running server is restarted only when the SAVED list really changed.
-    final newDirs = await showDialog<List<String>>(
-      context: context,
+    final newDirs = await SmartDialog.show<List<String>>(
       // A tap outside must not read as "cancel" after a change has already been
       // written; Done or back is the way to leave.
-      barrierDismissible: false,
+      clickMaskDismiss: false,
       builder: (ctx) => _DirEditor(
         initialDirs: c.directories,
         onChanged: (dirs) async {
@@ -1219,7 +1218,7 @@ class _DirEditorState extends State<_DirEditor> {
     if (_finishing) return;
     _finishing = true;
     await _writes.catchError((_) {});
-    if (mounted) Navigator.pop(context, List<String>.from(_dirs));
+    if (mounted) SmartDialog.dismiss(result: List<String>.from(_dirs));
   }
 
   Future<void> _add() async {

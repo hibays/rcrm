@@ -1,4 +1,5 @@
 // screens/cloud_setup_screen.dart
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../config/theme.dart';
@@ -102,8 +103,7 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
   ) async {
     if (_showingCertDialog) return;
     _showingCertDialog = true;
-    final t = await showDialog<bool>(
-      context: context,
+    final t = await SmartDialog.show<bool>(
       builder: (ctx) => AlertDialog(
         title: const Text('Untrusted Certificate'),
         content: SingleChildScrollView(
@@ -149,11 +149,11 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
+            onPressed: () => SmartDialog.dismiss(result: false),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
+            onPressed: () => SmartDialog.dismiss(result: true),
             child: const Text('Trust & Continue'),
           ),
         ],
@@ -189,11 +189,9 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
       '${d.day.toString().padLeft(2, '0')}';
 
   void _showErr(String m) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(m),
-        backgroundColor: Theme.of(context).colorScheme.error,
-      ),
+    SmartDialog.showNotify(
+      msg: m,
+      notifyType: NotifyType.error,
     );
   }
 

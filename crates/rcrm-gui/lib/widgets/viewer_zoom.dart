@@ -181,8 +181,11 @@ bool shouldDismissPull({
 ///   pull run under it would move (and on release dismiss) the viewer out from
 ///   under a playing clip.
 ///
-/// Losing the pull never takes the pager with it: the caller's axis lock still
-/// hands a sideways gesture to the pager, exactly as before.
+/// Losing the pull never takes the pager with it: the one axis lock in
+/// `utils/viewer_gesture.dart` still hands a sideways gesture to the pager,
+/// exactly as before. Multi-touch is not this function's business either — a
+/// second finger promotes the whole sequence to zoom in that same state tree
+/// before the pull gate is ever consulted, so a pinch can never reach it.
 bool pullAllowed({required bool zoomed, required bool livePlaying}) =>
     !zoomed && !livePlaying;
 

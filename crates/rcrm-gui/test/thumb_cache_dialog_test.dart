@@ -14,6 +14,7 @@
 // The plan is built here rather than read off a filesystem, so the rows describe a
 // known grading; `describeAge` itself is covered in the age test file.
 
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/utils/thumb_cache_policy.dart';
@@ -57,13 +58,14 @@ Future<ThumbCacheIntent? Function()> _open(
   ThumbCacheIntent? result;
   await tester.pumpWidget(
     MaterialApp(
+      navigatorObservers: [FlutterSmartDialog.observer],
+      builder: FlutterSmartDialog.init(),
       home: Builder(
-        builder: (context) => Scaffold(
+        builder: (_) => Scaffold(
           body: Center(
             child: ElevatedButton(
               onPressed: () async {
-                result = await showDialog<ThumbCacheIntent>(
-                  context: context,
+                result = await SmartDialog.show<ThumbCacheIntent>(
                   builder: (_) => ThumbCacheDialog(
                     plan: plan ?? _plan(),
                     initialLimitMb: initialLimitMb,
@@ -166,6 +168,34 @@ void main() {
       256,
       reason: 'carried out with the target',
     );
+  });
+
+  testWidgets('the trim target is a real menu, and Auto trim carries it', (
+    tester,
+  ) async {
+    // The dialog renders in SmartDialog's overlay, which sits ABOVE the app's
+    // Navigator. A DropdownButton there has no Navigator to push its menu route
+    // into, so its tap did nothing at all (the defect this pins). The selector
+    // is an anchored menu in that same overlay.
+    final readChoice = await _open(tester, initialLimitMb: 0);
+    expect(find.text('Default'), findsOneWidget);
+    expect(find.byType(DropdownButton<int>), findsNothing);
+
+    await tester.tap(find.text('Default'));
+    await tester.pumpAndSettle();
+    for (final label in ['Default', '64 MB', '256 MB', '1 GB']) {
+      expect(find.text(label), findsWidgets, reason: label);
+    }
+    await tester.tap(find.text('1 GB').last);
+    await tester.pumpAndSettle();
+
+    // The trigger now reports the choice...
+    expect(find.text('1 GB'), findsOneWidget);
+    // ...and Auto trim really runs with it, not with the value it opened with.
+    await _tap(tester, SimpleDialogOption, 'Auto trim');
+    final intent = readChoice();
+    expect(intent, isA<AutoTrim>());
+    expect((intent as AutoTrim).targetMb, 1024);
   });
 
   testWidgets('"Delete all" asks for the clear path, no tiers', (tester) async {

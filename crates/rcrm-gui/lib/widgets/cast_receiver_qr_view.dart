@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:material_ui/material_ui.dart';
+import 'smart_popup_menu.dart';
 
 import '../config/theme.dart';
 import '../ffi/rust_bridge.dart';
@@ -682,17 +683,12 @@ class CastReceiverQrView extends StatelessWidget {
       children: [
         Text(label, style: style),
         const SizedBox(width: 4),
-        PopupMenuButton<String>(
+        SmartPopupMenu<String>(
           tooltip: 'Change LAN address',
-          icon: Icon(
-            Icons.swap_horiz,
-            size: 16,
-            color: Colors.white.withValues(alpha: 0.55),
-          ),
           onSelected: callbacks.onSelectIpv4,
-          itemBuilder: (context) => [
+          items: [
             for (final ip in localIpv4s)
-              PopupMenuItem<String>(
+              SmartPopupMenuItem(
                 value: ip,
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
@@ -707,6 +703,11 @@ class CastReceiverQrView extends StatelessWidget {
                 ),
               ),
           ],
+          child: Icon(
+            Icons.swap_horiz,
+            size: 16,
+            color: Colors.white.withValues(alpha: 0.55),
+          ),
         ),
       ],
     );

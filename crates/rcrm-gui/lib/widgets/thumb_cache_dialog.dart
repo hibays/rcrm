@@ -22,10 +22,12 @@
 
 import 'dart:async';
 
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../services/thumb_cache.dart';
 import '../utils/thumb_cache_policy.dart';
+import 'smart_popup_menu.dart';
 
 /// What the user chose. Null (the dialog was dismissed) means nothing runs.
 ///
@@ -140,24 +142,69 @@ class _ThumbCacheDialogState extends State<ThumbCacheDialog> {
                             style: theme.textTheme.bodyMedium,
                           ),
                         ),
-                        DropdownButton<int>(
-                          value: _limitMb,
+                        // An ANCHORED menu, not a DropdownButton: this
+                        // dialog is rendered by SmartDialog, whose overlay sits
+                        // ABOVE the app's Navigator, so a DropdownButton has no
+                        // Navigator to push its menu route into — the tap did
+                        // nothing at all (measured: "Navigator operation
+                        // requested with a context that does not include a
+                        // Navigator"). SmartPopupMenu anchors into the same
+                        // SmartDialog overlay, so it works here by construction.
+                        SmartPopupMenu<int>(
+                          tooltip: 'Auto trim target',
                           borderRadius: BorderRadius.circular(8),
-                          underline: const SizedBox.shrink(),
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: scheme.primary,
-                            fontWeight: FontWeight.w600,
-                          ),
-                          onChanged: (v) {
-                            if (v != null) setState(() => _limitMb = v);
-                          },
+                          // Upward, because this row sits low in a dialog that
+                          // can fill a short phone: the anchored menu is not
+                          // clamped to the screen, so the space above the row
+                          // is the side that can hold the four choices.
+                          openUpward: true,
+                          onSelected: (v) => setState(() => _limitMb = v),
                           items: [
                             for (final mb in kThumbCacheLimitChoices)
-                              DropdownMenuItem(
+                              SmartPopupMenuItem(
                                 value: mb,
-                                child: Text(thumbCacheLimitLabel(mb)),
+                                child: Row(
+                                  children: [
+                                    // The tick's slot is always reserved, so
+                                    // the labels stay in one column.
+                                    SizedBox(
+                                      width: 24,
+                                      child: mb == _limitMb
+                                          ? Icon(
+                                              Icons.check,
+                                              size: 16,
+                                              color: scheme.primary,
+                                            )
+                                          : null,
+                                    ),
+                                    Text(thumbCacheLimitLabel(mb)),
+                                  ],
+                                ),
                               ),
                           ],
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 6,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  thumbCacheLimitLabel(_limitMb),
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                    color: scheme.primary,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                Icon(
+                                  Icons.arrow_drop_down,
+                                  size: 20,
+                                  color: scheme.primary,
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
                       ],
                     ),
@@ -175,7 +222,7 @@ class _ThumbCacheDialogState extends State<ThumbCacheDialog> {
                 SimpleDialogOption(
                   onPressed: nothing
                       ? null
-                      : () => Navigator.pop(context, AutoTrim(_limitMb)),
+                      : () => SmartDialog.dismiss(result: AutoTrim(_limitMb)),
                   child: _Option(
                     icon: const Icon(Icons.auto_delete),
                     title: 'Auto trim',
@@ -188,7 +235,7 @@ class _ThumbCacheDialogState extends State<ThumbCacheDialog> {
                 SimpleDialogOption(
                   onPressed: nothing
                       ? null
-                      : () => Navigator.pop(context, const ClearAll()),
+                      : () => SmartDialog.dismiss(result: const ClearAll()),
                   child: _Option(
                     icon: Icon(Icons.delete_sweep),
                     title: 'Delete all',
@@ -266,7 +313,7 @@ class _ThumbCacheDialogState extends State<ThumbCacheDialog> {
         icon: const Icon(Icons.delete_outline),
         tooltip: 'Delete the $label tier',
         color: scheme.error,
-        onPressed: () => Navigator.pop(context, DeleteTiers({tier})),
+        onPressed: () => SmartDialog.dismiss(result: DeleteTiers({tier})),
       ),
     );
   }

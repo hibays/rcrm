@@ -80,6 +80,31 @@ double paintedDy(WidgetTester tester) {
   return pulled + panned;
 }
 
+/// The scale the viewport is really painting, read off its own Transform.
+double paintedScale(WidgetTester tester) => tester
+    .widgetList<Transform>(
+      find.descendant(
+        of: find.byType(ZoomableViewport),
+        matching: find.byType(Transform),
+      ),
+    )
+    .first
+    .transform
+    .getMaxScaleOnAxis();
+
+/// The top chrome's fade: 1 while the controls are shown, 0 once a pull hid
+/// them. The pull is the only thing that hides the chrome mid-gesture.
+double chromeOpacity(WidgetTester tester) => tester
+    .widget<AnimatedOpacity>(
+      find
+          .ancestor(
+            of: find.byIcon(Icons.arrow_back),
+            matching: find.byType(AnimatedOpacity),
+          )
+          .first,
+    )
+    .opacity;
+
 /// The pager's own settled page, 0-based, read off the real `PageController`.
 /// A switch has to land ON a page (not mid-slide) and move exactly one page.
 double settledPage(WidgetTester tester) =>
@@ -517,6 +542,170 @@ void main() {
     expect(find.text('1 / 3'), findsOneWidget);
   });
 
+  // ── Two-finger zoom owns the gesture ─────────────────────────────
+  //
+  // The pull-to-dismiss used to be fed by a raw pointer Listener, so it could
+  // not see that a second finger was down: one finger of a pinch drifting down
+  // engaged the pull underneath the zoom, moved the photo twice, and on
+  // release dismissed the viewer. Ownership is now one state tree (see
+  // `utils/viewer_gesture.dart`): the second pointer promotes the sequence to
+  // zoom, and the pull stands down for the rest of it.
+
+  testWidgets('one finger of a two-finger drag never pulls or dismisses', (
+    tester,
+  ) async {
+    await _openViewer(tester);
+    final center = tester.getCenter(find.byType(ImageViewerScreen));
+    final left = await tester.startGesture(center - const Offset(40, 0));
+    final right = await tester.startGesture(center + const Offset(40, 0));
+    await tester.pump(const Duration(milliseconds: 16));
+
+    // Only the right finger travels: 12 x 20px = 240px, well past the 93.6px
+    // dismissal threshold at this surface height. This is the exact gesture
+    // that dismissed the viewer before the state tree existed.
+    for (var i = 0; i < 12; i++) {
+      await right.moveBy(const Offset(0, 20));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(
+      chromeOpacity(tester),
+      1,
+      reason: 'the pull hides the chrome; a pinch must not engage it',
+    );
+
+    await right.up();
+    await left.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byType(ImageViewerScreen),
+      findsOneWidget,
+      reason: 'two fingers on a photo mean zoom, never pull-to-dismiss',
+    );
+    expect(find.text('1 / 3'), findsOneWidget);
+  });
+
+  testWidgets('a pinch with a downward drift zooms without dismissing', (
+    tester,
+  ) async {
+    await _openViewer(tester);
+    final center = tester.getCenter(find.byType(ImageViewerScreen));
+    final left = await tester.startGesture(center - const Offset(40, 0));
+    final right = await tester.startGesture(center + const Offset(40, 0));
+    await tester.pump(const Duration(milliseconds: 16));
+
+    // A real pinch — the fingers spread — carried 120px down while it zooms.
+    // That downward component is what fired the pull under the old code.
+    for (var i = 0; i < 8; i++) {
+      await right.moveBy(const Offset(8, 15));
+      await left.moveBy(const Offset(-8, 15));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await left.up();
+    await right.up();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ImageViewerScreen), findsOneWidget);
+    expect(
+      paintedScale(tester),
+      greaterThan(1.2),
+      reason:
+          'the pinch must really have zoomed before this test means anything',
+    );
+  });
+
+  testWidgets('a second finger stands a pull down and nothing dismisses', (
+    tester,
+  ) async {
+    await _openViewer(tester);
+    final center = tester.getCenter(find.byType(ImageViewerScreen));
+    final first = await tester.startGesture(center);
+    for (var i = 0; i < 3; i++) {
+      await first.moveBy(const Offset(0, 20));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(paintedDy(tester), greaterThan(0), reason: 'the pull is engaged');
+
+    // A second finger arrives mid-pull: the photo springs back, and the rest
+    // of the gesture is a pan. It must not be stranded off-centre either.
+    final second = await tester.startGesture(center + const Offset(80, 0));
+    for (var i = 0; i < 12; i++) {
+      await first.moveBy(const Offset(0, 20));
+      await second.moveBy(const Offset(0, 20));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await first.up();
+    await second.up();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ImageViewerScreen), findsOneWidget);
+    expect(
+      paintedDy(tester),
+      0,
+      reason: 'the pull must return to rest, not stay where it was cancelled',
+    );
+    expect(find.text('1 / 3'), findsOneWidget);
+  });
+
+  testWidgets('lifting one finger of a pinch cannot start a pull', (
+    tester,
+  ) async {
+    await _openViewer(tester);
+    final center = tester.getCenter(find.byType(ImageViewerScreen));
+    // Two fingers touch (the start of a pinch), one leaves without moving,
+    // and the survivor drags down. The surviving finger is the LAST one down,
+    // so its own travel from the sequence's origin is straight down — the old
+    // Listener's exact recipe for engaging a pull once the other finger left.
+    final left = await tester.startGesture(center - const Offset(40, 0));
+    final right = await tester.startGesture(center + const Offset(40, 0));
+    await tester.pump(const Duration(milliseconds: 16));
+    await left.up();
+    await tester.pump(const Duration(milliseconds: 16));
+
+    for (var i = 0; i < 12; i++) {
+      await right.moveBy(const Offset(0, 20));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    await right.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byType(ImageViewerScreen),
+      findsOneWidget,
+      reason: 'the sequence was a pinch; a remaining finger stays a pan',
+    );
+    expect(find.text('1 / 3'), findsOneWidget);
+  });
+
+  testWidgets('a pinch that interrupts a page swipe settles the pager', (
+    tester,
+  ) async {
+    await _openViewer(tester);
+    final center = tester.getCenter(find.byType(ImageViewerScreen));
+    final first = await tester.startGesture(center);
+    // 120px of the 800px page (15%): the pager is left parked between two
+    // pages unless the end settles it, because a pinch owns the whole sequence
+    // and never re-anchors the swipe on its way out.
+    for (var i = 0; i < 4; i++) {
+      await first.moveBy(const Offset(-30, 0));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    final second = await tester.startGesture(center + const Offset(100, 0));
+    await second.moveBy(const Offset(40, 0));
+    await tester.pump(const Duration(milliseconds: 16));
+    await first.up();
+    await second.up();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ImageViewerScreen), findsOneWidget);
+    expect(
+      settledPage(tester),
+      closeTo(0, 0.01),
+      reason: 'a pinch must not leave the pager parked between two pictures',
+    );
+    expect(find.text('1 / 3'), findsOneWidget);
+  });
+
   // ── The pull while a live photo plays ───────────────────────────
   //
   // Live playback cannot be started in this harness: `_playLive` needs a
@@ -524,9 +713,9 @@ void main() {
   // libmpv), and neither exists under `flutter test`. What is pinned instead is
   // the rule the page's one pull gate consults — the same gate that stops the
   // pull when a sideways page drag owns the gesture, which is the exclusivity
-  // the report asks for. That gate returns before `_dragEngaged` is set, so a
-  // blocked pull contributes no offset, no scale/fade, and no dismissal on
-  // release (the behaviour the pull tests above pin for the pager's case).
+  // the report asks for. A blocked pull never owns the sequence, so it
+  // contributes no offset, no scale/fade, and no dismissal on release (the
+  // behaviour the pull tests above pin for the pager's case).
   test('a playing live photo blocks the pull, exactly like a zoom does', () {
     expect(pullAllowed(zoomed: false, livePlaying: true), isFalse);
     expect(pullAllowed(zoomed: true, livePlaying: false), isFalse);

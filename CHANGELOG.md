@@ -861,3 +861,64 @@ Update report:
 	5) **端到端复验**：真实 `rcrm-server` 挂载该文件副本（临时 example，验证后已删），撤补丁后 `isLivePhotoUrl = true`、`phase = androidEmbedded`（offset 5896902），与修复前一致
 	6) 门禁：`flutter analyze lib test` No issues；针对性 33 例全绿；全量 `flutter test` **793 例**全绿（794 − 1 个被删用例）；Rust 未改
 	7) 已知取舍：第三方 cloud WebDAV 若仍对 HEAD 写 body，复用连接会被污染。该行为不在 rcrm 控制范围内，本轮按「服务端负责合规、客户端不做补偿」的架构处理，未在真实第三方服务器上验证
+
+37. 2026.11.14.22.05.SAT.Saturday
+	*本批按用户要求把项目里所有弹窗 / pop / popup / SnackBar / 底部弹层全部改用 flutter_smart_dialog 5.3.1 渲染。范围经用户确认：PopupMenuButton 全部用 showAttach 重建；SnackBar 改 showNotify；AlertDialog / SimpleDialog 保留 Material 外观，只把渲染层换成 SmartDialog.show*
+
+	1) **初始化接线（lib/app.dart）**：
+		① `MaterialApp.navigatorObservers` 加 `FlutterSmartDialog.observer`
+		② 原 builder 包进 `FlutterSmartDialog.init(builder: …)`：桌面端仍返回 `TitleBarShell(child: FlutterSmartDialog)`，移动端直接返回 FlutterSmartDialog
+		③ `initState` 设 `SmartDialog.config.attach = SmartConfigAttach(attachAlignmentType: SmartAttachAlignmentType.inside)` —— 该字段是 final，只能整体替换实例；inside 让 bottomLeft/topLeft 复刻 PopupMenuButton 的左缘对齐
+	2) **模态弹窗改 SmartDialog.show**（保留 Material 视觉）：
+		① settings_screen：缩略图缓存对话框、证书信任对话框、目录编辑器（`clickMaskDismiss: false` 对应原 `barrierDismissible: false`）
+		② cloud_setup_screen：证书信任对话框；cast_receiver_screen：退出接收端确认；cast_remote_screen：退出投屏确认
+		③ 所有 `Navigator.pop(ctx, value)` → `SmartDialog.dismiss(result: value)`；`thumb_cache_dialog` 3 处、`_DirEditor` 1 处同改
+		④ 只改渲染层与关闭调用：`AlertDialog` / `SimpleDialogOption` / `ListTile` 原样保留；`_DirEditor` 内嵌的 `AlertDialog` 仍是内容而非独立路由
+		⑤ 路由级 `Navigator.pop`（退出页面）一律不改：cast_receiver:349、cast_remote:652/660、image_viewer:249、search_screen:91/112、video_player:2379
+	3) **底部弹层**：image_viewer 的 `showModalBottomSheet` → `SmartDialog.show(alignment: bottomCenter, maskColor: black 35%, clickMaskDismiss: true)`，内容包 `SizedBox(width: double.infinity)` 复刻整宽面板；`onActualSize` 的 `Navigator.of(sheetContext).pop()` → `SmartDialog.dismiss()`
+	4) **SnackBar → showNotify**：cast_remote 3 处（Play/Stop failed = error，TV unreachable = warning）、cloud_setup `_showErr`（error）、settings `_snack`（success）、`DoubleBackGuard.hint`（warning，displayTime 1500ms，保留 `hint(BuildContext)` 签名以免动调用方）
+	5) **新建 `lib/widgets/smart_popup_menu.dart`**：`SmartPopupMenu<T>` + `SmartPopupMenuItem<T>`
+		① 触发器包 `InkWell`（可带 Tooltip），点击调 `SmartDialog.showAttach(targetContext: 触发器 context)`
+		② 向下菜单 `Alignment.bottomLeft`、播放器向上 `Alignment.topLeft`（`openUpward: true`），配合全局 inside
+		③ `maskColor: Colors.transparent` + `clickMaskDismiss: true`：菜单不压暗页面，但外部点击仍由遮罩捕获并关闭
+		④ `onOpened` 在触发时同步调用；`onClosed` 映射 `showAttach` 的 `onDismiss`（覆盖选中与取消两条关闭路径）
+		⑤ **`SmartPopupMenuItem` 做成 StatelessWidget 而非纯数据**：旧测试用 `find.byType(PopupMenuItem<T>)` 取行矩形/祖先关系，做成 widget 后 `find.byType(SmartPopupMenuItem<T>)` 可直接替代；每项自带 InkWell + 默认 16/10 padding，选中即 `SmartDialog.dismiss(result: value)`
+		⑥ `backgroundColor` / `elevation` / `borderRadius` / `constraints` 可配，用于播放器的 playerSurface、8 高程、RCrmRadii.md 与模式菜单 240–300dp
+	6) **替换全部 7 个 PopupMenuButton**：media_toolbar 3（组织方式 / 排序 / 扩展名过滤）、player_controls 2（倍速 / 播放模式，openUpward）、cast_remote 1（更多菜单）、cast_receiver_qr 1（切换 LAN 地址）。播放器的 onSelected 不再顺手置 `onMenuVisibilityChanged(false)`，改由 onClosed 统一处理，避免重复
+	7) **清理因迁移而死的代码**：player_controls 删除 `_speedItemHeight`、`_menuPadding`、`_modeMenuHeight`、`_modeRowHeight`、`_measureHeight`、`_heightCache`、`_modeItemPadding` / `_modeGlyphColumn` / `_modeCheckColumn` / `_modeRowBreathing` / `_modeItemHeight` —— 这些是给 `PopupMenuItem.height` + 负 offset 算出来的，改用锚定布局后失去意义
+	8) **测试更新（5 文件）**：
+		① 三个菜单测试的 MaterialApp 加 `navigatorObservers: [FlutterSmartDialog.observer]` + `builder: FlutterSmartDialog.init()`，否则 showAttach 无处渲染
+		② `find.byType(PopupMenuButton<X>)` → `SmartPopupMenu<X>`；`PopupMenuItem<X>` → `SmartPopupMenuItem<X>`；`widgetWithText(PopupMenuItem<String>, …)` 同改
+		③ `thumb_cache_dialog_test` 的 harness 从 `showDialog` 改 `SmartDialog.show`（对话框内部已用 `SmartDialog.dismiss`）；`settings_cache_entry_test` 的 MaterialApp 加同样初始化
+		④ 删掉「向上偏移等于菜单真实高度」用例（负 offset 机制已不存在），改为「菜单落在触发 chip 之上且各字号不溢出」
+		⑤ video_folders_test 的两处菜单选择后补 2 次 `pump()`：SmartDialog 的 dismiss 是异步链（动画 → post-frame → future → provider），原本 2 次泵不够；排序测试早已用 `_settlePrefs` 做过同样的事
+	9) 门禁：`flutter analyze lib test` **No issues found**；`flutter test` **813 例全绿**；`cargo build --locked` 通过；`cargo test -- --skip compare_` 全绿
+	10) 未验证：未在 Android / iOS 真机与桌面真窗口上做视觉与手势回归（测试只覆盖 widget 层）；菜单在极窄窗口下的实际锚定位置、播放器菜单向上的观感未截图核对；`SmartDialog` 与桌面自定义标题栏（TitleBarShell）叠加时的遮罩层级未实测
+	11) **修复（2026.11.15 真机/真窗口复验后）**
+		① **缩略图缓存的 Auto trim 目标选择框点是没反应的**：该对话框现在渲染在 SmartDialog 自己的 overlay 里，而 SmartDialog 的 overlay 在 App Navigator **之上**，所以对话框内部没有 Navigator 祖先；`DropdownButton` 要 `Navigator.push` 一个 `_DropdownRoute`，点击直接抛 "Navigator operation requested with a context that does not include a Navigator"（widget test 复现）。改用同属该 overlay 的 `SmartPopupMenu<int>`：触发器仍是「当前目标 + 下拉箭头」、菜单项带当前项对勾，选中即关闭并 `setState`。顺带修掉一个潜在崩溃：持久化的目标值若不在 `kThumbCacheLimitChoices` 里，`DropdownButton` 会 assert 直接打不出对话框，现在按原值显示并允许重选。
+		② **播放器倍速菜单（以及 cast remote 的 More、库工具栏的菜单）变成整窗宽的深色大板**：`showAttach` 的锚定容器把整屏宽度交给子节点，而 `Column(crossAxisAlignment: stretch)` 会把它填满 —— 实测播放器倍速菜单横跨 1600px 窗口，覆盖整条控制栏所在的区域，这就是用户看到的「控件配色不对」。`SmartPopupMenu` 恢复 `PopupMenuButton` 自身的几何：默认 `112–280dp` 约束 + `IntrinsicWidth(56dp 步进)` + 菜单上下 8dp 内边距；行改成原生菜单的行高（`minHeight 48dp`、水平 12dp、垂直 6dp），并把面板的文字基线改回 `labelLarge`，Material 用 `MaterialType.card` + `surfaceTintColor: transparent`（播放器仍传 `playerSurface`/8 高程，颜色与旧实现逐像素一致）。
+		③ 新增回归用例：`test/smart_popup_menu_test.dart`（菜单宽度 112–280、行高 ≥48、长文本收窄换行、选中回调）与 `test/thumb_cache_dialog_test.dart` 的「trim 目标可选且 Auto trim 带的是新值」。
+		④ 桌面真窗口复验：Auto trim 选择框可选；播放器倍速/播放模式菜单恢复紧凑宽度、Ash 面板、Silver 标签与橙色选中项（截图核对）；菜单默认圆角回到 M3 菜单的 4dp（播放器仍显式传 8dp）。
+		⑤ 门禁：`flutter analyze lib test` **No issues found**；`flutter test` **818 例全绿**（原 813 + 5 个新回归用例）。
+
+38. 2026.11.15.15.05.SUN.Sunday
+	*修图片 viewer 的「双指缩放时下拉关闭与缩放抢手势」：pinch 期间任一根手指向下移动都可能触发 pull-to-dismiss，把正在放大的照片往下拽，松手还会直接关掉 viewer*
+
+	1) **根因**：下拉关闭由页面外层的原始 `Listener` 自己维护一套状态（`_axis` / `_dragEngaged` / `_pulling` / `_pullGesture`），缩放与翻页则由 `ZoomableViewport` 的 scale recognizer 维护另一套；两者互不知情。第二根手指按下会重置 `_pointerStart`，之后任一根手指相对该原点的向下位移都能通过 8px 轴锁触发 pull；`_isZoomed` 只在缩放超过 1.01 后才拦截，所以 pinch 的起始阶段、纯双指平移、以及 pinch 后抬起一根手指继续下拖，全都能触发下拉。widget test 复现：双指下拖 240px 与 pinch 同时下移 120px 都会在旧实现上把 viewer 关掉
+	2) **统一 gesture 模型**：新建 `lib/utils/viewer_gesture.dart`——不可变状态树 `ViewerGesture`（持有当前 pointer 集合与唯一 owner）+ 纯策略 `decideViewerGestureOwner`。优先级写成 `zoom（双指 / 已缩放）> page（横向）> pull（向下）`；第二根手指一按下就把整个 sequence 提升为 zoom，且此后不再降级；序列的 owner 只决定一次，弯指/改向都不能换道；最后一根手指抬起后 owner 保留，供随后到达的 scale end 读取（Listener 的 up 先于 scale end），`finish()` 才清空
+	3) **接入页面**：`_ViewerPageState` 删掉 `_axis` / `_dragEngaged` / `_pulling` / `_pullGesture` 四个字段，改用一个 `_gesture`；`_pointerStart` 只属于序列第一根手指；pull 进行中第二根手指到达时 `_springBackPull()` 把照片弹回原位；新增 `onPointerCancel` 清理；pinch 打断横向翻页时 `_settlePager()`（旧实现的 re-anchor 路径已不存在）；`panEnabled` 由 owner 派生
+	4) **测试**：`test/viewer_gesture_model_test.dart` 11 例纯状态树/轴锁用例；`test/viewer_gesture_test.dart` 新增 5 例真 viewer——双指里单指下拖、pinch 带下移、第二指打断 pull、pinch 后抬起一指再下拖、pinch 打断翻页。前 4 例在旧实现上均为红（逐例用备份旧文件跑过），第 5 例守的是新状态树取消旧 re-anchor 后的回弹路径
+	5) 门禁：`flutter analyze lib test` **No issues found**；全量 `flutter test` **832 例全绿**（状态树 11 例 + 真 viewer 5 例）；Rust 未改
+	6) 未验证：未在 Android / iOS 真机与桌面真窗口上做双指手势回归（widget test 覆盖的是手势状态与几何，不是真实触摸板/触屏事件）
+
+39. 2026.11.15.18.40.SUN.Sunday
+	*审查上一批暂存的海报改动后修复：桌面未知时长的首候选不再落在片头卡；移动端第一张截图有基线可判 stale；blank / resize / WebP 全部走 Rust，Dart 不再扫描像素*
+
+	1) **桌面未知时长计划**：posterSeekPlan(Duration.zero) 改为 [30, 15, 3, 0.5, 60, 120, 240, 0]。上一版把 3s 放在第一位，而 3s 常常正是片头/Logo（非黑片，blank 会放行），于是整部电影被缓存成片头卡；旧列表在 0.0 被 blank 拒绝后还会试 30/15。240 也恢复了，长片头重新有候选。已知时长的比例计划不变
+	2) **移动端第一张截图的 stale 基线**：上一版只用 previousRaw / previousJpeg 记录“本 job 看过的上一帧”，第一张没有基线；旧计划第一个位置是 0.0，拿到 seek 前的帧正好正确，新计划第一个位置是内容，同样的 stale 帧就会被当成新帧缓存。现在在第一次 seek 前先截一张 pre-seek 基线（raw 优先，raw 不可用才用 JPEG），第一个位置与基线相同就按 stale 重试；0.0 兜底位置例外，它接受与基线相同的帧——否则静态视频/幻灯片每个位置都是同一帧，会一张海报都出不来（isStalePosterFrame，4 条纯测试）
+	3) **blank 走 Rust**：新增 rcrm_encode_poster_webp（mpv-poster，独立于 mobile-decode）。输入是 mpv screenshot-raw 的 tight BGRA；Rust 先对全部像素算 BT.601 均值，20..235 之外置 out_blank=1 并直接返回 null（不编码 WebP）；否则用共享的 bilinear_tap 新建 downscale_bgra_opaque_bilinear（BGRA→RGBA、alpha 255、目标宽 640）再走现有 webp::encode_rgba_webp。poster.rs 的 6 个测试、decode.rs 的 BGRA 缩放测试、lib.rs 的 2 个 FFI 契约测试覆盖 blank/alpha/尺寸
+	4) **Dart 像素循环已删除**：poster_frame.dart 只保留 posterSeekPlan、sameEncodedFrame 与 isStalePosterFrame；NormalisedFrame / ScaledRgba / downscaleRgba / looksBlankLuma / normaliseBgraFrame 全部移除。ThumbWebpWorker 新增 op encodePosterBgra（BGRA 整帧一次 copy 进 native，worker 里调用 Rust，返回 bytes 或 blank）；rcrm_encode_poster_webp 的地址在 RustBridge 里按可选符号加载，桌面/旧 bridge 缺失时自动回落到 media_kit JPEG。ThumbnailService._posterMobile 现在：raw → worker/Rust；raw 不可用或 Rust 不可用 → media_kit JPEG（blank 仍由 rcrm_is_blank_frame 的 Rust 路径判定）
+	5) **性能监测**：POSTER 日志继续保留并细分：plan、source/target、baseline、stale（含 compare_ms）、blank、hit（path=rust|jpeg、shot_ms、encode_ms、total_ms）、rejected、no_frame；桌面 desktop|hit 不变。下一轮真机只需 grep POSTER| 即可比较 Rust 路径与 JPEG 回落的实际耗时
+	6) **独立 feature + 编译脚本**：poster 不再共用 mobile-decode，新增 Cargo feature mpv-poster；decode.rs 改为 any(mobile-decode, mpv-poster) 编译，解码 dispatch 与 fixture tests 仍 mobile-decode-only，poster 只需要共享的 DecodeBuf/bilinear_tap 和 WebP encoder。cargo test --features mpv-poster 可独立通过（33 例，无 AVIF/JXL/HEIC 依赖）。全部 7 个构建脚本更新：Android/iOS 默认同时开启 mobile-decode,mpv-poster（新增 -MPVPoster / --mpv-poster），Windows/Linux/macOS 默认都不开、新增同一个可选开关；PowerShell/bash 都把两个 feature 合成一个 --features 列表
+	7) 门禁：flutter analyze lib test No issues；全量 flutter test 832 例全绿；cargo test -p rcrm-flutter-bridge --features mpv-poster 33 例全绿；cargo clippy -p rcrm-flutter-bridge --features mpv-poster --all-targets 零 warning；cargo clippy -p rcrm-flutter-bridge --features mobile-decode --all-targets 零 warning；cargo clippy --all 零 warning；cargo fmt --check 通过
+	8) 未验证：未在 Android/iOS 真机测真实 mpv screenshot-raw 尺寸与旋转/变形视频（raw 尺寸仍以 player.state.width/height 为准，长度不符会回落 JPEG；90°/270° 同像素数的旋转是已知风险）；PosterRefresh 仍无菜单调用者，refresh 与 in-flight 的先后顺序未改

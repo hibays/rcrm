@@ -7,6 +7,7 @@
 // pin the shape: a single tile, both choices inside it, and each choice saying
 // what it does.
 
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -22,7 +23,13 @@ Future<void> _pump(WidgetTester tester) async {
   await tester.binding.setSurfaceSize(const Size(900, 2400));
   addTearDown(() => tester.binding.setSurfaceSize(null));
   await tester.pumpWidget(
-    const ProviderScope(child: MaterialApp(home: SettingsScreen())),
+    ProviderScope(
+      child: MaterialApp(
+        navigatorObservers: [FlutterSmartDialog.observer],
+        builder: FlutterSmartDialog.init(),
+        home: const SettingsScreen(),
+      ),
+    ),
   );
   await tester.pump();
 }

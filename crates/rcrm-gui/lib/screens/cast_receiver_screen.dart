@@ -13,6 +13,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
@@ -325,18 +326,17 @@ class _State extends ConsumerState<CastReceiverScreen> {
   /// when something is playing (so the TV owner does not lose it silently).
   Future<void> _exitReceiver() async {
     if (_playing) {
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
+      final ok = await SmartDialog.show<bool>(
+        builder: (_) => AlertDialog(
           title: const Text('Exit receiver?'),
           content: const Text('Playback stops and the cast connection closes.'),
           actions: [
             TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
+              onPressed: () => SmartDialog.dismiss(result: false),
               child: const Text('Cancel'),
             ),
             FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
+              onPressed: () => SmartDialog.dismiss(result: true),
               child: const Text('Exit'),
             ),
           ],

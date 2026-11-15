@@ -13,6 +13,7 @@
 
 import 'dart:io' show Platform;
 
+import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:rcrm_gui/services/platform_bridge.dart';
@@ -57,17 +58,13 @@ class DoubleBackGuard {
     _lastBackAt = null;
   }
 
-  /// Show the "press back again to exit" snackbar.
+  /// Show the "press back again to exit" notification.
   static void hint(BuildContext context) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        const SnackBar(
-          content: Text('Press back again to exit'),
-          duration: Duration(milliseconds: 1500),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+    SmartDialog.showNotify(
+      msg: 'Press back again to exit',
+      notifyType: NotifyType.warning,
+      displayTime: const Duration(milliseconds: 1500),
+    );
   }
 }
 
