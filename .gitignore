@@ -1,5 +1,8 @@
 /target
 
+# neo cmake lsp
+/__cmake_systeminformation
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
