@@ -228,7 +228,7 @@ fn is_previous_frame(info: Option<MpvRenderFrameInfo>) -> bool {
 ///   then, so the clock accepts it. Measured on a 2730x1440 sample: the first
 ///   frame after a seek was flagged REDRAW with luma 0.00 at 3.5 s, and the
 ///   black opening was encoded as that position's poster. `frame_info` says so,
-///   and such a frame is kept only as the last-resort answer.
+///   and such a frame is never filed as this position's poster.
 fn render_frame_at(
 	mpv: &Mpv,
 	render: &RenderContext<'_>,
@@ -236,14 +236,18 @@ fn render_frame_at(
 	target: f64,
 	deadline: Instant,
 ) -> Result<(), LibMpvError> {
-	let mut held_stale = false;
 	loop {
 		if render.has_frame() {
 			let stale = is_previous_frame(render.frame_info());
 			render.render(surface)?;
 			render.report_swap();
 			if stale {
-				held_stale = true;
+				// The previous picture, redrawn while the seek decodes. Drawn so
+				// the renderer keeps advancing, but never filed: it belongs to a
+				// different position. A position that never gets a real frame
+				// fails (the timeout below) and the next candidate is tried —
+				// filing the stale frame would mis-attribute it, which is the
+				// rule the media_kit backend already follows.
 				rcrm_core::log_debug!("[poster] redraw while seeking to {target}s");
 			} else {
 				match mpv.get_f64("time-pos") {
@@ -259,18 +263,8 @@ fn render_frame_at(
 				}
 			}
 		}
-		match remaining(deadline, "frame", FRAME_TIMEOUT) {
-			Ok(left) => {
-				// The stale frame is a fallback, so it is answered only at the
-				// deadline, when no real frame arrived to replace it.
-				if held_stale && left <= FRAME_POLL {
-					return Ok(());
-				}
-				std::thread::sleep(left.min(FRAME_POLL));
-			}
-			Err(_) if held_stale => return Ok(()),
-			Err(error) => return Err(error),
-		}
+		let left = remaining(deadline, "frame", FRAME_TIMEOUT)?;
+		std::thread::sleep(left.min(FRAME_POLL));
 	}
 }
 
@@ -369,6 +363,23 @@ fn remaining(
 	}
 }
 
+/// How many decoder threads one poster client gets.
+///
+/// An `absolute+exact` seek decodes from the keyframe to the target, so the
+/// seek — and with it the whole poster — is decode-bound. Frame threads run
+/// that decode in parallel. Measured on this 10-core/16-thread machine, the
+/// first 3 s seek of a 2730x1440 sample took 450 ms with 4 threads, 267 ms
+/// with 8 and 197 ms with the machine's 16; a 1280x720 seek took 47 ms with 4
+/// and 35 ms with 8. Threads also multiply libavcodec's frame buffers (one
+/// per thread plus the DPB), which is why this is CAPPED rather than left to
+/// mpv's per-core auto: 8 on desktop, 4 on Android, where a 4K 10-bit decode
+/// would otherwise hold ~96 MB of frames for one phone poster.
+fn decoder_threads() -> usize {
+	let cores = std::thread::available_parallelism().map_or(4, |cores| cores.get());
+	let cap = if cfg!(target_os = "android") { 4 } else { 8 };
+	cores.clamp(1, cap)
+}
+
 /// The client options every poster job runs with.
 fn options(header_fields: &str) -> Vec<(&'static str, String)> {
 	let mut options: Vec<(&'static str, String)> = vec![
@@ -402,12 +413,10 @@ fn options(header_fields: &str) -> Vec<(&'static str, String)> {
 		// deadline below can interrupt, and mpv's default network timeout is
 		// 60 s (media_kit used 5 s). A stuck fetch must not outlive the job.
 		("network-timeout", "5".to_string()),
-		// Software decode (hwdec is impossible on a software render surface)
-		// frame-threads into one full frame buffer per thread plus the DPB, so
-		// mpv's auto thread count multiplies a 4K frame (12 MB at 10 bit) by the
-		// core count. Four threads halve that on an 8-core phone and still
-		// decode a long-GOP seek from its keyframe inside FRAME_TIMEOUT.
-		("vd-lavc-threads", "4".to_string()),
+		// The exact seek IS a decode from the keyframe, and frame threads run it
+		// in parallel, so this is the poster's biggest single lever (numbers and
+		// the memory cap: see decoder_threads).
+		("vd-lavc-threads", decoder_threads().to_string()),
 		// No user configuration, terminal, OSD or key bindings: a poster must
 		// render the same on a user's machine as in a test.
 		("config", "no".to_string()),

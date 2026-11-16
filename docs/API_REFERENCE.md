@@ -207,7 +207,7 @@ void rcrm_generate_poster_async(const char *url,        /* borrowed, copied */
   40 s — every stage answers, so a stuck file cannot hold a poster slot forever.
 - The client carries the **poster budgets**, not a player's: `demuxer-max-bytes`
   and `demuxer-max-back-bytes` 4 MiB, `cache-on-disk=no`, `network-timeout=5`,
-  `vd-lavc-threads=4`, `hwdec=no`. A poster needs one frame, so mpv's playback
+  `vd-lavc-threads` = min(cores, 8) (4 on Android), `hwdec=no`. A poster needs one frame, so mpv's playback
   defaults (150 + 50 MiB of demux cache, a 60 s network timeout, one decoder
   frame per core) are memory the caller never gets back — on a phone they are
   how a large file's first poster killed the app (2026-11-16).

@@ -200,9 +200,10 @@ luma，不付 WebP 编码；最坏情况确实是 libmpv 优势最大的地方�
    `attempt` 报错）。随后 `attempt` 的 `drain` 把它消费掉，第一次 seek 不再和首帧
    抢跑。
 2. `RenderContext::frame_info`（`MPV_RENDER_PARAM_NEXT_FRAME_INFO`）+
-   `is_previous_frame`：`PRESENT` 且带 `REDRAW`/`REPEAT` 的帧画出但**不认账**，
-   继续等真正的帧；只有等到 deadline 仍没有新帧时，才退回旧行为（把手里这张当答案）。
-   这样“空帧”只会来自真正的黑帧，不会来自 redraw。
+   `is_previous_frame`：`PRESENT` 且带 `REDRAW`/`REPEAT` 的帧画出但**永不认账**，
+   继续等真正的帧；到 deadline 仍没有真帧就按“这个位置失败”处理，交给下一个候选。
+   宁可这个位置没有海报，也不把别的位位置的文件当成这一张——media_kit 后端早就是
+   这条规则（stale 帧只重拍、不入档）。
 
 **一个 ABI 陷阱（差点留下跨平台隐患）**：`mpv_render_context_get_info(ctx,
 mpv_render_param param)` 的参数是**按值**传的结构体，不是数组。最初按
@@ -215,7 +216,7 @@ mpv_render_param param)` 的参数是**按值**传的结构体，不是数组。
 
 - 样本矩阵（单位置、首候选）：720×960 luma 58.56（encode 通过）、1280×720
   luma 181.39、1920×1080 黑开头 3 s luma 24.06（旧代码是 0.00）、2730×1440
-  3 s 触发 redraw 后 frame_ms 425 ms、encode 34 ms。
+  3 s 触发 redraw 后 frame_ms 273–278 ms（4 线程时 437–464 ms）、encode 32–34 ms。
 - 内容正确性：2730×1440 位置 3.5 s 的海报与 ffmpeg 同位置 MAD = 3.58（WebP 有损 +
   缩放差异），与 5 s 的 MAD = 28.64（不是同一帧）。
 - 空帧语义未变：纯黑 1080p 的 6 个候选仍全部判 blank，阈值不变；删除 skip 后四种样本复测仍全部出图。
@@ -238,7 +239,23 @@ skip 只是把它推到下一帧，**总时间不变**。而 skip 还要依赖�
 render.h 参数（版本检查只到 1.28）。所以 `RenderContext::skip` 与
 `PARAM_SKIP_RENDERING` 已删除，`drain()` 回到 `render + report_swap` 的文档协议。
 
-### 7.6 明确没有做的事
+### 7.6 解码线程：4 → min(核数, 8)
+
+`absolute+exact` 的 seek 本质是“从关键帧解码到目标”，所以解码线程数直接决定海报耗时。
+本机（10 核 / 16 线程）同一 3 s 首候选实测：
+
+| 样本 | 4 线程 | 8 线程 | 16 线程（mpv auto） |
+|---|---:|---:|---:|
+| 2730×1440 | 437–464 ms | 264–271 ms | 197–198 ms |
+| 1920×1080 | 74–78 ms | 53–59 ms | — |
+| 1280×720 | 47 ms | 35 ms | — |
+| 720×960 竖屏 | ~76 ms | ~21 ms | — |
+
+所以 `vd-lavc-threads` 从写死的 4 改成 `decoder_threads()`：`min(核数, 8)`（Android
+上限 4）。8 线程拿到大部分收益，同时把 libavcodec 的帧缓冲（每线程一份 + DPB）压在
+桌面可接受的范围；手机上 4K 10 bit 按 4 线程封顶，避免一张海报就占 ~96 MB 帧缓冲。
+
+### 7.7 明确没有做的事
 
 - **跨 job 复用 mpv client**：每个 job 仍创建一次（约 20–30 ms）。跨 job 池化需要
   “一线程一 client”的 render context 亲和性，并常驻 4 MiB demux 缓存/解码器缓冲；
