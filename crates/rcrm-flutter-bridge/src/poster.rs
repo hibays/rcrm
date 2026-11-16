@@ -28,6 +28,57 @@ pub fn is_blank_luma(mean: f64) -> bool {
 	!(BLANK_LOW..=BLANK_HIGH).contains(&mean)
 }
 
+/// Rotate a tightly packed BGRA frame clockwise by `degrees`.
+///
+/// The caller only ever asks for a quarter turn, because that is the one libmpv's
+/// software renderer refuses to draw (see `libmpv_poster::finalize_rotation`); a
+/// frame the renderer turned itself (0° and 180°) never reaches this function.
+/// All four right angles are implemented anyway — the DIRECTION is the part a
+/// reader sees when it is wrong, so each one is pinned by a test.
+///
+/// `None` means the arguments do not describe a frame — the same contract
+/// [encode_poster_frame] enforces, so a caller cannot rotate then encode a
+/// buffer of the wrong length.
+pub fn rotate_bgra_clockwise(src: &[u8], width: u32, height: u32, degrees: u32) -> Option<Vec<u8>> {
+	let pixels = usize::try_from(width)
+		.ok()?
+		.checked_mul(usize::try_from(height).ok()?)?;
+	if width == 0 || height == 0 || src.len() != pixels.checked_mul(4)? {
+		return None;
+	}
+	let angle = degrees % 360;
+	if !angle.is_multiple_of(90) {
+		return None;
+	}
+	// A quarter turn swaps the axes; a half turn does not. Only the result's
+	// WIDTH is needed to index it — its height follows from the same length.
+	let dst_width = if angle % 180 == 90 { height } else { width } as usize;
+	let mut dst = vec![0u8; src.len()];
+	if angle == 0 {
+		dst.copy_from_slice(src);
+		return Some(dst);
+	}
+	let width = width as usize;
+	for y in 0..height as usize {
+		for x in 0..width {
+			// Where the source pixel (x, y) lands in the result, for a
+			// CLOCKWISE turn: 90° maps it to (height-1-y, x), 180° to
+			// (width-1-x, height-1-y), 270° to (y, width-1-x). Getting the
+			// direction wrong leaves the poster upside down or mirrored, so
+			// each one is pinned by a test below.
+			let (dx, dy) = match angle {
+				90 => (height as usize - 1 - y, x),
+				180 => (width - 1 - x, height as usize - 1 - y),
+				_ => (y, width - 1 - x),
+			};
+			let from = (y * width + x) * 4;
+			let to = (dy * dst_width + dx) * 4;
+			dst[to..to + 4].copy_from_slice(&src[from..from + 4]);
+		}
+	}
+	Some(dst)
+}
+
 /// Make a BGR0 frame opaque and return its mean BT.601 luma.
 ///
 /// mpv's `bgr0` surface leaves the fourth byte at 0 — render.h says its content
@@ -139,6 +190,60 @@ mod tests {
 		));
 		// The alpha fix still ran, so a rejected frame is not left transparent.
 		assert!(black.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 255));
+	}
+
+	fn tagged(width: usize, height: usize) -> Vec<u8> {
+		let mut pixels = vec![0u8; width * height * 4];
+		for (index, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+			pixel[0] = index as u8 + 1;
+			pixel[3] = 255;
+		}
+		pixels
+	}
+
+	fn tags(frame: &[u8], width: usize) -> Vec<Vec<u8>> {
+		frame
+			.as_chunks::<4>()
+			.0
+			.chunks(width)
+			.map(|row| row.iter().map(|pixel| pixel[0]).collect())
+			.collect()
+	}
+
+	/// The direction is the whole point: a poster rotated the wrong way is a
+	/// defect a reader sees, so all four turns are pinned.
+	#[test]
+	fn rotation_turns_the_frame_clockwise() {
+		let frame = tagged(3, 2);
+		assert_eq!(
+			tags(&rotate_bgra_clockwise(&frame, 3, 2, 90).unwrap(), 2),
+			vec![vec![4, 1], vec![5, 2], vec![6, 3]]
+		);
+		assert_eq!(
+			tags(&rotate_bgra_clockwise(&frame, 3, 2, 180).unwrap(), 3),
+			vec![vec![6, 5, 4], vec![3, 2, 1]]
+		);
+		assert_eq!(
+			tags(&rotate_bgra_clockwise(&frame, 3, 2, 270).unwrap(), 2),
+			vec![vec![3, 6], vec![2, 5], vec![1, 4]]
+		);
+		assert_eq!(rotate_bgra_clockwise(&frame, 3, 2, 0).unwrap(), frame);
+		assert_eq!(
+			rotate_bgra_clockwise(&frame, 3, 2, 360).unwrap(),
+			frame,
+			"a full turn is no turn"
+		);
+	}
+
+	/// A rotation that does not describe a frame is refused rather than
+	/// producing a buffer the encoder would then refuse.
+	#[test]
+	fn rotation_refuses_what_it_cannot_rotate() {
+		let frame = tagged(3, 2);
+		assert!(rotate_bgra_clockwise(&frame, 3, 2, 45).is_none());
+		assert!(rotate_bgra_clockwise(&frame, 3, 2, 91).is_none());
+		assert!(rotate_bgra_clockwise(&frame[..23], 3, 2, 90).is_none());
+		assert!(rotate_bgra_clockwise(&frame, 0, 2, 90).is_none());
 	}
 
 	#[test]

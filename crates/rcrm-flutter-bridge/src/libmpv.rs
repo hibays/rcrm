@@ -185,6 +185,11 @@ pub(crate) enum LibMpvError {
 	InvalidArgument { what: &'static str },
 	/// The WebP encoder refused the rendered frame.
 	Encode,
+	/// The frame could not be produced SAFELY: a surface no real frame fits, or a
+	/// rotation the software renderer cannot draw. Both are per-file failures for
+	/// the caller, and both exist because the alternative is an access violation
+	/// inside libmpv, which takes the whole process with it.
+	Frame { message: String },
 }
 
 impl LibMpvError {
@@ -210,6 +215,7 @@ impl fmt::Display for LibMpvError {
 			}
 			Self::InvalidArgument { what } => write!(f, "{what} contains a NUL byte"),
 			Self::Encode => write!(f, "the WebP encoder refused the frame"),
+			Self::Frame { message } => write!(f, "the frame cannot be rendered: {message}"),
 		}
 	}
 }
@@ -761,6 +767,11 @@ pub(crate) struct Surface {
 	width: u32,
 	height: u32,
 	stride: usize,
+	/// The clockwise turn this module applies to the pixels after libmpv filled
+	/// them, because libmpv's software renderer cannot draw a quarter turn (see
+	/// `libmpv_poster::plan_rotation`). 0 means the frame is already the right way
+	/// up; the surface then IS the poster.
+	rotation: u32,
 }
 
 /// Alignment render.h asks for, for the fast scaler paths.
@@ -775,27 +786,46 @@ const MAX_SURFACE_BYTES: usize = 32 * 1024 * 1024;
 impl Surface {
 	/// A surface of `width` x `height` pixels.
 	///
-	/// The only caller is `generate`, through `target_size`: width is capped at
-	/// the requested poster width (640 from Dart) and height at `MAX_HEIGHT`, so
-	/// the product is a few megabytes. The `debug_assert` states that contract
-	/// for the next caller without costing anything in release.
-	pub(crate) fn new(width: u32, height: u32) -> Self {
-		let stride = width as usize * SURFACE_BPP;
-		let len = stride * height as usize;
-		debug_assert!(
-			len <= MAX_SURFACE_BYTES,
-			"surface of {width}x{height} is {len} bytes, above the {MAX_SURFACE_BYTES}-byte bound"
-		);
-		let storage = vec![0u8; len + SURFACE_ALIGN];
+	/// The only caller is `generate`, through `target_size` and its rotation swap:
+	/// width is capped at the requested poster width (640 from Dart) and height at
+	/// `MAX_HEIGHT`, so the product is a few megabytes. The bound below is a hard
+	/// check rather than an assertion, because libmpv writes the buffer through a
+	/// raw pointer.
+	///
+	/// # Errors
+	///
+	/// A zero dimension, or a frame above [MAX_SURFACE_BYTES]. The dimensions come
+	/// from [crate::libmpv_poster::target_size] and its rotation swap, so this
+	/// should never fire — but libmpv writes the surface through a raw pointer, so
+	/// a size the arithmetic did not expect must be a failed poster, not an
+	/// allocation (and a write) of whatever the numbers say.
+	pub(crate) fn new(width: u32, height: u32, rotation: u32) -> Result<Self, LibMpvError> {
+		let out_of_bounds = || LibMpvError::Frame {
+			message: format!("a {width}x{height} surface does not fit a real frame"),
+		};
+		if width == 0 || height == 0 {
+			return Err(out_of_bounds());
+		}
+		let stride = usize::try_from(width)
+			.ok()
+			.and_then(|pixels| pixels.checked_mul(SURFACE_BPP))
+			.ok_or_else(out_of_bounds)?;
+		let len = stride
+			.checked_mul(usize::try_from(height).map_err(|_| out_of_bounds())?)
+			.and_then(|len| len.checked_add(SURFACE_ALIGN))
+			.filter(|len| *len <= MAX_SURFACE_BYTES)
+			.ok_or_else(out_of_bounds)?;
+		let storage = vec![0u8; len];
 		let base = storage.as_ptr() as usize;
 		let offset = (SURFACE_ALIGN - base % SURFACE_ALIGN) % SURFACE_ALIGN;
-		Self {
+		Ok(Self {
 			storage,
 			offset,
 			width,
 			height,
 			stride,
-		}
+			rotation: rotation % 360,
+		})
 	}
 
 	/// The surface's first pixel, aligned as [SURFACE_ALIGN] asks.
@@ -825,6 +855,11 @@ impl Surface {
 	pub(crate) fn size(&self) -> (u32, u32) {
 		(self.width, self.height)
 	}
+
+	/// The clockwise turn the rendered pixels need before they are the poster.
+	pub(crate) fn rotation(&self) -> u32 {
+		self.rotation
+	}
 }
 
 /// A CString, or the error naming the argument that could not be one.
@@ -849,7 +884,7 @@ mod tests {
 	#[test]
 	fn surface_is_aligned_and_tightly_packed() {
 		for (width, height) in [(640u32, 360u32), (640, 1138), (17, 3), (1, 1)] {
-			let mut surface = Surface::new(width, height);
+			let mut surface = Surface::new(width, height, 0).expect("a real frame fits");
 			// `len = stride * height` with the frame tightly packed, so this
 			// pins `stride == width * 4` as well as the size.
 			assert_eq!(
@@ -863,6 +898,23 @@ mod tests {
 			);
 			assert_eq!(surface.size(), (width, height));
 		}
+	}
+
+	/// A frame buffer is written by libmpv through a raw pointer, so a size no
+	/// real frame fits is refused rather than allocated.
+	#[test]
+	fn a_surface_no_real_frame_fits_is_refused() {
+		assert!(Surface::new(0, 360, 0).is_err(), "a zero-width surface");
+		assert!(Surface::new(640, 0, 0).is_err(), "a zero-height surface");
+		assert!(
+			Surface::new(64_000, 64_000, 0).is_err(),
+			"far past the frame bound"
+		);
+		// 640 x 8192 x 4 is the tallest surface target_size may ask for.
+		assert!(Surface::new(640, 8_192, 0).is_ok());
+		// A quarter turn travels with the surface it describes.
+		assert_eq!(Surface::new(1_138, 640, 90).unwrap().rotation(), 90);
+		assert_eq!(Surface::new(640, 360, 360).unwrap().rotation(), 0);
 	}
 
 	#[test]

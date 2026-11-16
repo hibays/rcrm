@@ -287,3 +287,93 @@ gate 仍会拒绝黑/白落点；不能接受的是短片段落到片头——to
 - **空结果负缓存**：`generatePoster` 只缓存成功结果；一个永远出不了海报的文件在
   卡片重新挂载时会重跑一次 job（旧 ffmpeg 路径同样如此，且更贵）。是否接受
   “会话内负缓存”是产品取舍，本轮不动。
+## 8. 第四轮（2026-11-16 夜）：90°/270° 旋转让 libmpv 软件渲染器崩溃（进程级）
+
+### 8.1 现象
+
+某 Android 手机横滑视频列表、划到 `VID20261116230905.mp4` 必闪退（整个 app 回桌面）；
+同一文件在 Win11 release 版（含 MobileDecode 的构建）生成缩略图时整个进程卡死，任务管理器
+的“结束任务”也难有反应。Dart 侧 60 s 超时救不了：这不是“慢”，是进程内的
+`STATUS_ACCESS_VIOLATION`（0xc0000005），任何 Rust/Dart 超时都不再执行。
+
+### 8.2 纯 Rust 复现
+
+```
+RCRM_MPV_POSTER_TEST_VIDEO=G:\...\VID20261116230905.mp4 \
+  cargo test -p rcrm-flutter-bridge --release --features libmpv-poster \
+  renders_a_poster_from_a_local_video
+```
+
+崩溃点固定：`loadfile` 成功（loaded_ms≈350），第一次 `attempt` 的 `drain` 里第一次
+`mpv_render_context_render` 就崩；崩溃线程是 `mpv/worker`，指令在 `libmpv-2.dll` 的
+SIMD 颜色转换/缩放循环，读地址约 0x21FBC99C080（≈2.3 TB，野指针）。
+
+文件本身：3840x2160 HEVC 60 fps、4.76 s、65 Mbps，**容器 display matrix = -90°**
+（ffprobe 的 -90 对应 mpv 的 rot=90）。
+
+### 8.3 根因：软件渲染器声称支持 ROTATE90，却没有旋转代码
+
+libmpv 0.36.0-403（media_kit 自带，2023-09 构建，FFmpeg 6.0）：
+
+- `vo_libmpv.c` 的 VO caps 含 `VO_CAP_ROTATE90`，所以 mpv **不插入** autorotate 滤镜
+  （日志里 `[vf] [autorotate] (disabled)`），旋转留给 VO；
+- `libmpv_sw.c` 里**没有任何旋转逻辑**：它只用 `src_rc`/`dst_rc` 去 crop
+  `frame->current` 再 `mp_sws_scale`；
+- `aspect.c` 的 `mp_get_src_dst_rects` 在 90°/270° 时把 src rect **转置**
+  （`mp_rect_rotate`），于是缩放器拿“转置后的矩形”去裁一张**没转**的帧 —— 越界读。
+
+实测矩阵（同文件、release、单变量）：
+
+| 变量 | 结果 |
+|---|---|
+| 表面 640x360 / 640x1138 / 3840x2160 | 全崩（与缩放、letterbox 无关）|
+| `sws-allow-zimg=no`（改走 libswscale）| 仍崩，崩在 swscale MMXEXT |
+| `vd-lavc-threads=1` | 仍崩 |
+| 链 rot=0 / rot=180 | **正常出图** |
+| 链 rot=90 / rot=270 | **必崩** |
+| 运行时 `set video-rotate=<补角>` 使链回到 0° | **不崩，出图** |
+
+180° 安全、90°/270° 必崩，正好对应“转置 vs 不转置”的差别。mpv master（2026-11-16
+抓取的 `libmpv_sw.c`）仍没有旋转代码，所以**不能靠升级 libmpv 修**；只能不在它上面
+渲染带四分之一转的帧。
+
+### 8.4 修复（定性：让软件渲染器永远看不到 90°/270°）
+
+1. **首帧之前中和**（`plan_rotation`）：`current-tracks/video/demux-rotation` 在
+   `FILE_LOADED` 就能读；为 90/270 时把 `video-rotate` 设成补角。该选项与容器旋转是
+   **相加**的（实测 90° 元数据 + `video-rotate=270` → 链 0°/无 rot 字段），所以补角
+   正好抵消。设在首帧之前，VO 一次都不会配置成旋转帧。
+2. **首帧之后用链自己的答案复核**（`finalize_rotation`）：`video-params/rotate` 只在
+   VO 链存在后出现，是权威。若仍是 90/270，再补一次并轮询到 `% 180 != 90`
+   （2 s 预算）；仍不收敛就**让这张海报失败，绝不渲染**——少一张图，永远好过整个进程。
+3. **几何按最终朝向算**：显示尺寸 = 编码尺寸按 r 交换；海报尺寸
+   `target_size(显示尺寸, 640)`（4K 竖拍 → 640x1138 竖版，不是被 letterbox 的
+   640x360）；渲染表面 = 海报尺寸反向交换（1138x640）。
+4. **像素自己转**：`poster::rotate_bgra_clockwise` 在编码前把表面顺时针转 r；
+   0°/180° 仍由 libmpv 自己处理（它只镜像矩形、不转置，安全）。
+5. **绑定层加固**：`Surface` 携带 rotation；`Surface::new` 由 `debug_assert` 改为返回
+   `Result`，零尺寸/超界是失败的海报而不是一次盲目分配——libmpv 是通过裸指针往这块
+   内存写的。
+
+### 8.5 验证
+
+- **崩溃文件**：修复前 0xc0000005 必现；修复后 640x1138、`rotation=90`、端到端
+  1.3 s（release）。与 ffmpeg 同位置参考帧 **PSNR 34.48 dB**；把海报转 90°/180°/270°
+  再比只有 11.5 / 8.7 / 11.5 dB，朝向正确。
+- **四个朝向的合成样本**（同一内容，display matrix 0/90/180/270）：日志 `rotation` 分别
+  0 / 90 / 0 / 270，全部出图；与正确朝向的参考比较 22.9 / 22.6 / — / 22.6 dB，转错
+  只有 12.8 / 10.3 / 12.5 dB（该组绝对值受二次编码丢失色彩元数据影响，不用于衡量管线）。
+  180° 样本里这个 libmpv 构建**没认** display matrix（ffmpeg 认），我们按 mpv 的答案
+  （不转）出图——播放器看到的也是同一张，不是本模块的问题。
+- **迟滞路径**（强制 demux 读不到旋转）：命中 `neutralising it late`，出图 PSNR
+  34.48 dB，无崩溃。
+- **门禁**：`cargo fmt --check` 干净；`cargo clippy`（workspace、`libmpv-poster`、
+  `mobile-decode` 三种形态）零 warning；`cargo test -p rcrm-flutter-bridge` 三种形态
+  25 / 46 / 51 全部通过；新增 2 个旋转像素单测、2 个几何单测。
+
+### 8.6 遗留
+
+- 未在 Android 真机复测：崩溃是在 Windows 上用同一份 Rust 代码定位并验证的，旋转逻辑
+  与平台无关；按计划由人工在手机上回归。
+- “Win11 卡死 vs Android 闪退”是同一个 access violation 在两个平台上的不同收尾
+  （Windows 的崩溃处理/转储让进程看起来像卡住），不是两个 bug。

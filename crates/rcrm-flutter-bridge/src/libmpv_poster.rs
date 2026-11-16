@@ -22,6 +22,15 @@
 //! ms against 102-111 ms on a 2730x1440 sample), which lands up to
 //! [keyframe_tolerance] early, and only falls back to the exact seek when the
 //! landing is further than that.
+//!
+//! A quarter-turned source (a phone shooting portrait into a landscape sensor)
+//! is a hard rule, not a preference: libmpv's software renderer must never be
+//! handed a 90°/270° frame. It advertises `VO_CAP_ROTATE90` while
+//! `libmpv_sw.c` has no rotation code, so the scaler is given a transposed crop
+//! of an unrotated frame — a wild read that kills the process before any
+//! deadline can fire (the 3840x2160 Android clip of 2026-11-16). The rotation is
+//! therefore neutralised with `video-rotate` before the first frame and applied
+//! here, to the rendered surface ([finalize_rotation], [poster::rotate_bgra_clockwise]).
 
 use std::time::{Duration, Instant};
 
@@ -42,6 +51,10 @@ const LOAD_TIMEOUT: Duration = Duration::from_secs(25);
 const SEEK_TIMEOUT: Duration = Duration::from_secs(5);
 /// The frame whose timestamp matches the seek target.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(3);
+/// Waiting for a neutralised rotation to reach the video output chain. It is a
+/// filter reconfiguration, not a decode, so it is over in milliseconds; the
+/// budget only stops a libmpv that ignored the change from stalling the job.
+const ROTATION_TIMEOUT: Duration = Duration::from_secs(2);
 /// How far `time-pos` may sit from the target before the frame in hand is not
 /// accepted as the one that was asked for. `absolute+exact` lands on a frame
 /// boundary, so this only absorbs timestamp rounding — and it is wide enough
@@ -106,18 +119,37 @@ pub(crate) fn generate(
 	mpv.command(&["loadfile", url])?;
 	wait_for_load(&mpv, stage_deadline(deadline, LOAD_TIMEOUT))?;
 
+	// BEFORE the first frame, so the video output never configures a rotated
+	// frame at all: see [plan_rotation].
+	let planned_rotation = plan_rotation(&mpv)?;
+
 	// BEFORE the first seek (and before the size is read, which some streams only
 	// report once a frame is decoded): see [wait_for_first_frame]. The frame it
 	// waits for is consumed by `attempt`'s drain, together with any other
 	// pre-seek frame.
 	wait_for_first_frame(&render, stage_deadline(deadline, FIRST_FRAME_TIMEOUT));
+	// Now that the video output chain exists, its own answer is the authority.
+	// A frame with a remaining quarter turn is refused, never rendered: see
+	// [finalize_rotation].
+	let rotation = finalize_rotation(
+		&mpv,
+		planned_rotation,
+		stage_deadline(deadline, ROTATION_TIMEOUT),
+	)?;
+	// A LATE neutralisation reconfigures the video output and drops the frames
+	// it was holding, so the pre-seek frame is waited for again — the first seek
+	// must never race the load's own first frame (see [wait_for_first_frame]).
+	// In the normal path the frame is already there and this returns at once.
+	wait_for_first_frame(&render, stage_deadline(deadline, FIRST_FRAME_TIMEOUT));
 	let (source_width, source_height) = display_size(&mpv);
-	let (width, height) = target_size(source_width, source_height, target_width)?;
-	let mut surface = Surface::new(width, height);
+	let (display_width, display_height) = displayed(source_width, source_height, rotation);
+	let (poster_width, poster_height) = target_size(display_width, display_height, target_width)?;
+	let (surface_width, surface_height) = unrotated(poster_width, poster_height, rotation);
+	let mut surface = Surface::new(surface_width, surface_height, rotation)?;
 	let keyframe_first = keyframe_seek_for(source_width, source_height);
 	let duration = mpv.get_f64("duration").filter(|seconds| *seconds > 0.0);
 	rcrm_core::log_debug!(
-		"[poster] libmpv source={source_width}x{source_height} surface={width}x{height} duration={duration:?} loaded_ms={}",
+		"[poster] libmpv source={source_width}x{source_height} rotation={rotation} poster={poster_width}x{poster_height} surface={surface_width}x{surface_height} duration={duration:?} loaded_ms={}",
 		started.elapsed().as_millis()
 	);
 
@@ -216,11 +248,11 @@ fn attempt(
 		landed = mpv.get_f64("time-pos");
 	}
 	let frame_ms = started.elapsed().as_millis();
-	let (width, height) = surface.size();
+	let rotation = surface.rotation();
 	let encode_started = Instant::now();
-	let encoded = poster::encode_poster_frame(surface.pixels_mut(), width, height, quality);
+	let encoded = encode_surface(surface, quality)?;
 	rcrm_core::log_debug!(
-		"[poster] libmpv pos={position}s path={} at={:.3}s frame_ms={} encode_ms={}",
+		"[poster] libmpv pos={position}s path={} at={:.3}s rotation={rotation} frame_ms={} encode_ms={}",
 		if keyframe_accepted {
 			"keyframe"
 		} else {
@@ -235,6 +267,38 @@ fn attempt(
 		PosterResult::Blank => Ok(None),
 		PosterResult::Invalid => Err(LibMpvError::Encode),
 	}
+}
+
+/// Encode the surface, turning a quarter turn the renderer could not draw.
+///
+/// This is the only place a poster is encoded, so the frame that is measured and
+/// encoded is always the one in its final orientation.
+fn encode_surface(surface: &mut Surface, quality: u8) -> Result<PosterResult, LibMpvError> {
+	let (width, height) = surface.size();
+	let rotation = surface.rotation();
+	if rotation == 0 {
+		// libmpv drew the frame the way up it belongs (0° or its own 180°).
+		return Ok(poster::encode_poster_frame(
+			surface.pixels_mut(),
+			width,
+			height,
+			quality,
+		));
+	}
+	let (turned_width, turned_height) = unrotated(width, height, rotation);
+	let Some(mut turned) =
+		poster::rotate_bgra_clockwise(surface.pixels_mut(), width, height, rotation)
+	else {
+		return Err(LibMpvError::Frame {
+			message: format!("cannot turn the {width}x{height} surface by {rotation}°"),
+		});
+	};
+	Ok(poster::encode_poster_frame(
+		&mut turned,
+		turned_width,
+		turned_height,
+		quality,
+	))
 }
 
 /// Consume every frame the context is still holding, by drawing it.
@@ -398,6 +462,149 @@ fn wait_for_first_frame(render: &RenderContext<'_>, deadline: Instant) {
 			return;
 		};
 		std::thread::sleep(left.min(FRAME_POLL));
+	}
+}
+
+/// Take a quarter turn out of libmpv's hands before the first frame.
+///
+/// The returned value is the clockwise rotation this module must apply to the
+/// rendered surface ("none" for the orientations libmpv can draw).
+///
+/// Nothing is taken for the two orientations libmpv's software renderer CAN
+/// draw: 0° and
+/// 180° never transpose the source rectangle, so the scaler is handed a crop of
+/// the frame it actually has. 90° and 270° do transpose it
+/// (`mp_get_src_dst_rects` in `aspect.c`), while `libmpv_sw.c` has no rotation
+/// code at all — the scaler then reads a transposed crop of an unrotated frame,
+/// which is a wild read, not a wrong picture: on the 3840x2160 rotation-90
+/// Android clip of 2026-11-16 it was an access violation on the FIRST render,
+/// taking the whole process with it before [JOB_TIMEOUT] could matter. So those
+/// two are removed from libmpv's hands and the frame is turned here instead.
+///
+/// # How the removal works
+///
+/// `--video-rotate` is ADDITIVE with the container's rotation (measured: 90°
+/// metadata + `video-rotate=270` gives an upright 0° chain), so setting the
+/// complement neutralises it. It is set BEFORE the first frame, from the
+/// demuxer's own value (`current-tracks/video/demux-rotation`, which exists as
+/// soon as the file has loaded), so the video output never configures a rotated
+/// frame — not even for one frame.
+///
+/// # Errors
+///
+/// A rejected `video-rotate` is fatal for the job: without it the render would
+/// be the crash this function exists to prevent, and no poster is worth the
+/// process.
+fn plan_rotation(mpv: &Mpv) -> Result<Option<u32>, LibMpvError> {
+	let rotation = demux_rotation(mpv);
+	if rotation % 180 != 90 {
+		return Ok(None);
+	}
+	neutralise(mpv, rotation)?;
+	Ok(Some(rotation as u32))
+}
+
+/// Confirm what the video output chain is really holding, now that it exists.
+///
+/// `video-params/rotate` only appears once the chain does, so it is read after
+/// the first frame — and it is the authority, not [demux_rotation]. If a quarter
+/// turn is still there (the track list did not report it, or the early set did
+/// not reach the chain), it is neutralised now and the chain is given
+/// [ROTATION_TIMEOUT] to settle. A chain that still reports a quarter turn is a
+/// FAILED POSTER, never a rendered frame: this is the one place where refusing
+/// costs a thumbnail and rendering costs the process.
+fn finalize_rotation(
+	mpv: &Mpv,
+	planned: Option<u32>,
+	deadline: Instant,
+) -> Result<u32, LibMpvError> {
+	let effective = render_rotation(mpv);
+	if effective % 180 != 90 {
+		// The turn this module took OUT of the chain is the one to apply here —
+		// but only if the chain really came out upright. A chain left at 180° is
+		// libmpv's own rotation (it draws that one correctly), and turning on top
+		// of it would land the poster 90° wrong.
+		return Ok(match planned {
+			Some(applied) if effective == 0 => applied,
+			_ => 0,
+		});
+	}
+	rcrm_core::log_debug!(
+		"[poster] the video output still holds a {effective}° rotation: neutralising it late"
+	);
+	neutralise(mpv, effective)?;
+	loop {
+		// Exactly upright is the only accepted answer: the complement of a quarter
+		// turn cannot legitimately produce 180°, so anything else means the chain
+		// has not taken the change and this job must not render.
+		if render_rotation(mpv) == 0 {
+			return Ok(effective as u32);
+		}
+		let left = remaining(deadline, "rotation", ROTATION_TIMEOUT)?;
+		std::thread::sleep(left.min(FRAME_POLL));
+	}
+}
+
+/// The container's rotation for the current video track, in clockwise degrees.
+///
+/// `demux-rotation` is the demuxer's own value, available before any frame is
+/// decoded; it is the rotation mpv itself would hand the video output. A missing
+/// property (no video track yet, or an upright source, for which mpv marks it
+/// unavailable) reads as 0.
+fn demux_rotation(mpv: &Mpv) -> i64 {
+	mpv.get_i64("current-tracks/video/demux-rotation")
+		.unwrap_or(0)
+		.rem_euclid(360)
+}
+
+/// The rotation the video output chain is configured with, in clockwise degrees.
+///
+/// `video-params` only exists once a video output chain does; without one there
+/// is nothing to render, and [display_size] fails the job a few lines later. So a
+/// missing property reads as "upright", and no job ever renders on that answer
+/// alone without a chain that reported it.
+fn render_rotation(mpv: &Mpv) -> i64 {
+	mpv.get_i64("video-params/rotate")
+		.unwrap_or(0)
+		.rem_euclid(360)
+}
+
+/// Set `video-rotate` to the complement of `rotation`, making the chain upright.
+///
+/// No `--video-rotate` option at creation: the value is only known once the file
+/// has loaded, and this is a runtime option for exactly that reason.
+fn neutralise(mpv: &Mpv, rotation: i64) -> Result<(), LibMpvError> {
+	let complement = (360 - rotation) % 360;
+	mpv.command(&["set", "video-rotate", &complement.to_string()])
+}
+
+/// The width and height a source is DISPLAYED at, once `rotation` is applied.
+///
+/// The demuxer stores a quarter-turned phone clip sideways: mpv reports the
+/// coded 3840x2160, and the picture is meant to be seen 2160x3840. The poster
+/// keeps the display's shape — [target_size] is asked with the turned
+/// dimensions — so a portrait video gets a portrait poster, never a letterboxed
+/// landscape one.
+fn displayed(width: i64, height: i64, rotation: u32) -> (i64, i64) {
+	if rotation % 180 == 90 {
+		(height, width)
+	} else {
+		(width, height)
+	}
+}
+
+/// The surface a `rotation`-turned frame is rendered into: the POSTER's
+/// dimensions laid back down.
+///
+/// The same swap as [displayed] (the rule is self-inverse), applied to the
+/// poster size: a 640x1138 portrait poster is rendered into a 1138x640 surface
+/// and turned by [encode_surface]. Rendering it into a 640-wide surface instead
+/// would throw away more than half the poster's width.
+fn unrotated(width: u32, height: u32, rotation: u32) -> (u32, u32) {
+	if rotation % 180 == 90 {
+		(height, width)
+	} else {
+		(width, height)
 	}
 }
 
@@ -780,6 +987,41 @@ mod tests {
 		// and ask time-pos", never "this is the previous picture".
 		assert!(!is_previous_frame(info(FRAME_INFO_REDRAW)));
 		assert!(!is_previous_frame(None));
+	}
+
+	/// A quarter-turned source is displayed with its axes swapped, and the poster
+	/// is asked for in THAT shape, then laid back down for the render. This is
+	/// the geometry of the clip that crashed the app: 3840x2160 coded, rotation
+	/// 90, so a portrait poster.
+	#[test]
+	fn a_quarter_turn_moves_the_poster_and_its_surface() {
+		assert_eq!(displayed(3840, 2160, 0), (3840, 2160));
+		assert_eq!(displayed(3840, 2160, 180), (3840, 2160));
+		assert_eq!(displayed(3840, 2160, 90), (2160, 3840));
+		assert_eq!(displayed(3840, 2160, 270), (2160, 3840));
+
+		let (width, height) = displayed(3840, 2160, 90);
+		assert_eq!(
+			target_size(width, height, 640).unwrap(),
+			(640, 1138),
+			"a portrait poster, never a letterboxed landscape one"
+		);
+		// The same rule, applied to the poster size — it is self-inverse.
+		assert_eq!(unrotated(640, 1138, 90), (1138, 640));
+		assert_eq!(unrotated(640, 1138, 270), (1138, 640));
+		assert_eq!(unrotated(640, 360, 0), (640, 360));
+		assert_eq!(unrotated(640, 360, 180), (640, 360));
+	}
+
+	/// Only a quarter turn is taken out of libmpv's hands; 180° it draws itself.
+	#[test]
+	fn only_a_quarter_turn_needs_this_module() {
+		for rotation in [0, 180, 360] {
+			assert_eq!(displayed(3840, 2160, rotation), (3840, 2160));
+		}
+		for rotation in [90, 270, 450] {
+			assert_eq!(displayed(3840, 2160, rotation), (2160, 3840));
+		}
 	}
 
 	/// The gate: only sources big enough for the exact seek to hurt take the
