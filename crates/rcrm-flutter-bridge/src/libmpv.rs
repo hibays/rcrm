@@ -285,7 +285,7 @@ fn load() -> Result<&'static Api, LibMpvError> {
 		// SAFETY: opening a shared library runs its initializers. That is the
 		// same trust the app already places in the libmpv its player uses, and
 		// it is the same build of it.
-		let library = match unsafe { Library::new(name) } {
+		let library = match unsafe { Library::new(*name) } {
 			Ok(library) => library,
 			Err(error) => {
 				tried.push(format!("{name}: {error}"));

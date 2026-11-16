@@ -69,7 +69,7 @@ zxing-cpp = { version = "0.5.3", features = ["bundled"] }
 # Runtime loading of the system libmpv (the `libmpv-poster` feature). The
 # library is the one media_kit already loaded for playback; nothing links
 # against it at build time.
-libloading = { version = "0.8", optional = true }
+libloading = { version = "0.9", optional = true }
 
 [dev-dependencies]
 jpeg-encoder = "0.7.1"
