@@ -4,6 +4,8 @@
 状态: 可行性原型完成，未接入生产代码
 后续执行计划: `docs/PLAN_MPV_POSTER.md`
 
+> **2026-11-16 追加**：iOS 也已走 libmpv 路径（media_kit 的 `Mpv.framework/Mpv` 是动态、已签名的 `MH_DYLIB`），`mpv-poster` 与 media_kit 截图后端已删除。本文中“iOS 不建议”的结论是当时的历史判断，已被取代。
+
 ## 1. 结论
 
 **技术上可行，性能有明确收益，但现在还不能直接、无条件替换桌面端 ffmpeg CLI。**

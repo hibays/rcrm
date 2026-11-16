@@ -15,19 +15,13 @@ crate-type = ["cdylib", "staticlib"]
 # Host tests:   cargo test -p rcrm-flutter-bridge --features mobile-decode
 mobile-decode = ["dep:rav1d", "dep:jxl-oxide", "dep:jxl-render", "dep:heic"]
 
-# Raw mpv screenshot poster path: blank test + bilinear downscale + WebP in
-# Rust. Deliberately SEPARATE from mobile-decode: it needs only the shared
-# resampler (decode.rs) and the WebP encoder, not the AVIF/JXL/HEIC decoders.
-# iOS enables it: that platform's poster backend is media_kit (its libmpv is
-# statically linked, so it cannot be dlopen'ed) and this encoder is how those
-# screenshots become WebP without a Dart pixel loop.
-mpv-poster = []
-
-# Direct libmpv poster path: load the system libmpv at runtime, seek with
+# Direct libmpv poster path: load the process's libmpv at runtime, seek with
 # `absolute+exact`, draw the frame into Rust memory with
-# MPV_RENDER_API_TYPE_SW, and encode it in place. Every platform except iOS
-# uses it; a build without this feature (or a machine without libmpv) keeps the
-# symbol absent, which the Dart side reads as "use the media_kit backend".
+# MPV_RENDER_API_TYPE_SW, and encode it in place. Every platform uses it,
+# including iOS — media_kit ships libmpv there as an embedded, code-signed
+# `Mpv.framework` (a real MH_DYLIB), which is exactly what iOS permits: the
+# app's own signed code, loaded from the bundle. A build without this feature
+# has no poster renderer at all, which is why every build script enables it.
 libmpv-poster = ["dep:libloading"]
 
 [dependencies]

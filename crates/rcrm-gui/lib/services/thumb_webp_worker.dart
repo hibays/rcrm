@@ -51,27 +51,12 @@ final class _EncodeReply {
   final int bufPtr;
   final int len;
 
-  /// Set for a poster encode whose frame was rejected by the Rust blank test.
-  final bool blank;
-
-  const _EncodeReply(this.bufPtr, this.len, {this.blank = false});
-}
-
-/// What one raw-frame poster encode produced.
-///
-/// [bytes] is null for a blank frame (Rust returns no WebP at all). A null
-/// result from the method itself means the worker/bridge was unavailable and
-/// the caller must use media_kit's JPEG path.
-class PosterEncodeResult {
-  final Uint8List? bytes;
-  final bool blank;
-  const PosterEncodeResult({this.bytes, this.blank = false});
+  const _EncodeReply(this.bufPtr, this.len);
 }
 
 /// Request tags for the worker protocol.
 const int _opEncodeRgba = 0;
 const int _opGenerateThumbFromImage = 1;
-const int _opEncodePosterBgra = 2;
 
 class ThumbWebpWorker {
   ThumbWebpWorker._();
@@ -209,57 +194,6 @@ class ThumbWebpWorker {
       owned.free();
     }
     return out;
-  }
-
-  /// Encode [bgra] (width x height x 4, mpv's raw screenshot layout) as WebP,
-  /// with the **blank test and the downscale done in Rust**.
-  ///
-  /// This is the poster path's entry point: neither isolate scans or resamples
-  /// a pixel. Returns null when the worker or the bridge cannot do it (the
-  /// caller then uses media_kit's JPEG screenshot); a blank frame comes back
-  /// as [PosterEncodeResult.blank], not as null.
-  ///
-  /// One copy is unavoidable: the screenshot arrives as a Dart buffer and Rust
-  /// needs native memory (the same copy [encodeRgba] makes, but of the full
-  /// frame because Rust is the one that downscales it).
-  Future<PosterEncodeResult?> encodePosterBgra(
-    Uint8List bgra,
-    int w,
-    int h, {
-    required int targetWidth,
-    int quality = 82,
-  }) async {
-    // Do NOT check RustBridge.encodePosterWebpAddr here: the main isolate may
-    // not have loaded the bridge at all (the worker loads it in its own
-    // isolate). The worker checks its address and sends 0/0, which comes back
-    // as null and lets the caller fall back to JPEG.
-    if (targetWidth <= 0 || bgra.isEmpty) return null;
-    if (!await _ensure()) return null;
-    final owned = NativeBytes(
-      calloc<Uint8>(bgra.length),
-      bgra.length,
-      bgra.length,
-    );
-    owned.view.setAll(0, bgra);
-    try {
-      final reply = await _request(owned, [
-        _opEncodePosterBgra,
-        owned.ptr.address,
-        bgra.length,
-        w,
-        h,
-        targetWidth,
-        quality,
-      ]);
-      if (reply == null) return null;
-      if (reply.blank) return const PosterEncodeResult(blank: true);
-      if (reply.bufPtr == 0) return null;
-      final bytes = _attachFinalizerView(reply.bufPtr, reply.len);
-      return bytes == null ? null : PosterEncodeResult(bytes: bytes);
-    } finally {
-      // No-op once the worker owns the buffer (see [_request]).
-      owned.free();
-    }
   }
 
   /// Builds a thumbnail **straight from the encoded original**: [head] holds
@@ -442,16 +376,13 @@ class ThumbWebpWorker {
     }
     if (msg is List<dynamic>) {
       final token = msg[0] as int;
-      final blank = msg.length > 3 && msg[3] is int ? msg[3] as int : 0;
       // The worker reached this reply *after* returning from the native call, so
       // the buffer it was reading is free again — the fast path that keeps a
       // healthy worker from accumulating parked buffers.
       _releaseInput(token);
       final c = _pending.remove(token);
       if (c != null) {
-        c.complete(
-          _EncodeReply(msg[1] as int, msg[2] as int, blank: blank != 0),
-        );
+        c.complete(_EncodeReply(msg[1] as int, msg[2] as int));
       } else {
         // Orphaned reply: the request timed out (15 s) and was parked, but the
         // worker still finished the encode. Free the Rust output so it does not
@@ -558,7 +489,6 @@ void thumbWebpWorkerMain(SendPort mainPort) {
     final input = Pointer<Uint8>.fromAddress(req[2] as int);
     Pointer<Void> out = nullptr;
     var outLen = 0;
-    var blank = 0;
     try {
       final bridge = RustBridge();
       if (op == _opEncodeRgba) {
@@ -571,33 +501,6 @@ void thumbWebpWorkerMain(SendPort mainPort) {
         );
         out = result;
         if (result != nullptr) outLen = result.cast<RustWebpBuf>().ref.dataLen;
-      } else if (op == _opEncodePosterBgra) {
-        final address = RustBridge.encodePosterWebpAddr;
-        if (address != 0) {
-          final outBlank = calloc<Int32>();
-          try {
-            final encode =
-                Pointer<NativeFunction<RcrmEncodePosterWebpC>>.fromAddress(
-                  address,
-                ).asFunction<RcrmEncodePosterWebpDart>();
-            final result = encode(
-              input,
-              req[3] as int,
-              req[4] as int,
-              req[5] as int,
-              req[6] as int,
-              req[7] as int,
-              outBlank,
-            );
-            out = result;
-            if (result != nullptr) {
-              outLen = result.cast<RustWebpBuf>().ref.dataLen;
-            }
-            blank = outBlank.value;
-          } finally {
-            calloc.free(outBlank);
-          }
-        }
       } else {
         final generate =
             Pointer<
@@ -617,12 +520,11 @@ void thumbWebpWorkerMain(SendPort mainPort) {
     } catch (_) {
       out = nullptr;
       outLen = 0;
-      blank = 0;
     }
     // Rust borrowed the input for the call; the MAIN isolate owns that
     // allocation and frees it once this worker is provably done with it (its
     // reply, or this isolate's exit). Freeing it here would double-free it, and
     // a killed worker never reaches this code again to free it at all.
-    mainPort.send([token, out.address, outLen, blank]);
+    mainPort.send([token, out.address, outLen]);
   });
 }

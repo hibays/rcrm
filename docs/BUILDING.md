@@ -130,13 +130,13 @@ single `--suggestions` diagnostic described above.
 - CMake + Ninja on PATH. The script points cmake-rs at the per-ABI shims in
   `scripts/cmake/` and adds the static C++ runtime link flags itself — a manual
   `cargo ndk` invocation has to do the same (see the script).
-- The poster features follow the backend each platform uses. **`libmpv-poster`**
-  (libmpv renders the poster itself) is enabled by every desktop script and by
-  the Android one; iOS omits it on purpose, because media_kit links libmpv
-  statically there and there is no shared library to load. **`mpv-poster`**
-  (raw mpv screenshot → blank test + bilinear downscale + WebP, done in Rust) is
-  the iOS encoder, and stays enabled on Android as the fallback encoder.
-  `mobile-decode` (AVIF + JXL + HEIC software decoding) is independent of both.
+- **`libmpv-poster`** (libmpv renders the poster itself) is enabled by every
+  platform's script, INCLUDING iOS: media_kit ships libmpv there as an
+  embedded, code-signed `Mpv.framework/Mpv` — a real, dynamic Mach-O framework
+  (`MH_DYLIB`) that `libmpv.rs` opens by name. iOS forbids executable code from
+  outside the signed bundle, not the bundle's own frameworks. There is no
+  screenshot poster encoder and no fallback backend any more.
+  `mobile-decode` (AVIF + JXL + HEIC software decoding) is independent of it.
   The desktop scripts accept `-MobileDecode` / `--mobile-decode` for local
   testing only. `heic` is a pure-Rust HEVC decoder
   (`backend-rust`), chosen so no platform SDK is involved and
@@ -204,7 +204,7 @@ Pipeline: cargo build `--release` `-p rcrm-flutter-bridge` (with `RUSTFLAGS=-C t
 
 ```powershell
 $env:ANDROID_NDK_HOME = "D:\Dev\Android\Sdk\ndk\28.2.13676358"
-# mobile-decode (AVIF/JXL/HEIC), libmpv-poster and mpv-poster are all on by default
+# mobile-decode (AVIF/JXL/HEIC) and libmpv-poster are on by default
 .\scripts\build_android.ps1 -Release -SplitAbi
 ```
 
@@ -231,16 +231,42 @@ Pipeline: `cargo-ndk` for 3 ABIs (aarch64, armv7, x86_64; zxing-cpp's C++ core i
 ### iOS
 
 ```bash
-# mobile-decode (AVIF/JXL/HEIC) and mpv-poster are enabled by default.
-# libmpv-poster is deliberately absent: iOS's libmpv is linked into the app,
-# so there is no shared library for the Rust poster renderer to load.
+# mobile-decode (AVIF/JXL/HEIC) and libmpv-poster are enabled by default.
+# The poster renderer opens media_kit's embedded `Mpv.framework/Mpv` (a dynamic,
+# code-signed framework in the app bundle) — the same library the player uses.
 ./scripts/build_ios.sh -r --no-codesign
 # Output: build/ios/iphoneos/Runner.app
 ```
 
-The iOS bridge is a static library and now contains zxing-cpp's C++ objects, so
-whatever links `librcrm_flutter_bridge.a` must also link libc++ (`-lc++` in the
-target's `OTHER_LDFLAGS`). This has not been verified on a Mac (the iOS
+The libmpv frameworks come from media_kit's iOS package, and the build script
+detects how that package is integrated. With a Swift Package
+(`ios/<name>/Package.swift`) the xcframeworks are **remote binary targets**:
+Xcode/SwiftPM resolves and downloads them itself (Flutter prefetches them with
+`xcodebuild -resolvePackageDependencies`), and the script does not download
+anything. With the CocoaPods-only package `media_kit_libs_ios_video 1.1.4`
+(today's pinned version; it ships a podspec and a Makefile, no `Package.swift`)
+the Makefile downloads them during `pod install`, so the script pre-seeds that
+**same** cache file using the version and sha256 parsed from the Makefile
+(GitHub first, then the gh-proxy mirror). A mismatched or truncated tarball is
+rejected before `pod install` sees it. The old step wrote into
+`ios/.symlinks/...` — a tree CocoaPods owns and rewrites — so the file it
+placed there was not the one the Makefile later looked for.
+
+The iOS bridge is a static library and contains zxing-cpp's C++ objects. The
+Runner target therefore links it with `-force_load` (NOT a plain “Link Binary
+With Libraries” entry): the `rcrm_*` exports are reached at runtime through
+`DynamicLibrary.process()` (`dlsym`), so native code references none of them and
+the linker would archive every object away. `OTHER_LDFLAGS` in
+`ios/Runner.xcodeproj/project.pbxproj` carries:
+
+```
+"-lc++",
+"-force_load", "$(SRCROOT)/Runner/librcrm_flutter_bridge.a"
+```
+
+The `.a` is copied into `ios/Runner/` by the build script before Xcode runs; a
+build that skips the script fails the link with a missing-file error rather than
+shipping a bridge with no symbols. This has not been verified on a Mac (the iOS
 toolchain shims are in `scripts/cmake/`).
 
 ## Brand assets / app icons
@@ -419,9 +445,7 @@ cargo clippy --all                           # ZERO warnings enforced
 cargo test -p rcrm-flutter-bridge --features mobile-decode --release
 cargo clippy -p rcrm-flutter-bridge --features mobile-decode --all-targets
 
-# The poster features are independent — these must build with no AVIF/JXL/HEIC deps
-cargo test -p rcrm-flutter-bridge --features mpv-poster
-cargo clippy -p rcrm-flutter-bridge --features mpv-poster --all-targets
+# The poster renderer is its own feature — must build with no AVIF/JXL/HEIC deps
 cargo test -p rcrm-flutter-bridge --features libmpv-poster
 cargo clippy -p rcrm-flutter-bridge --features libmpv-poster --all-targets
 
@@ -444,7 +468,7 @@ cargo build --release -p rcrm-flutter-bridge --features libmpv-poster
 cargo ndk --target aarch64-linux-android --target armv7-linux-androideabi \
   --target x86_64-linux-android \
   -o crates/rcrm-gui/android/app/src/main/jniLibs \
-  build -p rcrm-flutter-bridge --features mobile-decode,mpv-poster,libmpv-poster --release
+  build -p rcrm-flutter-bridge --features mobile-decode,libmpv-poster --release
 ```
 
 Cross-compile check without the NDK link step. `check` still runs
@@ -455,7 +479,7 @@ nothing is linked (the build script sets it; for a one-off command):
 $env:CMAKE_TOOLCHAIN_FILE_aarch64_linux_android = "$PWD/scripts/cmake/android-arm64-v8a.cmake"
 $env:CMAKE_GENERATOR = "Ninja"
 RUSTC_BOOTSTRAP=rav1d cargo ndk --target aarch64-linux-android check \
-  -p rcrm-flutter-bridge --features mobile-decode,mpv-poster,libmpv-poster
+  -p rcrm-flutter-bridge --features mobile-decode,libmpv-poster
 ```
 
 ## Troubleshooting
@@ -466,7 +490,7 @@ RUSTC_BOOTSTRAP=rav1d cargo ndk --target aarch64-linux-android check \
 |-------|-------|-----|
 | `rcrm_flutter_bridge.dll` locked | Process holds bridge | Kill all `rcrm_gui.exe` before rebuild |
 | Videos won't play | Missing mpv DLLs | Build script downloads them automatically |
-| No video posters, players fine | libmpv could not be loaded or is too old | Run with Rust log level 3 (`rcrm_set_log_level(3)`) and look for `[poster] libmpv`; the Dart side then falls back to media_kit on mobile |
+| No video posters, players fine | libmpv could not be loaded or is too old | Run with Rust log level 3 (`rcrm_set_log_level(3)`) and look for `[poster] libmpv`; there is no fallback renderer, so a load failure means no posters |
 | No video posters over **https://** | libmpv verifying the self-signed peer | The renderer already passes `tls-verify=no`; see Known toolchain issues above |
 | AVIF/JXL/HEIC broken in the **Windows** app | Impeller is the default desktop renderer | See Known toolchain issues above |
 | Missing DLLs at runtime | DLL copy step failed | Re-run build or manually copy DLLs to runner dir |

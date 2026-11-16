@@ -15,10 +15,10 @@ class ItemCacheLimit {
   /// How many poster generation slots run concurrently.
   ///
   /// One on a phone. Four on a desktop rather than the eleven the ffmpeg-era
-  /// pipeline used: each slot is now a whole mpv context (libmpv path) or a
-  /// media_kit Player, decoding a full-resolution frame, so eleven of them at
-  /// once cost a 4K film's decoder each — and the eval that measured the libmpv
-  /// backend recommended starting at 2-4 workers (docs/MPV_POSTER_EVAL.md §8).
+  /// pipeline used: each slot is now a whole libmpv client, decoding a
+  /// full-resolution frame, so eleven of them at once cost a 4K film's decoder
+  /// each — and the eval that measured the libmpv backend recommended starting
+  /// at 2-4 workers (docs/MPV_POSTER_EVAL.md §8).
   static final int videoPosterConcurrency = _isMobile ? 1 : 4;
 
   /// Maximum queued poster requests — the depth of the waiting stack. Oldest
@@ -36,11 +36,11 @@ class ItemCacheLimit {
   // ── Image decode gate (ImageLoadGate) ────────────────────────
 
   /// How many image decodes run concurrently.
+  ///
+  /// There is no matching queue-depth constant: `ImageLoadGate`'s waiting
+  /// entries are pending tokens (not decoders), and dropping one would complete
+  /// it — whose caller then decodes outside this cap, in request order.
   static final int imageDecodeConcurrency = _isMobile ? 2 : 6;
-
-  /// Depth of the decode waiting stack (`ImageLoadGate`, LIFO). A full stack
-  /// drops its OLDEST entry — the picture least likely still to be on screen.
-  static final int imageDecodeQueueMax = _isMobile ? 12 : 40;
 
   // ── Flutter global ImageCache (main.dart) ────────────────────
 

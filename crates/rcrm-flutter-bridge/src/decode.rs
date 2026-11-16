@@ -226,58 +226,6 @@ pub fn downscale_rgba_bilinear(
 	Some(DecodeBuf::from_vec(out, dw, dh))
 }
 
-/// Bilinear downscale of a tightly packed **BGRA8** frame (what mpv's
-/// `screenshot-raw` hands back) into RGBA8 with opaque alpha.
-///
-/// Same sampling maths as [`downscale_rgba_bilinear`], through the same
-/// [`bilinear_tap`], but it also performs the BGRA -> RGBA channel swap and
-/// forces alpha to 255: mpv leaves the raw alpha byte at 0, and a WebP encoded
-/// from that is transparent. Reusing the one tap mapping is why a scaled poster
-/// has the same geometry as every other scaled thumbnail.
-#[cfg(feature = "mpv-poster")]
-pub fn downscale_bgra_opaque_bilinear(
-	src: &[u8],
-	sw: u32,
-	sh: u32,
-	dw: u32,
-	dh: u32,
-) -> Option<Box<DecodeBuf>> {
-	if sw == 0 || sh == 0 || dw == 0 || dh == 0 {
-		return None;
-	}
-	let needed = (sw as usize) * (sh as usize) * 4;
-	if src.len() < needed {
-		return None;
-	}
-	let mut out = Vec::new();
-	out.try_reserve_exact((dw as usize) * (dh as usize) * 4)
-		.ok()?;
-	let sw = sw as usize;
-	let dw = dw as usize;
-	for dy in 0..dh as usize {
-		let (y0, y1, wy) = bilinear_tap(dy as u32, dh, sh);
-		for dx in 0..dw {
-			let (x0, x1, wx) = bilinear_tap(dx as u32, dw as u32, sw as u32);
-			let row0 = y0 * sw;
-			let row1 = y1 * sw;
-			let i00 = (row0 + x0) * 4;
-			let i10 = (row0 + x1) * 4;
-			let i01 = (row1 + x0) * 4;
-			let i11 = (row1 + x1) * 4;
-			// BGRA source: B is 0, G is 1, R is 2. Write R, G, B, then opaque
-			// alpha — the output is RGBA, the layout every WebP encoder here
-			// takes.
-			for src_c in [2usize, 1, 0] {
-				let top = src[i00 + src_c] as f64 * (1.0 - wx) + src[i10 + src_c] as f64 * wx;
-				let bot = src[i01 + src_c] as f64 * (1.0 - wx) + src[i11 + src_c] as f64 * wx;
-				out.push((top * (1.0 - wy) + bot * wy).round() as u8);
-			}
-			out.push(255);
-		}
-	}
-	Some(DecodeBuf::from_vec(out, dw as u32, dh))
-}
-
 #[cfg(feature = "mobile-decode")]
 pub fn decode_avif(data: &[u8], target_width: u32) -> Option<Box<DecodeBuf>> {
 	crate::avif::decode(data, target_width)
@@ -294,44 +242,13 @@ pub fn decode_heic(data: &[u8], target_width: u32) -> Option<Box<DecodeBuf>> {
 }
 
 // The fixture tests exercise the AVIF/JXL/HEIC decoders, so they only exist
-// with mobile-decode. The BGRA resampler that mpv-poster uses is covered by
-// poster.rs's encode tests in that feature shape.
+// with mobile-decode.
 #[cfg(all(test, feature = "mobile-decode"))]
 mod tests {
 	use super::*;
 
 	fn test_read(p: &str) -> Vec<u8> {
 		std::fs::read(format!("tests/testdata/{p}")).expect("read test file")
-	}
-
-	#[cfg(feature = "mpv-poster")]
-	#[test]
-	fn downscale_bgra_opaque_is_rgba_with_alpha() {
-		// 4x4 BGRA: left half red, right half blue, alpha 0 (mpv leaves it 0).
-		let mut src = vec![0u8; 4 * 4 * 4];
-		for y in 0..4 {
-			for x in 0..4 {
-				let i = (y * 4 + x) * 4;
-				if x < 2 {
-					src[i] = 0; // B
-					src[i + 1] = 0; // G
-					src[i + 2] = 255; // R
-				} else {
-					src[i] = 255;
-					src[i + 1] = 0;
-					src[i + 2] = 0;
-				}
-				src[i + 3] = 0;
-			}
-		}
-		let buf = downscale_bgra_opaque_bilinear(&src, 4, 4, 2, 2).expect("scale");
-		assert_eq!((buf.width, buf.height), (2, 2));
-		let out = unsafe { std::slice::from_raw_parts(buf.data, buf.data_len) };
-		// Left column red, right column blue, every alpha opaque.
-		assert_eq!(&out[0..4], &[255, 0, 0, 255]);
-		assert_eq!(&out[4..8], &[0, 0, 255, 255]);
-		assert_eq!(&out[8..12], &[255, 0, 0, 255]);
-		assert_eq!(&out[12..16], &[0, 0, 255, 255]);
 	}
 
 	#[test]

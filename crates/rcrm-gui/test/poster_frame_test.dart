@@ -1,12 +1,8 @@
 // test/poster_frame_test.dart
-// The two pure decisions in video-poster generation: where to look, and whether
-// a capture is the same frame the pipeline already looked at.
+// The one pure decision in video-poster generation: where to look.
 //
-// The pixel work (blank test, downscale, WebP encode) now lives in Rust and is
-// tested there (src/poster.rs, src/decode.rs); this file deliberately has no
-// pixel loops left to pin.
-
-import 'dart:typed_data';
+// The pixel work (blank test, WebP encode) lives in Rust and is tested there
+// (src/poster.rs); this file deliberately has no pixel loops to pin.
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcrm_gui/utils/poster_frame.dart';
@@ -80,129 +76,6 @@ void main() {
           reason: '${seconds}s -> $plan',
         );
       }
-    });
-  });
-
-  group('isStalePosterFrame', () {
-    final frame = Uint8List.fromList([1, 2, 3, 4]);
-    final same = Uint8List.fromList([1, 2, 3, 4]);
-    final other = Uint8List.fromList([1, 2, 3, 5]);
-
-    test('a repeat of the previous frame at a content position is stale', () {
-      expect(
-        isStalePosterFrame(position: 30, previous: frame, current: same),
-        isTrue,
-      );
-    });
-
-    test('a different frame is new', () {
-      expect(
-        isStalePosterFrame(position: 30, previous: frame, current: other),
-        isFalse,
-      );
-    });
-
-    test('the first capture has no baseline', () {
-      expect(
-        isStalePosterFrame(position: 30, previous: null, current: frame),
-        isFalse,
-      );
-    });
-
-    test('the 0.0 fallback accepts the pre-seek frame', () {
-      // A static video/slideshow returns the same frame at every position.
-      // Every content candidate exhausts its retries; if 0.0 also rejected it,
-      // the video would get no poster at all.
-      expect(
-        isStalePosterFrame(position: 0, previous: frame, current: same),
-        isFalse,
-      );
-    });
-  });
-
-  group('sameEncodedFrame', () {
-    Uint8List bytes(int seed, {int length = 4000}) =>
-        Uint8List.fromList(List<int>.generate(length, (i) => (i * seed) % 251));
-
-    test('the same encode is the same frame', () {
-      final a = bytes(7);
-      final b = Uint8List.fromList(a);
-      expect(sameEncodedFrame(a, b), isTrue);
-      expect(sameEncodedFrame(a, a), isTrue, reason: 'identical buffer');
-    });
-
-    test('a different length can never be the same frame', () {
-      expect(sameEncodedFrame(bytes(7), bytes(7, length: 4001)), isFalse);
-    });
-
-    test('a frame whose pixels changed is not the same frame', () {
-      final a = bytes(7);
-      final b = Uint8List.fromList(a);
-      b[2000] = (b[2000] + 1) % 256;
-      expect(sameEncodedFrame(a, b), isFalse);
-    });
-
-    test('a single changed byte at the very end is caught', () {
-      final a = bytes(11);
-      final b = Uint8List.fromList(a);
-      b[b.length - 1] = (b[b.length - 1] + 3) % 256;
-      expect(sameEncodedFrame(a, b), isFalse);
-    });
-
-    test('a changed byte in the non-4-aligned tail is still caught', () {
-      // 4003 = 1000 whole words + 3 tail bytes.
-      final a = bytes(7, length: 4003);
-      final b = Uint8List.fromList(a);
-      b[4002] = (b[4002] + 1) % 256;
-      expect(sameEncodedFrame(a, b), isFalse);
-    });
-
-    test('unaligned views fall back to byte-by-byte and stay correct', () {
-      // Each view needs its OWN backing buffer: three views over one buffer
-      // would all change together when one of them is edited.
-      Uint8List unaligned(Uint8List src) {
-        final padded = Uint8List(src.length + 1);
-        padded.setRange(1, padded.length, src);
-        return Uint8List.view(padded.buffer, 1, src.length);
-      }
-
-      final base = Uint8List.fromList(
-        List<int>.generate(4000, (i) => (i * 7) % 251),
-      );
-      final a = unaligned(base);
-      final b = unaligned(base);
-      expect(a.offsetInBytes % 4, isNot(0));
-      expect(sameEncodedFrame(a, b), isTrue);
-
-      final changed = Uint8List.fromList(base);
-      changed[3999] = (changed[3999] + 1) % 256;
-      expect(sameEncodedFrame(a, unaligned(changed)), isFalse);
-    });
-
-    test('raw BGRA captures are compared in the representation they arrive in', () {
-      // media_kit returns a fresh sublist(0) copy for every raw screenshot; the
-      // service compares those raw buffers directly, before Rust swaps channels.
-      // Two captures of the same frame are equal byte for byte.
-      Uint8List capture() {
-        final out = Uint8List(4 * 4 * 4);
-        for (var i = 0; i < 16; i++) {
-          out[i * 4] = 40; // B
-          out[i * 4 + 1] = 90; // G
-          out[i * 4 + 2] = 180; // R
-          out[i * 4 + 3] = 0; // mpv leaves alpha at zero
-        }
-        return out;
-      }
-
-      final first = capture();
-      final second = capture();
-      expect(sameEncodedFrame(first, second), isTrue);
-      second[0] = 41;
-      expect(sameEncodedFrame(first, second), isFalse);
-    });
-
-    test('empty input is trivially the same', () {
-      expect(sameEncodedFrame(Uint8List(0), Uint8List(0)), isTrue);
     });
   });
 }

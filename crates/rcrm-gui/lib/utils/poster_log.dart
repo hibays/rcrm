@@ -3,9 +3,9 @@
 //
 // Poster generation is the pipeline whose cost lives on the device rather than
 // in a test, and "the thumbnails are slow" is not reproducible from a bug report
-// without the stage numbers (shot / compare / encode / total). Both backends
-// therefore report through here, with the same POSTER| prefix and the same probe
-// tags, so a phone log and a desktop log read the same.
+// without the stage numbers (plan / load / seek / frame / encode / total). The
+// renderer reports through here with the POSTER| prefix and those probe tags, so
+// a phone log and a desktop log read the same.
 //
 // Debug builds only, and `debugPrint` rather than `print` (per the Dart
 // conventions this app follows).

@@ -1,28 +1,16 @@
 // utils/poster_frame.dart
-// The two pure decisions in video-poster generation: WHERE to look, and
-// whether the frame that came back is a new one.
+// The one pure decision in video-poster generation: WHERE to look.
 //
-// Both poster backends use this file: the libmpv one for the search order (Rust
-// skips any position past the duration it reads itself), the media_kit one for
-// both decisions. Everything that touches pixels — the blank test, the
-// downscale, the WebP encode — lives in Rust either way. The measurements behind
-// the search order are in CHANGELOG/AGENTS: a paused-seek screenshot can be the
-// previous frame, so the media_kit pipeline has to notice a stale capture and ask
-// again; and the first candidate must not be the black leader.
+// Both sides use this order — Dart sends it to `rcrm_generate_poster_async`,
+// Rust walks it in the libmpv client and skips any position at or past the
+// duration it reads itself. Everything that touches pixels (the blank test, the
+// WebP encode) lives in Rust.
 //
-//   1. A screenshot taken right after a paused seek hands back the frame the
-//      video output ALREADY had while the seek's frame is still decoding.
-//      25–75% of paused-seek screenshots were byte-identical to the previous
-//      position's. So the pipeline cannot assume its first screenshot belongs
-//      to the position it asked for — it has to notice that it did not, and
-//      ask again. [sameEncodedFrame] is that notice.
-//   2. The old fixed position list started at 0.0s, which is the frame no film
-//      advertises itself with (a black leader, a fade, a distributor card), and
-//      its other entries were absolute seconds. The first candidate decides a
-//      lot, because the pipeline stops at the first frame that passes the blank
-//      test. [posterSeekPlan] is that order.
-
-import 'dart:typed_data';
+// The order exists because the old fixed list started at 0.0s, which is the
+// frame no film advertises itself with (a black leader, a fade, a distributor
+// card), and its other entries were absolute seconds. The first candidate
+// decides a lot, because the pipeline stops at the first frame that passes the
+// blank test. [posterSeekPlan] is that order.
 
 /// Candidate positions in SECONDS, most promising first.
 ///
@@ -82,63 +70,4 @@ List<double> posterSeekPlan(Duration duration) {
   add(0.5);
   add(0.0);
   return out;
-}
-
-/// Whether [current] is the SAME frame as the previous capture at a given
-/// candidate position, i.e. the seek handed back the frame the video output
-/// already had.
-///
-/// The 0.0 fallback is deliberately exempt: there the pre-seek frame IS the
-/// first frame, and it is also the only frame a static video or a slideshow
-/// ever produces. Rejecting it as stale would leave that video with no poster
-/// at all (the earlier candidates are all the same frame, so they exhaust the
-/// retries first).
-bool isStalePosterFrame({
-  required double position,
-  required Uint8List? previous,
-  required Uint8List current,
-}) =>
-    position != 0.0 && previous != null && sameEncodedFrame(previous, current);
-
-/// Whether [a] and [b] are the SAME encoded frame.
-///
-/// Used for the raw BGRA screenshots and for media_kit's JPEG fallback. Two
-/// captures of the same picture are byte-identical when the same source and
-/// encoder produce them, which is exactly the case here: the pipeline asks for
-/// a frame, gets the previous one back untouched, and compares two encodes of
-/// that same buffer. Equality is therefore a reliable staleness signal — no
-/// decode, no allocation.
-///
-/// Compared BYTE FOR BYTE, with an early exit, and not by sampling: a stale
-/// frame and a fresh one usually differ in the first few hundred bytes, so the
-/// loop returns on the first mismatch and is cheaper than a sampled pass in the
-/// common case. Sampling was the first version; it cannot promise that a
-/// changed pixel is noticed, and "almost certainly not the same frame" is not
-/// a thing a pipeline that caches the answer may say.
-bool sameEncodedFrame(Uint8List a, Uint8List b) {
-  if (identical(a, b)) return true;
-  final len = a.length;
-  if (len != b.length) return false;
-  // A raw 1920x1080 frame is 8 MB. Comparing it byte by byte on the UI
-  // isolate costs tens of milliseconds per position, which is the same order
-  // as the whole raw->WebP pipeline. Four bytes at a time cuts the loop by 4
-  // with identical semantics; the tail and any unaligned view still go byte by
-  // byte. `Uint32List` (not `Uint64List`) so this stays valid on every Dart
-  // target, including the web compiler.
-  final ao = a.offsetInBytes;
-  final bo = b.offsetInBytes;
-  var i = 0;
-  if (ao % 4 == 0 && bo % 4 == 0 && len >= 4) {
-    final blocks = len ~/ 4;
-    final av = a.buffer.asUint32List(ao, blocks);
-    final bv = b.buffer.asUint32List(bo, blocks);
-    for (var j = 0; j < blocks; j++) {
-      if (av[j] != bv[j]) return false;
-    }
-    i = blocks * 4;
-  }
-  for (; i < len; i++) {
-    if (a[i] != b[i]) return false;
-  }
-  return true;
 }

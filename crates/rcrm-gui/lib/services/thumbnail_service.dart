@@ -1,21 +1,23 @@
 // services/thumbnail_service.dart
-// RCrm GUI — video poster generation: one queue, two backends.
+// RCrm GUI — video poster generation: one queue, one backend.
 //
-// The backend is `utils/poster_backend.dart`'s decision — libmpv renders the
-// frame itself on every platform that can load it, media_kit's screenshot
-// (`poster_mpv.dart`) on iOS and in builds without the export — and everything
-// in this file is backend-agnostic:
+// Every platform renders the poster inside libmpv itself
+// (`poster_libmpv.dart` → `rcrm_generate_poster_async`); this file owns
+// everything around that call:
 //
-//   • an in-memory LRU and the opt-in on-disk ThumbCache (a hit skips both),
+//   • an in-memory LRU and the opt-in on-disk ThumbCache (a hit skips the
+//     render),
 //   • in-flight de-duplication, so one URL is fetched once,
-//   • a bounded queue that starts at most
+//   • a bounded LIFO stack that starts at most
 //     `ItemCacheLimit.videoPosterConcurrency` jobs (`utils/poster_queue.dart`),
-//   • a suspension gate that keeps poster work out of a player route's ENTRANCE
-//     and parks a running media_kit job (see `PosterParking`); it opens as soon
-//     as the step is over, because that route's own Related list needs posters.
+//   • a start gate that keeps NEW poster work out of a player route's ENTRANCE
+//     (a poster job is a whole decoder; starting one while the player opens
+//     competes for the same cores). Running jobs are not interrupted: the
+//     libmpv client shares no lock with media_kit's player.
 //
-// No pixels reach Dart on the libmpv path, and no plaintext reaches the disk on
-// either path unless `ThumbCache.enabled`.
+// No pixels reach Dart: libmpv renders into a Rust-owned surface and the WebP
+// comes back as a buffer Dart views in place. No plaintext reaches the disk
+// unless `ThumbCache.enabled`.
 
 import 'dart:async';
 import 'dart:typed_data';
@@ -23,13 +25,11 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show ChangeNotifier, visibleForTesting;
 
 import '../utils/media_url.dart';
-import '../utils/poster_backend.dart';
 import '../utils/poster_log.dart';
 import '../utils/poster_queue.dart';
 import 'item_cache_limit.dart';
 import 'net.dart';
 import 'poster_libmpv.dart';
-import 'poster_mpv.dart';
 import 'thumb_cache.dart';
 
 /// Bumped after a poster for a URL has been regenerated, so a mounted
@@ -55,8 +55,8 @@ class ThumbnailService {
   static final PosterRefresh posterRefresh = PosterRefresh();
 
   /// Test hook: replaces the body of [generatePoster], so a widget test can drive
-  /// a pending / late / null poster without a player. The ONE seam: "no posters"
-  /// is [noPoster].
+  /// a pending / late / null poster without a renderer. The ONE seam: "no
+  /// posters" is [noPoster].
   @visibleForTesting
   static Future<Uint8List?> Function(String url)? debugPosterLoader;
 
@@ -64,18 +64,13 @@ class ThumbnailService {
   @visibleForTesting
   static Future<Uint8List?> noPoster(String url) async => null;
 
-  /// The parking contract handed to the media_kit backend, for tests.
-  @visibleForTesting
-  static PosterParking get posterParking => _parking;
-
-  /// Poster target width, a MAXIMUM for both backends: libmpv renders at most
-  /// this wide (and never upscales), and the media_kit path hands it to the Rust
-  /// encoder, which only ever downscales.
+  /// Poster target width. A MAXIMUM: libmpv renders at most this wide (and never
+  /// upscales).
   static const int posterWidth = 640;
 
   /// Throttle: `ItemCacheLimit.videoPosterConcurrency` jobs at a time — one on
-  /// a phone, four on a desktop, because a poster job is a whole decoder either
-  /// way (an mpv context on the libmpv path, a media_kit Player on the other).
+  /// a phone, four on a desktop, because a poster job is a whole decoder (its
+  /// own libmpv client) either way.
   ///
   /// Waiting jobs, oldest first, so this list IS the stack: index 0 is the
   /// bottom (the entry `admitPosterJob` evicts) and the end is the top (the one
@@ -86,83 +81,45 @@ class ThumbnailService {
   static int _posterRunning = 0;
   static final int _maxRunning = ItemCacheLimit.videoPosterConcurrency;
 
-  /// The queue's side of the parking contract, handed to the media_kit backend.
-  static const PosterParking _parking = _ServiceParking();
-
   // ── Suspension (a player route's ENTRANCE) ──────────────────
-  // A poster job holds media_kit's static `NativePlayer.lock` across `open` and
-  // each `seek`+`screenshot`, so `PosterQuietRoute` closes this gate before its
-  // page builds and releases it when that entrance's ticker ends — not when the
-  // route goes away: the route's own Related list needs posters. A DEPTH counter,
-  // and each route releases ONCE, so it counts "entrances still running".
+  // A poster job decodes on `vd-lavc-threads` (up to 8) threads of its own, and
+  // a player route's entrance is opening a file and waiting for its first
+  // frame — the moment the user is most likely to notice contention. So no NEW
+  // poster job starts while an entrance runs. A job already running is NOT
+  // interrupted: it holds no lock the playback player needs, and answering
+  // null would become a permanent placeholder. A DEPTH counter, and each route
+  // releases ONCE, so it counts "entrances still running".
   static int _posterSuspendDepth = 0;
 
-  /// How many suspended jobs are held right now. Read by the kick plan: a
-  /// parked job still owns its slot and may be mid-`open`, so nothing else may
-  /// start until it is back in its loop.
-  static int _posterParked = 0;
-
-  /// Wakes every parked job when the gate opens. A broadcast stream, not a
-  /// one-shot `Completer`: a second `resume()` used to complete it again and
-  /// throw `Bad state: Future already completed` out of `dispose()`. An event
-  /// with no listener is dropped, which is what a job that has not asked wants.
-  static final StreamController<void> _posterResume =
-      StreamController<void>.broadcast();
-
-  /// True while a player route's entrance is still running — i.e. while the
-  /// poster pool must stay quiet. Test-visible so the depth counter's pairing can
-  /// be pinned without a media_kit Player.
+  /// True while a player route's entrance is still running — i.e. while no new
+  /// poster job may start. Test-visible so the depth counter's pairing can be
+  /// pinned without a player.
   @visibleForTesting
   static bool get posterSuspended => _posterSuspendDepth > 0;
 
-  /// Stop starting poster work and park what is running. Called by the player
-  /// route's `install()`, so the gate closes before that route builds — the
-  /// playback player is created inside the push, and the pool must already be
-  /// quiet by then.
+  /// Stop STARTING poster work. Called by the player route's `install()`, so
+  /// the gate closes before that route builds — the playback player is created
+  /// inside the push.
   static void suspend() {
     _posterSuspendDepth++;
-    // The "pool is idle exactly when the push happens" case: that idle timer
-    // would otherwise fire during playback and dispose the pool then.
-    _poolIdleTimer?.cancel();
-    _poolIdleTimer = null;
   }
 
-  /// Let poster work continue. Called by `PosterQuietRoute` once per route: at the
-  /// end of its entrance, or from `dispose()` if popped while still entering.
+  /// Let poster work continue. Called by `PosterQuietRoute` once per route: at
+  /// the end of its entrance, or from `dispose()` if popped while still
+  /// entering.
   static void resume() {
     if (_posterSuspendDepth > 0) _posterSuspendDepth--;
-    if (_posterSuspendDepth == 0) _posterResume.add(null);
-    // Wakes the jobs that were waiting for a slot, and arms the idle timer
-    // again — `_posterKick` does both, and it refuses to arm it while suspended.
-    _posterKick();
-  }
-
-  /// STICKY on purpose: the flag is read and the waiter created in one
-  /// synchronous step. A job asks after a native `player.stop()`, and the route
-  /// can be disposed inside that window — a waiter created then would wait for a
-  /// resume already given, staying parked for ever with every kick blocked.
-  static Future<void> _waitForPosterResume() {
-    if (!posterSuspended) return Future<void>.value();
-    return _posterResume.stream.first;
-  }
-
-  static void _parkJob() => _posterParked++;
-
-  static void _unparkJob() {
-    _posterParked--;
-    // The parked job's departure is what lets waiting work move: the kick
-    // refuses to start anything while a job is still parked.
+    // Wakes the jobs that were waiting for a slot. A job that was already
+    // running keeps running; only the starts were deferred.
     _posterKick();
   }
 
   static void _posterKick() {
-    _poolIdleTimer?.cancel();
     final plan = planPosterKick(
       queue: _posterQ,
       running: _posterRunning,
       max: _maxRunning,
       suspended: posterSuspended,
-      anyParked: _posterParked > 0,
     );
     for (var i = 0; i < plan.start; i++) {
       // The TOP of the stack: the newest request is the card on screen now.
@@ -172,33 +129,9 @@ class ThumbnailService {
     // slot here are running from this line, whatever a synchronous part of
     // `run` did in between.
     _posterRunning = plan.running;
-    if (_posterQ.isEmpty && _posterRunning == 0) {
-      // Never arm it while suspended: a pool that has just been parked (or one
-      // that has no job at all) must not be disposed out from under the route
-      // that suspended it. `resume()` kicks, and that is when it is armed.
-      if (!posterSuspended) {
-        _poolIdleTimer = Timer(const Duration(seconds: 30), _disposePool);
-      }
-    }
   }
 
-  // ── The pool's idle lifecycle (owned here, because the queue knows) ──
-
-  static Timer? _poolIdleTimer;
-
-  /// Dispose the backend's pooled players after 30s with nothing to do.
-  static void _disposePool() {
-    _poolIdleTimer?.cancel();
-    _poolIdleTimer = null;
-    // The idle timer is armed only when both are empty/zero, so this is the
-    // invariant rather than a new condition — but it is a hard one: a live job
-    // is either inside a native call or parked holding its slot, and disposing
-    // its player in either state is a native crash. Refuse instead.
-    if (_posterRunning != 0 || _posterQ.isNotEmpty) return;
-    MpvPoster.disposePool();
-  }
-
-  // ── Safe URL for the backends ────────────────────────────────
+  // ── Safe URL for the backend ─────────────────────────────────
 
   /// [raw] without credentials, ready for a backend that authenticates with
   /// headers instead of the URL.
@@ -230,8 +163,8 @@ class ThumbnailService {
       if (cached != null) return cached;
     }
 
-    // On-disk cache (when enabled): a hit skips both backends entirely. Keyed
-    // by the stable file path so it survives new server sessions.
+    // On-disk cache (when enabled): a hit skips the render entirely. Keyed by
+    // the stable file path so it survives new server sessions.
     //
     // A PURE read: ThumbCache stores opaque bytes — WebP posters and WebP image
     // thumbnails share one directory under different keys — so a reader has no
@@ -255,10 +188,8 @@ class ThumbnailService {
       return existing.future;
     }
 
-    // Where to look is a fraction of the real length, and the libmpv backend
-    // cannot ask Dart for it, so the plan's input travels with the job. The
-    // media_kit backend prefers the length the player itself reports and uses
-    // this only as the fallback (see `posterSeekPlan`).
+    // Where to look is a fraction of the real length, and the libmpv client
+    // cannot ask Dart for it, so the plan's input travels with the job.
     final durationHint = durationSeconds == null
         ? Duration.zero
         : Duration(seconds: durationSeconds);
@@ -276,8 +207,9 @@ class ThumbnailService {
           result = null;
         }
         try {
-          if (result != null && result.isNotEmpty)
+          if (result != null && result.isNotEmpty) {
             await _cache(videoUrl, result);
+          }
         } catch (_) {
           // Filing the bytes is best-effort: the caller asked for a poster, not
           // for a cache entry, and an answer is still owed either way.
@@ -310,7 +242,7 @@ class ThumbnailService {
     return completer.future;
   }
 
-  /// One run of whichever backend this build uses.
+  /// One run of the libmpv renderer.
   ///
   /// A null answer means "no poster for this file": `VideoCard` paints its
   /// placeholder, and only a `refresh` asks again.
@@ -324,42 +256,22 @@ class ThumbnailService {
     // its next mount, which is what the poster cache's real answer will be.
     if (headers == null) return null;
 
-    switch (posterBackendForThisBuild()) {
-      case PosterBackend.libmpv:
-        final result = await LibMpvPoster.generate(
-          safeUrl(url),
-          headers: headers,
-          durationHint: durationHint,
-          targetWidth: posterWidth,
-        );
-        if (!result.unavailable) return result.bytes;
-        // The export exists but libmpv itself will not load here. Under
-        // media_kit the same app can still take a screenshot, so use it; on a
-        // desktop target the player needs that very library, so no poster is
-        // the honest answer rather than a second doomed attempt.
-        posterLog(
-          'libmpv|unavailable|falling_back=${isMobile ? 'mpv' : 'none'}',
-        );
-        if (!isMobile) return null;
-        return MpvPoster.generate(
-          url,
-          headers: headers,
-          durationHint: durationHint,
-          targetWidth: posterWidth,
-          parking: _parking,
-        );
-      case PosterBackend.mpv:
-        return MpvPoster.generate(
-          url,
-          headers: headers,
-          durationHint: durationHint,
-          targetWidth: posterWidth,
-          parking: _parking,
-        );
+    final result = await LibMpvPoster.generate(
+      safeUrl(url),
+      headers: headers,
+      durationHint: durationHint,
+      targetWidth: posterWidth,
+    );
+    if (result.unavailable) {
+      // No renderer in this process: no poster is the honest answer, and the
+      // failure is cached in Rust so the next job does not re-probe.
+      posterLog('libmpv|unavailable');
+      return null;
     }
+    return result.bytes;
   }
 
-  /// The server's `Authorization` header as the map both backends take, or null
+  /// The server's `Authorization` header as the map the backend takes, or null
   /// when auth is not available yet.
   static Map<String, String>? _authHeaders() {
     final value = sharedAuthHeader?['Authorization'];
@@ -382,22 +294,4 @@ class ThumbnailService {
     // is still being written. `write` is best-effort and never throws.
     await ThumbCache.write(ThumbCache.pathId(key), bytes);
   }
-}
-
-/// `ThumbnailService`'s side of `PosterParking`: the backend only waits, the
-/// queue owns the counts.
-class _ServiceParking implements PosterParking {
-  const _ServiceParking();
-
-  @override
-  bool get suspended => ThumbnailService.posterSuspended;
-
-  @override
-  void park() => ThumbnailService._parkJob();
-
-  @override
-  void unpark() => ThumbnailService._unparkJob();
-
-  @override
-  Future<void> waitForResume() => ThumbnailService._waitForPosterResume();
 }

@@ -93,7 +93,6 @@ Server start → generate random user:pass
     → WebDavClient: .setHeader('Authorization')
     → AuthImage ImageProvider: header in ImageStreamCompleter
     → libmpv poster render: http-header-fields "Authorization: Basic ..."
-    → media_kit poster screenshot: Media.httpHeaders
 ```
 
 ### Media URL Encoding
@@ -465,7 +464,7 @@ meant `device` (and silently got `system`), `false` meant `fit`.
 > the target set in that same dialog (platform default 96 MB mobile / 512 MB
 > desktop).
 
-Video posters (two backends, one queue — `utils/poster_backend.dart`):
+Video posters (one renderer, one queue — `services/thumbnail_service.dart`):
 
 ```
 VideoCard.initState()
@@ -473,31 +472,20 @@ VideoCard.initState()
     → ThumbnailService.generatePoster(url)
       → In-flight dedup: same URL concurrent → reuse Completer
       → queue: at most ItemCacheLimit.videoPosterConcurrency jobs (1 / 4)
-      → choosePosterBackend(): libmpv everywhere it can load, else media_kit
-        → libmpv (Windows/Linux/macOS/Android):
-            rcrm_generate_poster_async (Rust thread)
-              → mpv_create/initialize + render context (MPV_RENDER_API_TYPE_SW)
-              → loadfile → seek absolute+exact per candidate position
-              → render the target-sized BGR0 frame into Rust memory
-              → opaque alpha + luma blank test + WebP encode, in place
-              → WebpBuf* back through a NativeCallable (no pixels in Dart)
-        → mpv (iOS, and builds without the export):
-            media_kit Player pool → screenshot() → Rust blank/resize/WebP
-              → free-list slots, destroyed after 30s idle
+      → LibMpvPoster.generate → rcrm_generate_poster_async (Rust thread),
+        on EVERY platform (iOS opens media_kit's embedded Mpv.framework):
+          → mpv_create/initialize + render context (MPV_RENDER_API_TYPE_SW)
+          → loadfile → seek (keyframe-first on large sources) per candidate
+          → render the target-sized BGR0 frame into Rust memory
+          → opaque alpha + luma blank test + WebP encode, in place
+          → WebpBuf* back through a NativeCallable (no pixels in Dart)
       → LRU cache (max 32 mobile / 512 desktop) + ThumbCache when enabled
       → return bytes
 ```
 
-Two hand-shakes around that queue decide whether a card ever gets its answer, and
-both have bitten:
+One rule around that queue decides whether a card ever gets its answer, and it has
+bitten:
 
-* **The parked job's wake is STICKY.** `MpvPoster._park` parks and then awaits a
-  native `player.stop()` before it asks to wait, so the player route can be
-  disposed inside that window. A waiter created after the last `resume()` would
-  wait for a signal already given: parked for ever, holding its slot, with
-  `anyParked` making `planPosterKick` start nothing at all. `waitForResume()`
-  therefore reads the suspension flag and creates its waiter in one synchronous
-  step, and returns at once when nothing is suspended.
 * **The gate is for the STEP, not for the session.** `PosterQuietRoute` closes
   it before its page builds and releases it when that route's own entrance
   finishes — `didPush()`'s `TickerFuture`, not an `animation` status listener,
@@ -509,15 +497,9 @@ both have bitten:
   next open because they had never been generated. **One release per route**: the
   gate is a depth count, and a jump's `pushReplacement` installs the incoming
   route before disposing the outgoing one, so an unconditional `resume()` in
-  `dispose()` opened the gate for the route that was still entering.
-* **The wake is a broadcast event, not a one-shot future.** It used to be a
-  `Completer` completed once and then replaced, and a second `resume()` completed
-  the previous one again — `Bad state: Future already completed`, thrown out of
-  `PosterQuietRoute.dispose()` **before** `super.dispose()` and before the kick,
-  so the route's state leaked and the queue was never restarted. A
-  `StreamController.broadcast` has no object to complete twice, so the failure is
-  unrepresentable; an event with no listener is dropped, which is what a job that
-  has not asked yet wants.
+  `dispose()` opened the gate for the route that was still entering. A job that
+  is already running is NOT interrupted: libmpv shares no lock with the playback
+  player, so only new starts are deferred.
 
 A repeat request for a poster that is still QUEUED raises it to the top
 (`raisePosterJob`, the poster half of the image gate's `restack`): under a stack
@@ -557,12 +539,13 @@ grid cell → DiskThumbImage(url, width)
   → ThumbCache.write (small WebP only)
 ```
 
-The gate is a **fixed-length stack** (`ImageLoadGate`), not a FIFO queue. The
-grid pushes a request as each cell scrolls into the ring, so FIFO served a cold
-folder from the top of the folder downwards and the picture on screen came last.
-Releasing a slot now hands it to the TOP of the stack, and a full stack drops
-its BOTTOM — the request waiting longest, i.e. the one least likely still to be
-on screen. A repeat `resolve` for an image that is still queued calls
+The gate is a **LIFO stack** (`ImageLoadGate`), not a FIFO queue. The grid pushes
+a request as each cell scrolls into the ring, so FIFO served a cold folder from
+the top downwards and the picture on screen came last. Releasing a slot hands it
+to the TOP. The waiting stack is not capped: its entries are pending tokens, not
+decoders, and completing one to "drop" it would let its caller decode outside
+the concurrency cap and in request order — FIFO again. A repeat `resolve` for an
+image that is still queued calls
 `restack`, moving the existing entry to the top instead of pushing a second one
 (the work-level dedup in `DiskThumbImage._make` already shares one fetch), which
 is what makes scrolling back to a picture work. Pinned by
@@ -669,13 +652,14 @@ built to put it there exactly once:
 
 Primary player on all platforms. Supports all major formats via libmpv. Custom overlay controls auto-show/hide on hover (never while a panel or the speed menu is open), density chosen from the window's shortest side, width budget admits optional controls by priority. `Player.stop()` before navigation, `Player.dispose()` in `dispose()`.
 
-### Posters: libmpv direct (all but iOS) / media_kit screenshot (iOS)
+### Posters: libmpv direct (every platform, iOS included)
 
-One pipeline, two backends, chosen by `utils/poster_backend.dart` from two facts:
-whether the platform can load libmpv at runtime, and whether the bridge was built
-with the `libmpv-poster` feature.
+One pipeline, one renderer. Every build has the `libmpv-poster` feature, and on
+every platform media_kit puts a libmpv shared object in the process — on iOS an
+embedded, code-signed `Mpv.framework/Mpv` (a real `MH_DYLIB`), which is the
+bundle's own signed code and therefore allowed by iOS.
 
-- **libmpv** (Windows, Linux, macOS, Android) — `rcrm_generate_poster_async`
+- **libmpv** (Windows, Linux, macOS, Android, iOS) — `rcrm_generate_poster_async`
   (`libmpv_poster.rs`) loads the process's own libmpv, creates a software render
   context, seeks to each candidate position and renders the frame straight into
   a target-sized BGR0 buffer in Rust. The opaque-alpha pass, the blank test and
@@ -704,17 +688,12 @@ with the `libmpv-poster` feature.
   fall back to the exact seek when the landing is more than
   `keyframe_tolerance` (15% of the position, 0.5-3 s) early. Smaller sources
   keep the exact seek, where the keyframe win is only 9-14 ms against 17-37 ms.
-- **media_kit** (iOS, whose libmpv is statically linked and cannot be dlopen'ed;
-  also any build without the export) — a pool of `Player`+`VideoController`
-  pairs takes `screenshot()` frames and Rust does the blank test, the downscale
-  and the encode (`mpv-poster`).
-
-Both backends share `utils/poster_frame.dart`'s seek plan (a fraction of the real
+The renderer uses `utils/poster_frame.dart`'s seek plan (a fraction of the real
 length first, 0.0 last), `poster_log.dart`'s diagnostics, and the queue in
-`utils/poster_queue.dart` (concurrency cap, in-flight dedup, and the suspension
-gate `PosterQuietRoute` holds through a player route's ENTRANCE — it opens when
+`utils/poster_queue.dart` (concurrency cap, in-flight dedup, and the start gate
+`PosterQuietRoute` holds through a player route's ENTRANCE — it opens when
 that step ends, because the route's own Related list needs posters; see
-"Two hand-shakes" above). Zero disk writes: posters live in RAM, plus the opt-in
+"One hand-shake" above). Zero disk writes: posters live in RAM, plus the opt-in
 `ThumbCache`.
 
 > The libmpv path passes `tls-verify=no` for its own fetch, the same scoped

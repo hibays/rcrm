@@ -1,15 +1,13 @@
 // utils/poster_quiet_route.dart
-// The player route, and the poster pool's suspension tied to its lifetime.
+// The player route, and the poster start gate tied to its entrance.
 //
-// Poster players and the playback player share media_kit's STATIC
-// `NativePlayer.lock`. On mobile the pool holds exactly one `Player`, and it
-// holds that lock across `open` — and again across each `seek` + `screenshot` —
-// so a poster job that is mid-flight when the user taps a video makes playback's
-// `open`/`play` queue behind it, inside the route transition the user is
-// watching. Neither "wait a moment" nor "resume when the first frame is up" can
-// bound that: what the pool is doing is only knowable when the route arrives.
+// A poster job is a whole decoder of its own — its own libmpv client, up to
+// `vd-lavc-threads` frame threads — and a route's ENTRANCE is opening the file
+// the user just tapped and waiting for its first frame. Starting that next
+// decode inside the transition would compete for exactly the cores the picture
+// the user is waiting for needs.
 //
-// So the suspension covers the route's ENTRANCE, which has no delay in it:
+// So the gate covers the route's ENTRANCE, which has no delay in it:
 //
 //   * `install()` runs synchronously at push time (`handlePush` →
 //     `route.install()`), before this route builds anything at all. The gate is
@@ -21,10 +19,9 @@
 //     route and need posters (`_releaseGate`).
 //   * `dispose()` releases it too, for a route popped while still entering.
 //
-// Deliberately not a `Timer`, and deliberately no pool teardown: a live poster
-// job holds the pool player across a `screenshot()` whose native side re-checks
-// nothing, so disposing the pool for the duration of playback would be a crash
-// rather than a saving. The pool is *parked*, not destroyed.
+// Nothing is parked or cancelled: a libmpv poster client shares no lock with the
+// playback player, so a job that is already running finishes and answers
+// normally. The gate only defers STARTS.
 //
 // The route also carries the player's DIRECTION. `_go` REPLACES the player route
 // on every jump — forward through the history and back through it — so both
@@ -75,9 +72,8 @@ import 'package:media_kit/media_kit.dart';
 import '../services/player_factory.dart';
 import '../services/thumbnail_service.dart';
 
-/// A `MaterialPageRoute` that keeps the poster pool quiet for as long as it is
-/// on the navigator, and that owns the playback `Player` for the screen it
-/// builds.
+/// A `MaterialPageRoute` that starts no new poster work while its entrance
+/// runs, and that owns the playback `Player` for the screen it builds.
 ///
 /// One class for all four push sites (`video_screen`, `home_screen`,
 /// `search_screen`, `video_player_screen._go`), so tap → push → pop → replace is
@@ -173,8 +169,8 @@ class PosterQuietRoute<T> extends MaterialPageRoute<T> {
 
   @override
   void install() {
-    // Before anything of this route builds: the pool must not be in the middle
-    // of an `open`/`seek`/`screenshot` when the playback player is created.
+    // Before anything of this route builds: no new poster decode may start
+    // while the playback player is being created and its file opened.
     ThumbnailService.suspend();
     super.install();
   }
@@ -228,7 +224,7 @@ class PosterQuietRoute<T> extends MaterialPageRoute<T> {
   /// The warm player's factory. Production always uses `PlayerFactory.playback`.
   ///
   /// A seam because this route can be pushed in a widget test (its transition
-  /// and its poster-pool gate are drivable there) while a real media_kit
+  /// and its poster start gate are drivable there) while a real media_kit
   /// `Player` cannot be created in a test process at all — a test that silently
   /// relied on `PlayerFactory.playback()` throwing would start leaking a native
   /// player the day it does not.

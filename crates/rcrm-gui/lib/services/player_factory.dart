@@ -25,19 +25,8 @@ class PlayerFactory {
       ? 16 << 20
       : 32 << 20;
 
-  /// Demux-cache budget for poster/screenshot players: they seek and grab a
-  /// frame within seconds of opening, so a small window is plenty. The
-  /// desktop pool runs up to ItemCacheLimit.videoPosterConcurrency players
-  /// at once, which multiplies this budget.
-  static final int _posterBufferSize = Platform.isAndroid || Platform.isIOS
-      ? 4 << 20
-      : 8 << 20;
-
   /// Create a [Player] for media playback with the app-wide tuning applied.
   static Player playback() => _create(_playbackBufferSize);
-
-  /// Create a [Player] for poster generation (screenshot pipeline).
-  static Player poster() => _create(_posterBufferSize);
 
   static Player _create(int bufferSize) {
     final player = Player(

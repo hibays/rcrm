@@ -1,5 +1,5 @@
 // services/poster_libmpv.dart
-// The libmpv poster backend: the poster is rendered INSIDE libmpv, in Rust.
+// The poster renderer: the frame is produced INSIDE libmpv, in Rust.
 //
 // `rcrm_generate_poster_async` runs on a Rust thread — it loads the file with
 // libmpv, seeks to each candidate position, draws the frame into native memory
@@ -7,10 +7,10 @@
 // answers through a `NativeCallable`. No pixel, and no frame buffer, ever
 // enters the Dart heap.
 //
-// Which platforms use it is `utils/poster_backend.dart`'s decision, not this
-// file's: iOS cannot load its statically linked libmpv, so it keeps the
-// media_kit backend (`poster_mpv.dart`), and a bridge built without the
-// `libmpv-poster` feature falls back there too.
+// Every platform uses it, iOS included: media_kit ships libmpv there as an
+// embedded, code-signed `Mpv.framework` (a real MH_DYLIB), and `libmpv.rs`
+// opens it by name. This is the only poster path; a build without the
+// `libmpv-poster` feature has no renderer and answers "no poster".
 
 import 'dart:async';
 import 'dart:ffi';
@@ -34,9 +34,10 @@ class LibMpvPosterResult {
   /// The poster bytes, or null when this run produced none.
   final Uint8List? bytes;
 
-  /// True when the backend itself cannot run here (no usable libmpv in this
-  /// build or on this machine). Every file would fail the same way, so the
-  /// caller should switch to the media_kit backend instead of retrying.
+  /// True when the renderer itself cannot run here (no usable libmpv in this
+  /// build or on this machine). Every file would fail the same way, and the
+  /// failure is cached in Rust, so the caller answers "no poster" without
+  /// retrying.
   final bool unavailable;
 
   const LibMpvPosterResult({this.bytes, this.unavailable = false});
@@ -87,8 +88,8 @@ class LibMpvPoster {
 
     final urlPtr = url.toNativeUtf8();
     final headersPtr = _headerBlock(headers).toNativeUtf8();
-    // Where to look is the same rule as the media_kit backend's, so both look
-    // at the same places; libmpv enforces the real length on top of it.
+    // Where to look: `posterSeekPlan`, and libmpv enforces the real length on
+    // top of it.
     final positionsPtr = posterSeekPlan(durationHint)
         .map((seconds) => seconds.toStringAsFixed(3))
         .join(',')

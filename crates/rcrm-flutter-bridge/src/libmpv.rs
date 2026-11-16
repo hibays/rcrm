@@ -1,12 +1,13 @@
 // src/libmpv.rs
-//! The system libmpv, loaded at runtime — the render side, not media_kit's.
+//! The process's libmpv, loaded at runtime — the render side, not media_kit's.
 //!
-//! iOS never reaches a working load here: media_kit links libmpv statically
-//! into the app, and the platform refuses an arbitrary `dlopen`, so the poster
-//! generator keeps the Dart-side media_kit backend on iOS. Every other platform
-//! already has a libmpv shared library in the process — media_kit loaded that
-//! very build for playback — so posters borrow it instead of shipping a second
-//! copy of the library.
+//! media_kit puts a libmpv shared object in every app it plays in: the
+//! DLL/SO next to the executable (Windows), the APK's native library directory
+//! (Android), the app bundle (macOS), or — on iOS — `Mpv.framework/Mpv`, an
+//! embedded, code-signed MH_DYLIB. iOS allows loading that: what it forbids is
+//! executable code from outside the signed bundle, not the bundle's own dynamic
+//! frameworks. So posters borrow the very build media_kit already loaded instead
+//! of shipping a second copy of the library.
 //!
 //! Only what the poster generator needs is bound: create/initialize, a handful
 //! of options, `loadfile`/`seek`, property reads, the event queue, and the
@@ -140,6 +141,17 @@ const fn library_names() -> &'static [&'static str] {
 		]
 	} else if cfg!(target_os = "android") {
 		&["libmpv.so"]
+	} else if cfg!(target_os = "ios") {
+		// media_kit's own iOS lookup name (its `NativeLibrary` opens exactly
+		// this string), then the same file by absolute bundle path. The
+		// framework is embedded at `Runner.app/Frameworks/Mpv.framework`;
+		// `@executable_path` and `@rpath` cover the two ways dyld can be
+		// pointed at it without relying on a relative-path search rule.
+		&[
+			"Mpv.framework/Mpv",
+			"@executable_path/Frameworks/Mpv.framework/Mpv",
+			"@rpath/Mpv.framework/Mpv",
+		]
 	} else {
 		&[]
 	}
@@ -280,18 +292,29 @@ fn load() -> Result<&'static Api, LibMpvError> {
 				continue;
 			}
 		};
+		// A candidate can open and still be the wrong image (a stale copy of
+		// the framework without the render API, say). Try the remaining names
+		// rather than declaring the platform unavailable from the first one.
+		// Bind BEFORE leaking: a failed candidate must drop, or its handle (and
+		// any initializers it ran) stays in the process for nothing.
+		let api = match bind(&library) {
+			Ok(api) => api,
+			Err(error) => {
+				tried.push(format!("{name}: {error}"));
+				continue;
+			}
+		};
 		// Leaked on purpose: the function pointers stored in `Api` point into
 		// this library, so it must outlive every call — for the whole process,
 		// exactly as media_kit's own handle does.
-		let library: &'static Library = Box::leak(Box::new(library));
-		let api = bind(library)?;
+		let _library: &'static Library = Box::leak(Box::new(library));
 		let api: &'static Api = Box::leak(Box::new(api));
 		rcrm_core::log_debug!("[poster] libmpv loaded from {name}");
 		return Ok(api);
 	}
 	Err(LibMpvError::Unavailable {
 		reason: format!(
-			"no libmpv shared library found (tried {})",
+			"no usable libmpv shared library found (tried {})",
 			tried.join("; ")
 		),
 	})
@@ -314,7 +337,7 @@ macro_rules! bind {
 	}};
 }
 
-fn bind(library: &'static Library) -> Result<Api, LibMpvError> {
+fn bind(library: &Library) -> Result<Api, LibMpvError> {
 	let api = Api {
 		client_api_version: bind!(
 			library,
@@ -617,8 +640,8 @@ impl<'mpv> RenderContext<'mpv> {
 		let code = unsafe { (api.render_create)(&mut context, mpv.handle, params.as_mut_ptr()) };
 		if code == ERROR_NOT_IMPLEMENTED {
 			// This libmpv has no software renderer. That is a property of the
-			// build, not of the media, so report "no backend here" and let the
-			// caller use the other one instead of trying every file.
+			// build, not of the media, so report "no backend here": every file
+			// would fail the same way.
 			return Err(LibMpvError::Unavailable {
 				reason: format!(
 					"this libmpv exposes no software renderer: {}",

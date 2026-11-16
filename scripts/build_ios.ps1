@@ -5,16 +5,14 @@
 #   Xcode + CocoaPods installed
 #   Must be run on macOS (cargo target aarch64-apple-ios only works there)
 # Usage:
-#   .\scripts\build_ios.ps1                 # debug (simulator)
+#   .\scripts\build_ios.ps1                 # debug (device; the copied .a is the device build)
 #   .\scripts\build_ios.ps1 -Release        # release (device)
 #   .\scripts\build_ios.ps1 -Release -NoSign # release without codesign
 #   .\scripts\build_ios.ps1 -MobileDecode   # on by default; kept for symmetry
-#   .\scripts\build_ios.ps1 -MPVPoster      # on by default; Rust mpv poster (blank/resize/WebP)
 param(
     [switch]$Release,
     [switch]$NoSign,  # Skip code signing
-    [switch]$MobileDecode = $true,  # AVIF/JXL/HEIC software decode
-    [switch]$MPVPoster = $true      # Rust mpv poster: blank test + resize + WebP
+    [switch]$MobileDecode = $true   # AVIF/JXL/HEIC software decode
 )
 
 $ErrorActionPreference = "Stop"
@@ -42,12 +40,11 @@ $env:CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios = "$root\scripts\cmake\ios-device.cm
 $env:CMAKE_TOOLCHAIN_FILE_aarch64_apple_ios_sim = "$root\scripts\cmake\ios-sim.cmake"
 
 $cargoArgs = @("build", "--release", "-p", "rcrm-flutter-bridge")
-# No libmpv-poster on iOS, on purpose: media_kit links libmpv statically into
-# the app, so there is no shared library to load at runtime. iOS posters come
-# from media_kit's own screenshot, encoded by the mpv-poster Rust code.
-$features = @()
+# libmpv-poster is required on iOS too: media_kit ships libmpv as an embedded,
+# code-signed `Mpv.framework/Mpv` (a real MH_DYLIB), which the poster client
+# opens by name. Without the feature there is no poster renderer at all.
+$features = @("libmpv-poster")
 if ($MobileDecode) { $features += "mobile-decode" }
-if ($MPVPoster) { $features += "mpv-poster" }
 if ($features.Count -gt 0) {
     $cargoArgs += @("--features", ($features -join ","))
 }
@@ -79,30 +76,89 @@ if (Test-Path $staticLib) {
 }
 Write-Host ""
 
-# ── Step 3: Pre-download libmpv xcframeworks ───────────────────
-Write-Host "[3/4] Pre-downloading libmpv xcframeworks..." -ForegroundColor Yellow
-$cacheDir = "$gui\ios\.symlinks\plugins\media_kit_libs_ios_video\ios\.cache\xcframeworks"
-$libmpvVer = "v0.6.0"
-$libmpvUrl = "https://github.com/media-kit/libmpv-darwin-build/releases/download/$libmpvVer/libmpv-xcframeworks_$($libmpvVer)_ios-universal-video-default.tar.gz"
-$libmpvFile = "libmpv-xcframeworks-$libmpvVer-ios-universal.tar.gz"
-
-New-Item -ItemType Directory -Force $cacheDir | Out-Null
-if (Test-Path "$cacheDir\$libmpvFile") {
-    Write-Host "  libmpv xcframework [cached]" -ForegroundColor Gray
-} else {
-    Write-Host "  Downloading libmpv xcframework..." -ForegroundColor Gray
+# ── Step 3: libmpv frameworks (SPM-aware) ──────────────────────
+Write-Host "[3/4] Preparing media_kit's libmpv frameworks..." -ForegroundColor Yellow
+# Locate the plugin through pub's package_config (version/mirror agnostic). The
+# old step wrote into ios/.symlinks, which CocoaPods recreates from scratch, so
+# its pre-download was thrown away.
+$pluginDir = $null
+$pkgConfig = "$gui\.dart_tool\package_config.json"
+if (Test-Path $pkgConfig) {
     try {
-        Invoke-WebRequest -Uri $libmpvUrl -OutFile "$cacheDir\$libmpvFile" -UseBasicParsing
-        Write-Host "  libmpv xcframework [OK]" -ForegroundColor Green
+        $cfg = Get-Content $pkgConfig -Raw | ConvertFrom-Json
+        $pkg = $cfg.packages | Where-Object { $_.name -eq 'media_kit_libs_ios_video' } | Select-Object -First 1
+        if ($pkg) {
+            $pluginDir = ([System.Uri]([string]$pkg.rootUri)).LocalPath.TrimEnd('\', '/')
+        }
     } catch {
-        # GitHub is unreliable from CN networks; fall back to the gh-proxy mirror.
-        Write-Host "  GitHub direct failed ($_), retrying via gh-proxy..." -ForegroundColor Yellow
-        try {
-            Invoke-WebRequest -Uri "https://gh-proxy.org/$libmpvUrl" -OutFile "$cacheDir\$libmpvFile" -UseBasicParsing
-            Write-Host "  libmpv xcframework [OK via mirror]" -ForegroundColor Green
-        } catch {
-            Write-Host "  ERROR: Failed to download libmpv xcframework" -ForegroundColor Red
-            exit 1
+        $pluginDir = $null
+    }
+}
+
+if (-not $pluginDir) {
+    Write-Host "  WARNING: media_kit_libs_ios_video is not in .dart_tool/package_config.json" -ForegroundColor Yellow
+    Write-Host "           (run 'flutter pub get'); leaving the download to the build" -ForegroundColor Yellow
+} elseif ((Test-Path "$pluginDir\ios\media_kit_libs_ios_video\Package.swift") -or
+          (Test-Path "$pluginDir\ios\Package.swift")) {
+    # SPM: the package declares the xcframeworks as REMOTE binary targets, and
+    # Flutter prefetches them with 'xcodebuild -resolvePackageDependencies'.
+    # Xcode owns the download and its artifact cache.
+    Write-Host "  SPM package: binary targets are downloaded by Xcode/SwiftPM" -ForegroundColor Green
+} else {
+    # CocoaPods path (media_kit_libs_ios_video 1.1.4 ships only a podspec): its
+    # podspec runs the Makefile during pod install, and that Makefile downloads
+    # into this cache and verifies sha256. Pre-seed the SAME file/hash so a
+    # blocked GitHub fails here with a readable message.
+    $makefile = "$pluginDir\ios\Makefile"
+    $libmpvVer = $null
+    $libmpvSha = $null
+    if (Test-Path $makefile) {
+        foreach ($line in Get-Content $makefile) {
+            if ($line -match '^MPV_XCFRAMEWORKS_VERSION=(.+)$') { $libmpvVer = $Matches[1].Trim() }
+            if ($line -match '^MPV_XCFRAMEWORKS_SHA256SUM=(.+)$') { $libmpvSha = $Matches[1].Trim() }
+        }
+    }
+    if (-not $libmpvVer -or -not $libmpvSha) {
+        Write-Host "  WARNING: no SPM manifest and no usable Makefile; skipping pre-download" -ForegroundColor Yellow
+    } else {
+        $cacheDir = "$pluginDir\ios\.cache\xcframeworks"
+        $libmpvFile = "libmpv-xcframeworks-$libmpvVer-ios-universal.tar.gz"
+        $libmpvUrl = "https://github.com/media-kit/libmpv-darwin-build/releases/download/$libmpvVer/libmpv-xcframeworks_$($libmpvVer)_ios-universal-video-default.tar.gz"
+        $tarball = "$cacheDir\$libmpvFile"
+        try { New-Item -ItemType Directory -Force $cacheDir | Out-Null } catch { }
+        if (-not (Test-Path $cacheDir)) {
+            Write-Host "  WARNING: cannot write $cacheDir; leaving the download to pod install" -ForegroundColor Yellow
+        } elseif ((Test-Path $tarball) -and
+                  ((Get-FileHash -Algorithm SHA256 -LiteralPath $tarball).Hash.ToLower() -eq $libmpvSha)) {
+            Write-Host "  libmpv xcframework [cached, sha256 ok]" -ForegroundColor Gray
+        } else {
+            Remove-Item -Force -ErrorAction SilentlyContinue $tarball, "$tarball.tmp"
+            Write-Host "  Downloading libmpv xcframework ($libmpvVer)..." -ForegroundColor Gray
+            $source = $null
+            try {
+                Invoke-WebRequest -Uri $libmpvUrl -OutFile "$tarball.tmp" -UseBasicParsing
+                $source = "github"
+            } catch {
+                Write-Host "  GitHub direct failed, retrying via gh-proxy..." -ForegroundColor Yellow
+                try {
+                    Invoke-WebRequest -Uri "https://gh-proxy.org/$libmpvUrl" -OutFile "$tarball.tmp" -UseBasicParsing
+                    $source = "gh-proxy"
+                } catch { $source = $null }
+            }
+            if (-not $source) {
+                Remove-Item -Force -ErrorAction SilentlyContinue "$tarball.tmp"
+                Write-Host "  ERROR: could not download $libmpvUrl" -ForegroundColor Red
+                Write-Host "         Fetch it by hand into: $tarball" -ForegroundColor Red
+                exit 1
+            }
+            $got = (Get-FileHash -Algorithm SHA256 -LiteralPath "$tarball.tmp").Hash.ToLower()
+            if ($got -ne $libmpvSha) {
+                Remove-Item -Force -ErrorAction SilentlyContinue "$tarball.tmp"
+                Write-Host "  ERROR: $source tarball sha256 does not match the Makefile's $libmpvSha" -ForegroundColor Red
+                exit 1
+            }
+            Move-Item -Force "$tarball.tmp" $tarball
+            Write-Host "  libmpv xcframework [OK, $source, sha256 ok]" -ForegroundColor Green
         }
     }
 }
@@ -120,11 +176,18 @@ $buildOk = $LASTEXITCODE -eq 0
 Pop-Location
 
 if ($buildOk) {
+    # The poster renderer opens Mpv.framework at runtime and has no fallback.
+    $app = "$gui\build\ios\iphoneos\Runner.app"
+    if (Test-Path "$app\Frameworks\Mpv.framework\Mpv") {
+        Write-Host "  -> Mpv.framework embedded (poster renderer)" -ForegroundColor Green
+    } else {
+        Write-Host "  WARNING: Mpv.framework is not in Runner.app/Frameworks; posters will be unavailable" -ForegroundColor Yellow
+    }
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green
     Write-Host " BUILD SUCCESSFUL" -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Green
-    Write-Host "  App: $gui\build\ios\iphoneos\Runner.app" -ForegroundColor Green
+    Write-Host "  App: $app" -ForegroundColor Green
 } else {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Red

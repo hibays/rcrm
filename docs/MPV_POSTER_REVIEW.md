@@ -1,6 +1,8 @@
 # Rust review：libmpv 海报（第二版）
 
 日期: 2026-11-16（第二版；同日第一版被本文件取代）
+
+> **2026-11-16 追加**：iOS 现也走 libmpv（`Mpv.framework/Mpv` 是动态、已签名的 `MH_DYLIB`），`mpv-poster`、media_kit 截图后端、`PosterParking` 与 `poster_mpv.dart` 均已删除；本文对它们的评审是历史记录。
 第三轮复核（同日 09:35，首候选 REDRAW 帧错位）见第 7 节。
 范围（只有 mpv 相关）: `crates/rcrm-flutter-bridge/src/{libmpv.rs,libmpv_poster.rs,poster.rs,webp.rs,lib.rs}`
 的 libmpv 路径，以及它的两个 Dart 后端 `services/{poster_libmpv,poster_mpv}.dart` 与

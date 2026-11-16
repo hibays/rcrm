@@ -306,7 +306,7 @@ fn render_frame_at(
 				// different position. A position that never gets a real frame
 				// fails (the timeout below) and the next candidate is tried —
 				// filing the stale frame would mis-attribute it, which is the
-				// rule the media_kit backend already follows.
+				// rule the poster pipeline follows: a stale frame is never filed.
 				rcrm_core::log_debug!("[poster] redraw while seeking to {target}s");
 			} else {
 				match mpv.get_f64("time-pos") {

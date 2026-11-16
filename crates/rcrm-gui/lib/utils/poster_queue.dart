@@ -10,50 +10,20 @@
 // cannot decode, a fetch the server refuses), and every visible card asks
 // again.
 //
-// The second rule is the gate: through a player route's ENTRANCE nothing starts,
-// and a running job parks instead of holding media_kit's static `NativePlayer.lock`
-// across playback's `open`. It opens when that step ends, so [suspended] means
-// "an entrance is running", not "a player is on screen".
+// The second rule is the gate: through a player route's ENTRANCE nothing starts —
+// a poster job is a whole decoder of its own, and the entrance is opening the
+// file the user just tapped. It opens when that step ends, so [suspended] means
+// "an entrance is running", not "a player is on screen". A job that is already
+// running is not interrupted; it holds no lock the player needs.
 //
 // Both rules live here rather than inside the service because the decision is
 // what can be wrong (which entry, whether at all), and this way they are testable
-// without a libmpv render or a media_kit Player — the same reason
+// without a libmpv render — the same reason
 // `advanceScrubPreview` and `planPlayerControlBar` are separated from their
 // handlers.
 
 import 'dart:async';
 import 'dart:typed_data';
-
-/// The suspension gate a RUNNING poster job parks at.
-///
-/// The media_kit backend holds media_kit's static `NativePlayer.lock` across
-/// `open` and across each `seek` + `screenshot`, and the playback player needs
-/// that same lock. A job that is already running when the player route is
-/// installed must therefore PARK — stop its player, wait for that route to go,
-/// then re-open — rather than answer "no poster", which `VideoCard` would paint
-/// as a permanent placeholder, because nothing retries a null.
-///
-/// `ThumbnailService` owns the queue and implements this; the backend only
-/// waits. Park and unpark are separate calls because the count they keep is what
-/// stops the queue from starting another player job, and the departure is what
-/// lets waiting work move again.
-abstract interface class PosterParking {
-  /// True while a player route's entrance is still running (the step is playing).
-  bool get suspended;
-
-  /// Register a job that is parking. It keeps its slot: the queue must not
-  /// start another player job while a parked one may be mid-`open`.
-  void park();
-
-  /// The parked job is done parking. Publishes the count and kicks the queue.
-  void unpark();
-
-  /// Resolves once [suspended] is false — AT ONCE when it already is: a job that
-  /// asks after the last resume must not wait for a signal already given (it
-  /// would stay parked, holding its slot, blocking every kick). Read the flag and
-  /// create the waiter in one synchronous step.
-  Future<void> waitForResume();
-}
 
 /// One poster request: waiting for a slot, or running.
 class PosterJob {
@@ -67,8 +37,7 @@ class PosterJob {
   /// placeholder.
   final Completer<Uint8List?> completer;
 
-  /// Runs the job: one backend run (`services/poster_libmpv.dart` or
-  /// `services/poster_mpv.dart`).
+  /// Runs the job: one `LibMpvPoster.generate` (`services/poster_libmpv.dart`).
   final void Function() run;
 
   /// Set by the runner when this job is handed a concurrency slot. A running job
@@ -150,16 +119,11 @@ class PosterKickPlan {
 
 /// Decide what the poster runner may start right now.
 ///
-/// Two situations start nothing:
-///
-/// * [suspended] — a player route's entrance is still running, so no poster work
-///   may begin; it would contend with playback for media_kit's static
-///   `NativePlayer.lock` inside the transition the user is watching. Waiting jobs
-///   stay queued with their completers alive.
-/// * [anyParked] — a suspended job is parked holding its slot and may be
-///   mid-`open` right now. It holds that same lock across the re-open, so a
-///   newcomer would only queue behind it: the contention this gate exists to
-///   remove. It waits instead, and the parked job's own departure kicks again.
+/// One situation starts nothing: [suspended] — a player route's entrance is
+/// still running, so no new poster job may begin; it would decode on every core
+/// while the file the user tapped is being opened. Waiting jobs stay queued with
+/// their completers alive, and a job that is ALREADY running keeps running (it
+/// holds no lock the player needs).
 ///
 /// Otherwise it offers as many jobs as there is room for. Which ones is
 /// [takePosterJob]'s decision (the TOP of the stack), and the count returned here
@@ -174,11 +138,10 @@ PosterKickPlan planPosterKick({
   required int running,
   required int max,
   required bool suspended,
-  required bool anyParked,
 }) {
   assert(max > 0, 'a zero-slot poster runner would never run anything');
   assert(running >= 0, 'a negative running count is not a count');
-  if (suspended || anyParked) {
+  if (suspended) {
     return PosterKickPlan(start: 0, running: running);
   }
   final free = max - running;

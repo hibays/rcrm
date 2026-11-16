@@ -1,7 +1,9 @@
 // test/image_load_gate_test.dart
-// The image decode gate is a fixed-length LIFO stack: newest served first, a
-// repeat request raised to the top, a full stack drops its BOTTOM. The last group
-// pins the wiring, asserting the order the server is actually asked in.
+// The image decode gate is a LIFO stack: newest served first, a repeat request
+// raised to the top, and a waiting request is never dropped (a dropped token is
+// completed, so its caller decodes outside the concurrency cap and in request
+// order). The last group pins the wiring, asserting the order the server is
+// actually asked in.
 
 import 'dart:async';
 import 'dart:io';
@@ -19,7 +21,6 @@ void main() {
 
   final gate = ImageLoadGate.instance;
   final slots = ItemCacheLimit.imageDecodeConcurrency;
-  final depth = ItemCacheLimit.imageDecodeQueueMax;
 
   /// Every token a test takes, so the singleton is left clean for the next one
   /// (each test file runs in its own isolate, but not each test).
@@ -110,7 +111,7 @@ void main() {
       expect(first.isCompleted, isFalse);
     });
 
-    test('a request abandoned before its turn is dropped, not run', () {
+    test('a request abandoned before its turn leaves the stack', () {
       final running = [for (var i = 0; i < slots; i++) push()];
       final oldest = push();
       final abandoned = push();
@@ -126,26 +127,21 @@ void main() {
       expect(oldest.isCompleted, isFalse);
     });
 
-    test('a full stack drops the OLDEST request, never the newest', () {
+    test('a long stack keeps every request open: nothing is dropped', () {
       for (var i = 0; i < slots; i++) {
         push();
       }
-      final stacked = [for (var i = 0; i < depth; i++) push()];
-      expect(gate.waitingCount, depth);
+      final stacked = [for (var i = 0; i < 30; i++) push()];
 
-      final last = push();
+      // A dropped token is completed, and both callers read completion as "a
+      // slot is yours": the oldest (top-of-folder) requests would then decode
+      // outside the concurrency cap, in request order — the FIFO behaviour the
+      // stack replaced. Waiting must leave every future open.
+      expect(gate.waitingCount, 30);
+      expect(stacked.any((token) => token.isCompleted), isFalse);
 
-      // The bottom of the stack goes: it has waited longest, so it is the least
-      // likely still to be on screen — and it is answered (completed) rather
-      // than left pending.
-      expect(stacked.first.isCompleted, isTrue);
-      expect(stacked.last.isCompleted, isFalse);
-      expect(
-        last.isCompleted,
-        isFalse,
-        reason: 'the newest request was dropped',
-      );
-      expect(gate.waitingCount, depth, reason: 'the stack is fixed length');
+      gate.done(stacked.last);
+      expect(gate.waitingCount, 29, reason: 'an abandoned waiter is removed');
     });
 
     test('the running count never exceeds the cap', () {

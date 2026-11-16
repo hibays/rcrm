@@ -317,8 +317,9 @@ class SystemVolume {
     final SystemVolumeReading? current = state.value;
     if (!supported || current == null || !percent.isFinite) return null;
     final int index = current.indexFor(percent);
-    if (index == (_requested ?? current.index) && !current.muted)
+    if (index == (_requested ?? current.index) && !current.muted) {
       return current;
+    }
     _requested = index;
     final SystemVolumeReading? reading = await _call(
       () => PlatformBridge.volumeSetIndex(index),

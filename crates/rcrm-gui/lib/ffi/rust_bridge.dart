@@ -13,8 +13,8 @@ import 'package:ffi/ffi.dart';
 
 /// Native layout of the Rust `WebpBuf` struct (data_len + data pointer),
 /// returned by every WebP producer: `rcrm_encode_thumb_webp`,
-/// `rcrm_generate_thumb_webp_from_image`, `rcrm_encode_poster_webp`,
-/// `rcrm_generate_qr_webp` and the libmpv poster export.
+/// `rcrm_generate_thumb_webp_from_image`, `rcrm_generate_qr_webp` and the
+/// libmpv poster export.
 final class RustWebpBuf extends Struct {
   @IntPtr()
   external int dataLen;
@@ -70,9 +70,6 @@ typedef RcrmGetAuthCredentialsDart = Pointer<Utf8> Function(int handle);
 
 typedef RcrmVersionC = Pointer<Utf8> Function();
 typedef RcrmVersionDart = Pointer<Utf8> Function();
-
-typedef RcrmIsBlankFrameC = Int32 Function(Pointer<Uint8> data, IntPtr len);
-typedef RcrmIsBlankFrameDart = int Function(Pointer<Uint8> data, int len);
 
 typedef RcrmSetLogLevelC = Void Function(Uint8 level);
 typedef RcrmSetLogLevelDart = void Function(int level);
@@ -218,31 +215,6 @@ typedef RcrmWebpBufDart = Pointer<Void> Function(
   int quality,
 );
 
-/// Poster encoder for a raw mpv screenshot (tight BGRA): blank test and
-/// bilinear downscale happen in Rust, then the frame is encoded as WebP.
-///
-/// The input is BORROWED; the reply is a `WebpBuf` freed with
-/// `rcrm_free_webp_buf`. `outBlank` is set to 1 for a blank frame (null
-/// return), 0 otherwise.
-typedef RcrmEncodePosterWebpC = Pointer<Void> Function(
-  Pointer<Uint8> data,
-  IntPtr len,
-  Uint32 width,
-  Uint32 height,
-  Uint32 targetWidth,
-  Uint8 quality,
-  Pointer<Int32> outBlank,
-);
-typedef RcrmEncodePosterWebpDart = Pointer<Void> Function(
-  Pointer<Uint8> data,
-  int len,
-  int width,
-  int height,
-  int targetWidth,
-  int quality,
-  Pointer<Int32> outBlank,
-);
-
 /// Poster renderer that runs INSIDE libmpv: no frame ever crosses into Dart.
 ///
 /// The three strings are copied synchronously (the caller frees its own
@@ -305,7 +277,6 @@ class RustBridge {
   late RcrmLastErrorDart lastError;
   late RcrmVersionDart version;
   late RcrmSetLogLevelDart _setLogLevelFfi;
-  late RcrmIsBlankFrameDart isBlankFrame;
   late RcrmGenTvCertDart _genTvCert;
   late RcrmDecodeQrDart _decodeQr;
   late RcrmDecodeQrBgraDart _decodeQrBgra;
@@ -338,20 +309,15 @@ class RustBridge {
   /// "no metadata" instead of failing.
   static int mediaMetadataAsyncAddr = 0;
 
-  /// Raw address of `rcrm_encode_poster_webp` — the mobile poster encoder
-  /// (BGRA blank test + bilinear downscale + WebP, all in Rust). 0 when the
-  /// loaded bridge does not have it; the poster path then falls back to
-  /// media_kit's JPEG screenshot.
-  static int encodePosterWebpAddr = 0;
-
   /// Raw address of `rcrm_free_webp_buf`, for the NativeFinalizer that
   /// auto-frees WebP output buffers when the Dart view is GC'd (zero-copy
   /// return path).
   static int freeWebpBufAddr = 0;
 
-  /// Raw address of `rcrm_generate_poster_async` — the libmpv poster backend.
-  /// 0 when the loaded bridge was built without the `libmpv-poster` feature,
-  /// which `utils/poster_backend.dart` reads as "use the media_kit backend".
+  /// Raw address of `rcrm_generate_poster_async` — the only poster renderer.
+  /// 0 when the loaded bridge was built without the `libmpv-poster` feature;
+  /// every build script enables it, so 0 means a stale bridge, and the poster
+  /// path then answers "no poster" rather than switching backends.
   static int libmpvPosterAddr = 0;
 
   /// The native library handle — MobileImageDecoder reuses this to avoid a
@@ -423,10 +389,6 @@ class RustBridge {
     version = _lib!.lookupFunction<RcrmVersionC, RcrmVersionDart>(
       'rcrm_version',
     );
-    isBlankFrame = _lib!
-        .lookupFunction<RcrmIsBlankFrameC, RcrmIsBlankFrameDart>(
-          'rcrm_is_blank_frame',
-        );
     _setLogLevelFfi = _lib!
         .lookupFunction<RcrmSetLogLevelC, RcrmSetLogLevelDart>(
           'rcrm_set_log_level',
@@ -458,22 +420,10 @@ class RustBridge {
     freeWebpBufAddr = _lib!
         .lookup<NativeFunction<RcrmFreeWebpBufC>>('rcrm_free_webp_buf')
         .address;
-    // Optional: the poster encoder only exists in mobile-decode builds. A
-    // desktop/older bridge must keep loading every other symbol, so a missing
-    // one degrades to the JPEG screenshot path instead of failing load().
-    try {
-      encodePosterWebpAddr = _lib!
-          .lookup<NativeFunction<RcrmEncodePosterWebpC>>(
-            'rcrm_encode_poster_webp',
-          )
-          .address;
-    } catch (_) {
-      encodePosterWebpAddr = 0;
-    }
-    // The libmpv poster export exists only in `libmpv-poster` builds. Its
-    // absence is not a load failure: it is the signal that tells
-    // `choosePosterBackend` to keep the media_kit backend, which is how every
-    // iOS build (and any desktop build predating the feature) stays correct.
+    // The libmpv poster export exists only in `libmpv-poster` builds, which
+    // every platform's build script enables. Its absence is not a load failure
+    // — the rest of the bridge still works — but it does mean no poster can be
+    // rendered, so the address stays 0 and the service answers "no poster".
     try {
       libmpvPosterAddr = _lib!
           .lookup<NativeFunction<RcrmGeneratePosterAsyncC>>(

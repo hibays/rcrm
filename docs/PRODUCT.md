@@ -29,7 +29,7 @@ The mechanism a neighboring product could not copy by restyling: the library sta
 - Desktop windows and Android/iOS devices; personal libraries that can reach tens of thousands of items.
 - Dim rooms by default, and now also daylight / bright environments.
 - A per-session local server with randomly generated credentials; certificate pinning rather than trust-all; auth by header, never credentials in URLs.
-- Playback via media_kit/libmpv; posters rendered by libmpv itself on every platform but iOS, where media_kit screenshots stand in (no ffmpeg on PATH, no subprocess).
+- Playback via media_kit/libmpv; posters rendered by libmpv itself on every platform, iOS included (no ffmpeg on PATH, no subprocess, no pixels in Dart).
 - Cast-to-TV and a TV receiver screen browse and play the same library.
 
 ## Capabilities and Constraints
