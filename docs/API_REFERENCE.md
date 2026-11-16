@@ -211,9 +211,12 @@ void rcrm_generate_poster_async(const char *url,        /* borrowed, copied */
   defaults (150 + 50 MiB of demux cache, a 60 s network timeout, one decoder
   frame per core) are memory the caller never gets back — on a phone they are
   how a large file's first poster killed the app (2026-11-16).
-- Frames the context still holds from before a seek are consumed with
-  `MPV_RENDER_PARAM_SKIP_RENDERING`: `report_swap` is still required, but the
-  software backend does no conversion or scaling for a frame that is thrown away.
+- Frames the context still holds from before a seek are consumed the render.h way
+  — `render` + `report_swap` — so the stale picture is not reported again.
+  `MPV_RENDER_PARAM_SKIP_RENDERING` was dropped on 2026-11-16: the SW backend's
+  first draw is a one-time warm-up the kept frame pays anyway, so skipping it
+  measured the same job total (and depended on a parameter older libmpv need
+  not implement).
 
 Caller: `LibMpvPoster.generate` (`services/poster_libmpv.dart`), reached from
 `ThumbnailService` through `utils/poster_backend.dart`'s backend choice.

@@ -1,6 +1,7 @@
 # Rust review：libmpv 海报（第二版）
 
 日期: 2026-11-16（第二版；同日第一版被本文件取代）
+第三轮复核（同日 09:35，首候选 REDRAW 帧错位）见第 7 节。
 范围（只有 mpv 相关）: `crates/rcrm-flutter-bridge/src/{libmpv.rs,libmpv_poster.rs,poster.rs,webp.rs,lib.rs}`
 的 libmpv 路径，以及它的两个 Dart 后端 `services/{poster_libmpv,poster_mpv}.dart` 与
 `services/thumbnail_service.dart` 里的排队/暂停部分。
@@ -145,3 +146,104 @@ iOS 的跑中 job 会 park，libmpv 的 job 无法 park（无共享锁）但会�
   报告的建议值，不是实测最优。
 - 新的排队上限 24/128 只是常量调整，没有压测数据背书；它约束的是“等待中的请求”，
   不改变单张成本。
+
+## 7. 第三轮复核（2026-11-16 09:35）：空帧重试不会重开 mpv；首候选帧错位
+
+### 7.1 问题
+
+“空帧（blank test 判空）时，同一个文件能否在同一个 mpv 实例里换位置取帧、不再付
+20–30 ms 的启动成本？所以最坏情况也远好于旧 ffmpeg 路径？”
+
+### 7.2 结论：是，两个后端都是一次 job 一个实例
+
+- **libmpv**（`libmpv-poster`）：`libmpv_poster::generate` 每个 job 只
+  `Mpv::create` + `RenderContext::new` 一次；Dart 把整个 `posterSeekPlan` 作为
+  一个 `positions` 字符串下发，Rust 在同一个 client 上逐位置 `seek`，空帧
+  （`PosterResult::Blank`）只是 `attempt` 返回 `Ok(None)`，循环继续下一个位置。
+  `LibMpvPoster.generate` 一个 URL 只调用一次，所以 20–30 ms 的 client 创建是
+  **每文件一次**，不是每候选位置一次。
+- **media_kit**（iOS / 回退）：`MpvPoster.generate` 一个 job `open` 一次，空帧
+  `break` 出重试循环后 `continue` 到下一个位置，仍在池里同一个 `Player` 上 seek；
+  `open` 只在换文件/换 job 时发生。
+
+实测（本机，release，1080p 纯黑样本，6 个候选全部判空）：一次 job 537 ms（含
+`load`）；同一文件、同一组位置，旧 ffmpeg 路径为 1.3–5.6 s——它每个位置还要试
+input-seek 与 output-seek 两种模式，每次一个进程。空帧判定在编码之前
+（`encode_poster_frame` 先 luma 再 `encode_bgra`），所以空候选只付 seek + render +
+luma，不付 WebP 编码；最坏情况确实是 libmpv 优势最大的地方。
+
+### 7.3 复核中发现并修复的真实 bug：首候选渲染的是 seek 之前的帧
+
+**证据**（2730×1440 样本，位置 3.5 s，单位置 job）：
+
+- 第一个 post-seek 帧 `frame_info` = `PRESENT | REDRAW`（flags=3），
+  渲染结果 luma = **0.00**；ffmpeg 同位置 = 32.19。
+- 同一次 job 的第二个位置（5 s）flags=1，luma 33.92，与 ffmpeg 一致。
+- 1080p、黑开头的电影在第一候选 30 s 也复现：luma 0.00（被误判为空帧），
+  ffmpeg 同位置 69.75。开头的首帧若是正常画面而不是黑色，则会被 `time-pos`
+  接受为“这个位置的帧”——即海报位置错位，而不只是空帧。
+
+**根因有两层**：
+
+1. `loadfile` 返回只代表头部读完，首帧稍后才解码；如果第一次 `seek` 赶在这之前，
+   首帧会在 seek 之后才到，而 `time-pos` 已经移到目标，`POSITION_TOLERANCE`
+   检查通过。
+2. seek 期间 renderer 会先发一个 **REDRAW/REPEAT** 更新（render.h 的
+   `MPV_RENDER_FRAME_INFO_REDRAW` / `_REPEAT`，两者都蕴含 `PRESENT`）：它复现的是
+   **上一张**画面，不是 seek 的目标帧；`time-pos` 同样已经到位，所以时钟校验拦不住。
+   `drain()` 只能在 seek 前消费“已经存在”的帧，拦不住 seek 之后才发来的 redraw。
+
+**修复**（`libmpv_poster.rs` / `libmpv.rs`）：
+
+1. `wait_for_first_frame`：`wait_for_load` 之后、第一次 seek 之前，等
+   `mpv_render_context_update` 报出首帧（2 s 上限；文件始终不出帧就交给后面的
+   `attempt` 报错）。随后 `attempt` 的 `drain` 把它消费掉，第一次 seek 不再和首帧
+   抢跑。
+2. `RenderContext::frame_info`（`MPV_RENDER_PARAM_NEXT_FRAME_INFO`）+
+   `is_previous_frame`：`PRESENT` 且带 `REDRAW`/`REPEAT` 的帧画出但**不认账**，
+   继续等真正的帧；只有等到 deadline 仍没有新帧时，才退回旧行为（把手里这张当答案）。
+   这样“空帧”只会来自真正的黑帧，不会来自 redraw。
+
+**一个 ABI 陷阱（差点留下跨平台隐患）**：`mpv_render_context_get_info(ctx,
+mpv_render_param param)` 的参数是**按值**传的结构体，不是数组。最初按
+`(*mut RenderParam)` 绑定，Windows x64 的 16 字节结构体恰好也是按隐藏指针传参，
+所以本机“能用”；但 SysV（Linux/macOS）与 AArch64 会把它拆进两个寄存器，读到的是
+垃圾。已改为 `extern "C" fn(*mut MpvRenderContext, RenderParam) -> c_int`，与
+`render.h`/docs.rs 的签名一致。
+
+### 7.4 验证
+
+- 样本矩阵（单位置、首候选）：720×960 luma 58.56（encode 通过）、1280×720
+  luma 181.39、1920×1080 黑开头 3 s luma 24.06（旧代码是 0.00）、2730×1440
+  3 s 触发 redraw 后 frame_ms 425 ms、encode 34 ms。
+- 内容正确性：2730×1440 位置 3.5 s 的海报与 ffmpeg 同位置 MAD = 3.58（WebP 有损 +
+  缩放差异），与 5 s 的 MAD = 28.64（不是同一帧）。
+- 空帧语义未变：纯黑 1080p 的 6 个候选仍全部判 blank，阈值不变；删除 skip 后四种样本复测仍全部出图。
+- 门禁：`cargo fmt` / `clippy --features libmpv-poster --all-targets -D warnings` 干净；
+  `cargo test` 三种形态 40 / 34 / 25 例全绿，新增 `a_redraw_is_not_the_seeks_frame`；
+  端到端用例改成**单位置**（正是出问题的首候选）。
+
+### 7.5 `SKIP_RENDERING` 的复核：没有收益，已删除
+
+`drain()` 曾用 `MPV_RENDER_PARAM_SKIP_RENDERING` 只消费不画。本轮把两种方式各测一遍
+（本机 release，同一 720×960 样本）：
+
+| drain 方式 | drain 耗时 | 紧跟的目标帧 | 合计 |
+|---|---:|---:|---:|
+| skip | 0.14 ms | 77 ms | 77.1 ms |
+| render | 19.4 ms | 58 ms | 77.4 ms |
+
+SW 渲染器的首帧有一次**一次性预热**（色彩转换 + scaler 初始化，约 19 ms @ 640×853）；
+skip 只是把它推到下一帧，**总时间不变**。而 skip 还要依赖一个旧 libmpv 未必实现的
+render.h 参数（版本检查只到 1.28）。所以 `RenderContext::skip` 与
+`PARAM_SKIP_RENDERING` 已删除，`drain()` 回到 `render + report_swap` 的文档协议。
+
+### 7.6 明确没有做的事
+
+- **跨 job 复用 mpv client**：每个 job 仍创建一次（约 20–30 ms）。跨 job 池化需要
+  “一线程一 client”的 render context 亲和性，并常驻 4 MiB demux 缓存/解码器缓冲；
+  换文件本来也要 `loadfile`。同文件重复请求已被 in-flight 去重 + 内存/磁盘缓存
+  挡住（只有 `refresh` 或空结果后的重新挂载会再来一次）。
+- **空结果负缓存**：`generatePoster` 只缓存成功结果；一个永远出不了海报的文件在
+  卡片重新挂载时会重跑一次 job（旧 ffmpeg 路径同样如此，且更贵）。是否接受
+  “会话内负缓存”是产品取舍，本轮不动。

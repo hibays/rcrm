@@ -8,15 +8,21 @@
 //! FFI export spawns, because render.h requires a context to be created, used
 //! and freed on one thread.
 //!
-//! Two facts about the protocol are load-bearing, and both were measured
-//! (`docs/MPV_POSTER_EVAL.md`): the frame the render context still holds from
-//! before a seek must be consumed BEFORE seeking, and the frame that arrives
-//! after it is only this position's poster once `time-pos` says the clock has
-//! arrived. Without the first, a poster for 60 s shows the frame at 3 s.
+//! Three facts about the protocol are load-bearing, and all were measured
+//! (`docs/MPV_POSTER_EVAL.md`, `docs/MPV_POSTER_REVIEW.md`): the frame the
+//! render context still holds from before a seek must be consumed BEFORE
+//! seeking; the frame the load produced must be there before the first seek, or
+//! it arrives as the first candidate's frame; and a frame the context reports as
+//! a REDRAW/REPEAT is the previous picture, not the seek's — `time-pos` moves to
+//! the target before that picture is replaced. Without them, a poster for 60 s
+//! shows the frame at 3 s, or a black opening is filed as every candidate.
 
 use std::time::{Duration, Instant};
 
-use crate::libmpv::{Event, LibMpvError, Mpv, RenderContext, Surface};
+use crate::libmpv::{
+	Event, FRAME_INFO_PRESENT, FRAME_INFO_REDRAW, FRAME_INFO_REPEAT, LibMpvError, Mpv,
+	MpvRenderFrameInfo, RenderContext, Surface,
+};
 use crate::poster::{self, PosterResult};
 use crate::webp::WebpBuf;
 
@@ -35,6 +41,9 @@ const FRAME_TIMEOUT: Duration = Duration::from_secs(3);
 /// boundary, so this only absorbs timestamp rounding — and it is wide enough
 /// that a 24 fps clip's own frame duration never trips it.
 const POSITION_TOLERANCE: f64 = 0.5;
+/// The first frame after `loadfile`. It normally arrives in milliseconds; the
+/// bound only stops a file that never paints one from stalling the job.
+const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long to sleep between frame polls. Checking for a frame is a read of a
 /// flag libmpv keeps in memory; the sleep is what stops a pool of workers from
 /// spinning a core each while a seek decodes.
@@ -86,6 +95,11 @@ pub(crate) fn generate(
 	mpv.command(&["loadfile", url])?;
 	wait_for_load(&mpv, stage_deadline(deadline, LOAD_TIMEOUT))?;
 
+	// BEFORE the first seek (and before the size is read, which some streams only
+	// report once a frame is decoded): see [wait_for_first_frame]. The frame it
+	// waits for is consumed by `attempt`'s drain, together with any other
+	// pre-seek frame.
+	wait_for_first_frame(&render, stage_deadline(deadline, FIRST_FRAME_TIMEOUT));
 	let (source_width, source_height) = display_size(&mpv);
 	let (width, height) = target_size(source_width, source_height, target_width)?;
 	let mut surface = Surface::new(width, height);
@@ -133,7 +147,7 @@ fn attempt(
 	quality: u8,
 	job_deadline: Instant,
 ) -> Result<Option<Box<WebpBuf>>, LibMpvError> {
-	drain(render)?;
+	drain(render, surface)?;
 	let target = format!("{position:.3}");
 	let seek_started = Instant::now();
 	mpv.command(&["seek", &target, "absolute+exact"])?;
@@ -164,29 +178,57 @@ fn attempt(
 	}
 }
 
-/// Consume (without drawing) every frame the context is still holding.
-fn drain(render: &RenderContext<'_>) -> Result<(), LibMpvError> {
+/// Consume every frame the context is still holding, by drawing it.
+///
+/// Drawing rather than skipping is deliberate, and measured. The SW backend's
+/// first draw on a client pays a one-time warm-up (colour conversion + scaler
+/// setup): 19.4 ms for the first frame of a 640x853 client against 0.1 ms to
+/// skip it — but the target frame then renders 19 ms FASTER (58 ms vs 77 ms),
+/// so the job total is the same either way. `MPV_RENDER_PARAM_SKIP_RENDERING`
+/// only moved that cost from the drained frame to the frame that is kept; it is
+/// gone, and with it a render.h parameter an older libmpv need not support.
+fn drain(render: &RenderContext<'_>, surface: &mut Surface) -> Result<(), LibMpvError> {
 	for _ in 0..MAX_DRAINED_FRAMES {
 		if !render.has_frame() {
 			return Ok(());
 		}
-		// Not drawn: this frame is the one still on screen from before the seek,
-		// and only its consumption matters (the next update then reports the
-		// frame the seek produced). Skipping the draw saves the software colour
-		// conversion + scale the SW backend would otherwise do per stale frame.
-		render.skip()?;
+		// The frame still on screen from before the seek. Only its consumption
+		// matters (the next update then reports the frame the seek produced), but
+		// render.h's documented consumption is render + report_swap, and the
+		// draw is work the first kept frame would do anyway.
+		render.render(surface)?;
 		render.report_swap();
 	}
 	Ok(())
 }
 
+/// Whether a frame-info answer describes the PREVIOUS picture rather than the
+/// frame the seek is decoding towards.
+///
+/// render.h reports a REDRAW when the renderer reproduces the frame it already
+/// had (and REPEAT when it reproduces it perfectly, which is the same thing for
+/// a poster); both IMPLY `MPV_RENDER_FRAME_INFO_PRESENT`. A flag set without
+/// PRESENT is not an answer at all, so it must not count as one.
+fn is_previous_frame(info: Option<MpvRenderFrameInfo>) -> bool {
+	info.is_some_and(|info| {
+		info.flags & FRAME_INFO_PRESENT != 0
+			&& info.flags & (FRAME_INFO_REDRAW | FRAME_INFO_REPEAT) != 0
+	})
+}
+
 /// Render until the frame in hand belongs to `target`.
 ///
-/// The SEEK event only says the seek STARTED. The first frame the context
-/// reports afterwards can still be the one that was already on screen while mpv
-/// decodes towards the target, and `time-pos` is the only honest answer to "is
-/// this the frame that was asked for" — so a frame is accepted only once the
-/// clock has arrived, and the next update is rendered otherwise.
+/// Two things stand between a seek and its frame, and `time-pos` only catches
+/// the first:
+///
+/// * the frame already on screen, which the context still holds across a seek
+///   — [drain] consumes it before the seek is sent;
+/// * a REDRAW/REPEAT update, which reproduces that same frame while the seek's
+///   own frame is still decoding. `time-pos` has already moved to the target by
+///   then, so the clock accepts it. Measured on a 2730x1440 sample: the first
+///   frame after a seek was flagged REDRAW with luma 0.00 at 3.5 s, and the
+///   black opening was encoded as that position's poster. `frame_info` says so,
+///   and such a frame is kept only as the last-resort answer.
 fn render_frame_at(
 	mpv: &Mpv,
 	render: &RenderContext<'_>,
@@ -194,21 +236,60 @@ fn render_frame_at(
 	target: f64,
 	deadline: Instant,
 ) -> Result<(), LibMpvError> {
+	let mut held_stale = false;
 	loop {
 		if render.has_frame() {
+			let stale = is_previous_frame(render.frame_info());
 			render.render(surface)?;
 			render.report_swap();
-			match mpv.get_f64("time-pos") {
-				Some(at) if (at - target).abs() <= POSITION_TOLERANCE => return Ok(()),
-				// Keep waiting: mpv is still decoding towards the target and
-				// will report the frame it lands on.
-				Some(at) => rcrm_core::log_debug!("[poster] frame at {at}s is not {target}s yet"),
-				// No clock to check against (should not happen for a loaded
-				// video): the frame is the best answer available.
-				None => return Ok(()),
+			if stale {
+				held_stale = true;
+				rcrm_core::log_debug!("[poster] redraw while seeking to {target}s");
+			} else {
+				match mpv.get_f64("time-pos") {
+					Some(at) if (at - target).abs() <= POSITION_TOLERANCE => return Ok(()),
+					// Keep waiting: mpv is still decoding towards the target and
+					// will report the frame it lands on.
+					Some(at) => {
+						rcrm_core::log_debug!("[poster] frame at {at}s is not {target}s yet")
+					}
+					// No clock to check against (should not happen for a loaded
+					// video): the frame is the best answer available.
+					None => return Ok(()),
+				}
 			}
 		}
-		let left = remaining(deadline, "frame", FRAME_TIMEOUT)?;
+		match remaining(deadline, "frame", FRAME_TIMEOUT) {
+			Ok(left) => {
+				// The stale frame is a fallback, so it is answered only at the
+				// deadline, when no real frame arrived to replace it.
+				if held_stale && left <= FRAME_POLL {
+					return Ok(());
+				}
+				std::thread::sleep(left.min(FRAME_POLL));
+			}
+			Err(_) if held_stale => return Ok(()),
+			Err(error) => return Err(error),
+		}
+	}
+}
+
+/// Wait until the load has painted its first frame.
+///
+/// `loadfile` returning only means the header is read: mpv decodes the first
+/// frame a moment later. If the first seek is issued inside that window, the
+/// pre-seek frame arrives while the seek's own frame is still decoding, `time-pos`
+/// has already moved to the target, and [render_frame_at] accepts it — so the
+/// first candidate renders the file's FIRST frame instead of its own position.
+/// Measured on a 1080p film with a black opening: luma 0.00 at 30 s (a false
+/// blank), and the true 30 s frame once this wait was added. The wait costs the
+/// decode the seek would need anyway; a file that never paints one is left to
+/// the attempts, which report it.
+fn wait_for_first_frame(render: &RenderContext<'_>, deadline: Instant) {
+	while !render.has_frame() {
+		let Ok(left) = remaining(deadline, "first frame", FIRST_FRAME_TIMEOUT) else {
+			return;
+		};
 		std::thread::sleep(left.min(FRAME_POLL));
 	}
 }
@@ -530,7 +611,10 @@ mod tests {
 		// So the stage timings generate() logs reach stderr under --nocapture.
 		// SAFETY: the log level is a plain atomic and takes any u8.
 		unsafe { crate::rcrm_set_log_level(3) };
-		let frame = generate(&path, "", &[3.0, 1.0, 0.0], 640, 82).expect("libmpv should run");
+		// ONE position: this is the first candidate of a real job, the one the
+		// pre-seek redraw used to answer for. A file whose opening is black
+		// (several samples are) returned NoFrame here before that was fixed.
+		let frame = generate(&path, "", &[3.0], 640, 82).expect("libmpv should run");
 		let PosterFrame::Encoded(buffer) = frame else {
 			panic!("no poster came back for {path}");
 		};
@@ -548,5 +632,31 @@ mod tests {
 			"a poster must be opaque"
 		);
 		unsafe { webp::free_webp_buf(Box::into_raw(buffer)) };
+	}
+
+	/// The rule that keeps a redraw from being filed as this position's frame:
+	/// only a PRESENT frame that is NOT a redraw/repeat belongs to the seek.
+	#[test]
+	fn a_redraw_is_not_the_seeks_frame() {
+		let info = |flags: u64| {
+			Some(MpvRenderFrameInfo {
+				flags,
+				target_time: 0,
+			})
+		};
+		assert!(!is_previous_frame(info(FRAME_INFO_PRESENT)));
+		assert!(is_previous_frame(info(
+			FRAME_INFO_PRESENT | FRAME_INFO_REDRAW
+		)));
+		assert!(is_previous_frame(info(
+			FRAME_INFO_PRESENT | FRAME_INFO_REPEAT
+		)));
+		assert!(is_previous_frame(info(
+			FRAME_INFO_PRESENT | FRAME_INFO_REDRAW | FRAME_INFO_REPEAT
+		)));
+		// A flag without PRESENT is not an answer, and no answer means "go on
+		// and ask time-pos", never "this is the previous picture".
+		assert!(!is_previous_frame(info(FRAME_INFO_REDRAW)));
+		assert!(!is_previous_frame(None));
 	}
 }

@@ -626,9 +626,18 @@ with the `libmpv-poster` feature.
   `cache-on-disk=no`, `network-timeout=5`, `vd-lavc-threads=4` — mpv's
   defaults (150 + 50 MiB demux cache, 60 s timeout, auto threads) are sized for
   playback and killed the Android app at the first uncached poster for a large
-  video. A stale frame is consumed with `MPV_RENDER_PARAM_SKIP_RENDERING`: the
-  seek only needs the frame *after* it, so the SW backend is not asked to
-  colour-convert and scale frames nobody sees.
+  video. A stale frame is consumed the render.h way — draw it and
+  `report_swap` — because the SW backend's first draw pays a one-time warm-up
+  that the frame it keeps would pay anyway: skipping the stale frame measured
+  the same job total (2026-11-16), so `MPV_RENDER_PARAM_SKIP_RENDERING` is gone
+  along with its dependency on a parameter older libmpv need not support. Three
+  measured rules make the
+  frame that IS kept the right one: the pre-seek frame is drained before the
+  seek; the load's own first frame is waited for before the first seek (it
+  otherwise arrives while the seek's frame is decoding, with `time-pos` already
+  at the target); and a `REDRAW`/`REPEAT` update — render.h's own flag, from
+  `MPV_RENDER_PARAM_NEXT_FRAME_INFO` — is the previous picture, not the
+  candidate's, so it is not accepted.
 - **media_kit** (iOS, whose libmpv is statically linked and cannot be dlopen'ed;
   also any build without the export) — a pool of `Player`+`VideoController`
   pairs takes `screenshot()` frames and Rust does the blank test, the downscale
