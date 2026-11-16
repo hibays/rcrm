@@ -624,6 +624,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ref.read(uiSettingsProvider.notifier).setVideoLayout(v.first);
               },
             ),
+            const Divider(height: 1),
+            // The list's other dimension. Auto is the responsive answer (two
+            // columns once the window is wide enough for two readable rows);
+            // One/Two are what a two-finger pinch on the list commits. The row
+            // exists so AUTO stays reachable after a pinch has overruled it —
+            // a gesture can set a value it cannot clear.
+            _seg<String>(
+              title: 'Video List Columns',
+              subtitle:
+                  'Two columns need a window at least 600 dp wide (Auto asks '
+                  'for 840 dp); a two-finger pinch on the list overrules it',
+              selected: {ui.videoListColumns},
+              segments: const [
+                ButtonSegment(value: 'auto', label: Text('Auto')),
+                ButtonSegment(value: 'one', label: Text('One')),
+                ButtonSegment(value: 'two', label: Text('Two')),
+              ],
+              onChanged: (v) {
+                ref
+                    .read(uiSettingsProvider.notifier)
+                    .setVideoListColumns(v.first);
+              },
+            ),
           ]),
           const SizedBox(height: 8),
           _group([

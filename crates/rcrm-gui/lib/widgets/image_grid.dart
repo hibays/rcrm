@@ -16,14 +16,24 @@ class ImageGrid extends StatelessWidget {
   final List<MediaItem> items;
   final String layout;
   final ValueChanged<MediaItem>? onTap;
+
+  /// Long-press / right-click on a cell, with the pointer's global position.
+  final void Function(MediaItem item, Offset globalPosition)? onMenuRequested;
   final int crossAxisCount;
+
+  /// Overrides the scroll physics — a two-finger pinch hands the grid
+  /// `NeverScrollableScrollPhysics` for the length of the gesture so the grid
+  /// does not scroll under the fingers sizing it (see `two_finger_pinch.dart`).
+  final ScrollPhysics? physics;
 
   const ImageGrid({
     super.key,
     required this.items,
     this.layout = 'uniform',
     this.onTap,
+    this.onMenuRequested,
     this.crossAxisCount = 3,
+    this.physics,
   });
 
   @override
@@ -40,6 +50,7 @@ class ImageGrid extends StatelessWidget {
     if (layout == 'masonry') {
       return MasonryGridView.builder(
         padding: const EdgeInsets.all(4),
+        physics: physics,
         // Only build cells in/near the viewport so off-screen images don't
         // pre-decode (which stampedes the CPU on a freshly-opened grid).
         cacheExtent: cacheExt,
@@ -57,6 +68,9 @@ class ImageGrid extends StatelessWidget {
             item: items[index],
             intrinsicRatio: true,
             onTap: () => onTap?.call(items[index]),
+            onMenuRequested: onMenuRequested == null
+                ? null
+                : (at) => onMenuRequested!(items[index], at),
           );
         },
       );
@@ -65,6 +79,7 @@ class ImageGrid extends StatelessWidget {
     // uniform
     return GridView.builder(
       padding: const EdgeInsets.all(4),
+      physics: physics,
       scrollCacheExtent: ScrollCacheExtent.pixels(cacheExt),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: crossAxisCount,
@@ -80,6 +95,9 @@ class ImageGrid extends StatelessWidget {
           key: ValueKey(items[index].path),
           item: items[index],
           onTap: () => onTap?.call(items[index]),
+          onMenuRequested: onMenuRequested == null
+              ? null
+              : (at) => onMenuRequested!(items[index], at),
         );
       },
     );

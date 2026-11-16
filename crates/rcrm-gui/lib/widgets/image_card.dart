@@ -6,11 +6,16 @@ import 'package:material_ui/material_ui.dart';
 import '../models/media_item.dart';
 import '../services/animated_detector.dart';
 import '../services/live_photo.dart';
+import 'media_item_menu.dart';
 import 'pooled_image.dart';
 
 class ImageCard extends StatelessWidget {
   final MediaItem item;
   final VoidCallback? onTap;
+
+  /// Long-press (touch) / right-click (desktop): where the pointer was, so the
+  /// item's menu opens there. Null on surfaces with no menu.
+  final void Function(Offset globalPosition)? onMenuRequested;
 
   /// Masonry: size the cell to the image's real aspect ratio.
   final bool intrinsicRatio;
@@ -19,6 +24,7 @@ class ImageCard extends StatelessWidget {
     super.key,
     required this.item,
     this.onTap,
+    this.onMenuRequested,
     this.intrinsicRatio = false,
   });
 
@@ -35,6 +41,16 @@ class ImageCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onTap,
+      onLongPressStart: onMenuRequested == null
+          ? null
+          : (d) => requestItemMenu(
+              onMenuRequested,
+              d.globalPosition,
+              haptic: true,
+            ),
+      onSecondaryTapDown: onMenuRequested == null
+          ? null
+          : (d) => requestItemMenu(onMenuRequested, d.globalPosition),
       child: Card(
         clipBehavior: Clip.antiAlias,
         child: Stack(

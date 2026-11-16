@@ -77,6 +77,10 @@ void main() {
   ) async {
     final c = await pumpSettings(tester);
 
+    // The Display section grows; a drag needs its target on screen (a finder
+    // can find a lazily-built row, a pointer cannot hit one below the fold).
+    await tester.ensureVisible(find.byType(Slider));
+    await tester.pumpAndSettle();
     await tester.drag(find.byType(Slider), const Offset(60, 0));
     await tester.pump();
 

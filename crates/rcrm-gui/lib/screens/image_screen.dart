@@ -14,10 +14,13 @@ import '../models/media_item.dart';
 import '../providers/library_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/media_library.dart';
+import '../utils/library_columns.dart';
 import '../utils/natural_sort.dart';
 import '../widgets/album_card.dart';
 import '../widgets/image_grid.dart';
 import '../widgets/column_button.dart';
+import '../widgets/media_item_menu.dart';
+import '../widgets/two_finger_pinch.dart';
 import 'image_viewer_screen.dart';
 
 /// Shared notifier so home_screen can navigate directly into a specific album.
@@ -67,6 +70,12 @@ class _ImageScreenState extends ConsumerState<ImageScreen> {
 
   /// Tracks the last external selection we processed, to avoid double-selecting.
   Album? _lastExternal;
+
+  /// The column count the current two-finger pinch started on. A pinch reports a
+  /// cumulative scale, so the count it maps FROM has to stay the one the fingers
+  /// started on — feeding the live count back in would make every frame a new
+  /// step and run the grid to the end of its range under a still finger.
+  int _pinchStartColumns = 3;
 
   // Captured in initState so dispose() can use it without touching `ref`
   // (Riverpod forbids `ref` access during/after unmount).
@@ -227,8 +236,8 @@ class _ImageScreenState extends ConsumerState<ImageScreen> {
     final items = _sortImages(source);
     final storedCols = ref.watch(uiSettingsProvider).imageColumns;
     // Cap columns to screen width: min 100 px per image.
-    final width = MediaQuery.of(context).size.width;
-    final maxColsByWidth = (width / 100).floor().clamp(2, 8);
+    final width = MediaQuery.sizeOf(context).width;
+    final maxColsByWidth = imageGridMaxColumns(width);
     final cols = storedCols.clamp(2, maxColsByWidth);
     return Shortcuts(
       shortcuts: {
@@ -309,11 +318,38 @@ class _ImageScreenState extends ConsumerState<ImageScreen> {
                 ),
               ),
               Expanded(
-                child: ImageGrid(
-                  items: items,
-                  layout: layout,
-                  crossAxisCount: cols,
-                  onTap: (item) => _openViewer(items, items.indexOf(item)),
+                // Two fingers resize the thumbnails — the gesture every gallery
+                // app has, and the one a phone needs because the column button in
+                // the header is a 32dp target at the top of the screen.
+                child: TwoFingerPinch(
+                  onStart: () => _pinchStartColumns = cols,
+                  onScale: (scale) {
+                    final target = pinchColumnCount(
+                      startColumns: _pinchStartColumns,
+                      scale: scale,
+                      min: 2,
+                      max: maxColsByWidth,
+                    );
+                    if (target != cols) {
+                      ref
+                          .read(uiSettingsProvider.notifier)
+                          .setImageColumns(target);
+                    }
+                  },
+                  builder: (_, pinching) => ImageGrid(
+                    items: items,
+                    layout: layout,
+                    crossAxisCount: cols,
+                    // The grid must not scroll under the fingers that are
+                    // sizing it; the scrollable gets its drag back when the
+                    // gesture ends.
+                    physics: pinching
+                        ? const NeverScrollableScrollPhysics()
+                        : null,
+                    onTap: (item) => _openViewer(items, items.indexOf(item)),
+                    onMenuRequested: (item, at) =>
+                        _showItemMenu(item, at, items),
+                  ),
                 ),
               ),
             ],
@@ -352,6 +388,31 @@ class _ImageScreenState extends ConsumerState<ImageScreen> {
     if (!uiSettings.imageSortAsc) sorted = sorted.reversed.toList();
     _lastSorted = sorted;
     return sorted;
+  }
+
+  /// Long press / right-click on an image: the item's own menu, anchored where
+  /// the pointer was.
+  ///
+  /// "Show in album" is deliberately absent: the photo tab's folder view is
+  /// reached by changing the classification, which RE-SCANS the library — a
+  /// full scan behind one menu row is not a reveal, it is a side effect the
+  /// viewer never asked for. The video tab's folders are derived and free, so
+  /// `video_screen.dart` offers the row there.
+  Future<void> _showItemMenu(
+    MediaItem item,
+    Offset at,
+    List<MediaItem> items,
+  ) async {
+    final index = items.indexOf(item);
+    await showMediaItemMenu(
+      context: context,
+      item: item,
+      at: at,
+      isVideo: false,
+      index: index < 0 ? 1 : index + 1,
+      total: items.length,
+      onOpen: () => _openViewer(items, index < 0 ? 0 : index),
+    );
   }
 
   void _openViewer(List<MediaItem> items, int initialIndex) {

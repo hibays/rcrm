@@ -63,3 +63,37 @@ const Map<int, String> _kResolutionClasses = {
   360: '360p',
   240: '240p',
 };
+
+/// A wall-clock stamp as the library's panels write it:
+/// `Sep 30, 2026 · 2:24 AM`.
+///
+/// Locale-free and unambiguous on purpose: the app has no locale table, and a
+/// numeric `30/09/2026` is read differently on either side of the Atlantic. The
+/// date is the one identity a media panel is read for; the time follows it
+/// because "when was this taken" is often a time-of-day question.
+///
+/// The value is printed as given — callers that hold a UTC instant (the WebDAV
+/// timestamp) convert to local first, while EXIF capture times are deliberately
+/// left alone (they are the camera's wall clock, not an instant).
+String formatStamp(DateTime d) {
+  final hour12 = d.hour % 12 == 0 ? 12 : d.hour % 12;
+  final minute = d.minute.toString().padLeft(2, '0');
+  final period = d.hour < 12 ? 'AM' : 'PM';
+  return '${_kMonthNames[d.month - 1]} ${d.day}, ${d.year}'
+      ' · $hour12:$minute $period';
+}
+
+const List<String> _kMonthNames = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];

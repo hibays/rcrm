@@ -13,11 +13,16 @@ import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../widgets/marquee_text.dart';
 import '../services/preview_player.dart';
+import 'media_item_menu.dart';
 import 'video_poster.dart';
 
 class VideoCard extends StatefulWidget {
   final MediaItem item;
   final VoidCallback? onTap;
+
+  /// Long-press (touch) / right-click (desktop) on the card: where the pointer
+  /// was, so the item's menu opens there. Null on surfaces with no menu.
+  final void Function(Offset globalPosition)? onMenuRequested;
   final bool compact;
 
   /// When true (mobile), show preview video. External controller toggles this.
@@ -50,6 +55,7 @@ class VideoCard extends StatefulWidget {
     super.key,
     required this.item,
     this.onTap,
+    this.onMenuRequested,
     this.compact = false,
     this.preview = false,
     this.hoverPreview = true,
@@ -201,13 +207,31 @@ class _VideoCardState extends State<VideoCard> {
       ),
     );
 
+    final menu = widget.onMenuRequested;
+    final longPress = menu == null
+        ? null
+        : (LongPressStartDetails d) =>
+              requestItemMenu(menu, d.globalPosition, haptic: true);
+    final secondary = menu == null
+        ? null
+        : (TapDownDetails d) => requestItemMenu(menu, d.globalPosition);
     if (_isMobile) {
-      return GestureDetector(onTap: widget.onTap, child: card);
+      return GestureDetector(
+        onTap: widget.onTap,
+        onLongPressStart: longPress,
+        onSecondaryTapDown: secondary,
+        child: card,
+      );
     }
     return MouseRegion(
       onEnter: _enter,
       onExit: _exit,
-      child: GestureDetector(onTap: widget.onTap, child: card),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        onLongPressStart: longPress,
+        onSecondaryTapDown: secondary,
+        child: card,
+      ),
     );
   }
 
@@ -227,6 +251,19 @@ class _VideoCardState extends State<VideoCard> {
               child: GestureDetector(
                 behavior: HitTestBehavior.translucent,
                 onTap: widget.onTap,
+                onLongPressStart: widget.onMenuRequested == null
+                    ? null
+                    : (d) => requestItemMenu(
+                        widget.onMenuRequested,
+                        d.globalPosition,
+                        haptic: true,
+                      ),
+                onSecondaryTapDown: widget.onMenuRequested == null
+                    ? null
+                    : (d) => requestItemMenu(
+                        widget.onMenuRequested,
+                        d.globalPosition,
+                      ),
               ),
             ),
           ),
@@ -404,18 +441,34 @@ class _VideoCardState extends State<VideoCard> {
 class VideoListTile extends StatelessWidget {
   final MediaItem item;
   final VoidCallback? onTap;
+
+  /// Long-press / right-click anywhere on the row (poster or text) asks for the
+  /// item's menu. Both halves carry it: a row whose text ignores a right-click
+  /// while its thumbnail answers one is a row with two personalities.
+  final void Function(Offset globalPosition)? onMenuRequested;
   final bool preview;
 
   /// Key handed to the inner [VideoCard]. Mobile finger-preview hit-tests the
   /// card's render box through it, so it must land on the card, not the row.
   final Key? cardKey;
 
+  /// The row's height, and the number the 16:9 poster is sized from.
+  ///
+  /// The content is a two-line title + duration + `size • extension`. 100dp is
+  /// the established full-width row (the text column is wide enough there at
+  /// 1.0x); a narrower cell or a larger text scale needs more, which is why the
+  /// caller passes `videoListRowHeight` instead of a literal. The default keeps
+  /// every other surface (search rows) exactly as it was.
+  final double height;
+
   const VideoListTile({
     super.key,
     required this.item,
     this.onTap,
+    this.onMenuRequested,
     this.preview = false,
     this.cardKey,
+    this.height = 100,
   });
 
   @override
@@ -428,11 +481,11 @@ class VideoListTile extends StatelessWidget {
         // into a band. On a phone that same 16:9 box would eat the text
         // column, so it may shrink below the ideal width — never above it.
         final double thumbWidth = math.min(
-          100 * 16 / 9,
+          height * 16 / 9,
           constraints.maxWidth * 0.42,
         );
         return SizedBox(
-          height: 100,
+          height: height,
           child: Row(
             children: [
               SizedBox(
@@ -443,6 +496,7 @@ class VideoListTile extends StatelessWidget {
                   preview: preview,
                   compact: true,
                   onTap: onTap,
+                  onMenuRequested: onMenuRequested,
                 ),
               ),
               const SizedBox(width: 12),
@@ -450,6 +504,17 @@ class VideoListTile extends StatelessWidget {
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: onTap,
+                  onLongPressStart: onMenuRequested == null
+                      ? null
+                      : (d) => requestItemMenu(
+                          onMenuRequested,
+                          d.globalPosition,
+                          haptic: true,
+                        ),
+                  onSecondaryTapDown: onMenuRequested == null
+                      ? null
+                      : (d) =>
+                            requestItemMenu(onMenuRequested, d.globalPosition),
                   child: _info(context),
                 ),
               ),

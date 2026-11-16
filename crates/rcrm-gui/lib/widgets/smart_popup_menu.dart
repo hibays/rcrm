@@ -162,12 +162,80 @@ class SmartPopupMenu<T> extends StatelessWidget {
       maskColor: Colors.transparent,
       clickMaskDismiss: true,
       onDismiss: onClosed,
-      builder: (_) => _buildMenu(context),
+      builder: (_) => _SmartMenuPanel<T>(
+        items: items,
+        backgroundColor: backgroundColor,
+        elevation: elevation,
+        borderRadius: borderRadius ?? _nativeMenuRadius,
+        constraints: constraints,
+      ),
     );
     if (result != null) onSelected?.call(result);
   }
+}
 
-  Widget _buildMenu(BuildContext context) {
+/// Opens a menu at a GLOBAL point — the same panel, rows, geometry and dismiss
+/// rules as [SmartPopupMenu], for a surface that has no trigger widget of its
+/// own: an item's long-press or right-click.
+///
+/// The anchor is a position, not a widget, so the menu belongs to the POINT the
+/// user pressed rather than to a card that a scroll can move out from under it.
+/// [openUpward] is the caller's decision because only it knows how many rows the
+/// menu will have before that menu is measured (`utils/menu_placement.dart`
+/// owns the arithmetic).
+///
+/// Returns the chosen value, or null when the menu was dismissed.
+Future<T?> showSmartMenu<T>({
+  required Offset anchor,
+  required List<SmartPopupMenuItem<T>> items,
+  required bool openUpward,
+  Color? backgroundColor,
+  double elevation = 6,
+  BorderRadius? borderRadius,
+  BoxConstraints? constraints,
+  VoidCallback? onClosed,
+}) {
+  return SmartDialog.showAttach<T>(
+    // No targetContext: the point is the target, and passing the card's context
+    // as well would make AttachWidget offset the menu by that card's height.
+    targetContext: null,
+    // The callback ignores the context's own offset and answers with the global
+    // point, so the menu lands where the finger or pointer was.
+    targetBuilder: (_, _) => anchor,
+    // bottomLeft = the menu's top-left starts at the point (downward);
+    // topLeft = its bottom-left ends at the point (upward).
+    alignment: openUpward ? Alignment.topLeft : Alignment.bottomLeft,
+    maskColor: Colors.transparent,
+    clickMaskDismiss: true,
+    onDismiss: onClosed,
+    builder: (_) => _SmartMenuPanel<T>(
+      items: items,
+      backgroundColor: backgroundColor,
+      elevation: elevation,
+      borderRadius: borderRadius ?? SmartPopupMenu._nativeMenuRadius,
+      constraints: constraints,
+    ),
+  );
+}
+
+/// The panel itself, shared by the trigger-based menu and the point-based one.
+class _SmartMenuPanel<T> extends StatelessWidget {
+  final List<SmartPopupMenuItem<T>> items;
+  final Color? backgroundColor;
+  final double elevation;
+  final BorderRadius borderRadius;
+  final BoxConstraints? constraints;
+
+  const _SmartMenuPanel({
+    required this.items,
+    required this.backgroundColor,
+    required this.elevation,
+    required this.borderRadius,
+    required this.constraints,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final panel = Material(
       // A menu is a card, and Material 3's own menu paints it with the surface
@@ -178,7 +246,7 @@ class SmartPopupMenu<T> extends StatelessWidget {
       color: backgroundColor ?? RCrmColors.ash,
       surfaceTintColor: Colors.transparent,
       elevation: elevation,
-      borderRadius: borderRadius ?? _nativeMenuRadius,
+      borderRadius: borderRadius,
       clipBehavior: Clip.antiAlias,
       // PopupMenuItem painted its rows with the theme's `labelLarge` and the
       // palette's `onSurface` ink. Keep that baseline: a caller that styles

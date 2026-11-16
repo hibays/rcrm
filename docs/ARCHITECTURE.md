@@ -532,6 +532,39 @@ viewer floating top chrome ⓘ → MediaMetadataService.forUrl(url, kind: image)
   → cache per (url, kind) — successes only, so a failed fetch retries
 ```
 
+### Library Gestures & Item Menus
+
+```
+long-press (touch) / right-click (desktop) on a video or image cell
+  → widgets/media_item_menu.dart: showMediaItemMenu(at: the pointer)
+      → utils/menu_placement.dart decides the direction before layout
+          (48dp rows scaled by the reader's text size + 8dp panel padding;
+           downward when it fits, upward when it does not)
+      → showSmartMenu (widgets/smart_popup_menu.dart), targetContext: null +
+          targetBuilder: the same 112–280dp panel the toolbar menus use, but
+          anchored to the POINT — a card context would add the card's height
+      → rows: video = play / details / reveal / copy name / copy path
+              image = open / details / copy name / copy path
+          details → ImageInfoSheet (image) or VideoInfoSheet (track metadata)
+          reveal  → video only. videoFoldersProvider is DERIVED, so switching
+                     to 'folder' costs no re-scan; the request waits for the
+                     next build's folder list before opening the folder
+two fingers on a grid or list
+  → widgets/two_finger_pinch.dart: a raw Listener (NOT a scale recognizer —
+      the grid's vertical drag wins the arena), translucent hit testing
+      → reports the cumulative scale from the gesture's first span
+      → the scrollable gets NeverScrollableScrollPhysics while pinching
+      → utils/library_columns.dart turns the scale into the column count:
+          grid: pinchColumnCount (start count / scale, rounded and clamped)
+          list: pinchListColumns (two answers only; 20% span change commits)
+      → writes imageColumns / videoGridColumns / videoListColumns ('one'|'two')
+video list width
+  → video_list_columns ('auto' | 'one' | 'two'); auto = two columns from 840dp,
+     an explicit Two from 600dp (below that the list stays one column)
+  → the two-column list is a GridView with mainAxisExtent 100 (the row's own
+     height), never an aspect ratio
+```
+
 ### Live Photo Playback
 
 ```

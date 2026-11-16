@@ -15,13 +15,16 @@
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
-import 'dart:io' show Platform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/album.dart';
 import '../models/media_item.dart';
 import '../providers/library_provider.dart';
 import '../providers/settings_provider.dart';
+import '../services/item_cache_limit.dart';
+import '../utils/library_columns.dart';
 import '../widgets/media_toolbar.dart';
+import '../widgets/media_item_menu.dart';
+import '../widgets/two_finger_pinch.dart';
 import '../widgets/video_card.dart';
 import '../widgets/video_folder_card.dart';
 import '../widgets/finger_preview_listener.dart';
@@ -62,6 +65,18 @@ class VideoScreen extends ConsumerStatefulWidget {
 }
 
 class _VideoScreenState extends ConsumerState<VideoScreen> {
+  /// The column count the current two-finger pinch started on, for the grid.
+  /// A pinch reports a cumulative scale, so the count it maps FROM must stay the
+  /// one the fingers started on (feeding the live count back in would make every
+  /// frame a new step).
+  int _pinchStartColumns = 4;
+
+  /// A "Show in folder" request that arrived while the tab was grouped some
+  /// other way. Switching the grouping is a provider write, so the folder list
+  /// only exists on the NEXT build — the request waits here for that build
+  /// instead of guessing at a folder list that is already stale.
+  String? _revealPath;
+
   /// The folder the user opened, held by PATH rather than by `Album`.
   ///
   /// A re-scan rebuilds the albums, and an `Album` captured here would go on
@@ -116,6 +131,90 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
 
   void _closeFolder() => _setOpenPath(null);
 
+  /// The folder (or format group) that contains [path], or null when the
+  /// library no longer has one.
+  Album? _folderContaining(String path, List<Album> folders) {
+    for (final folder in folders) {
+      for (final item in folder.items) {
+        if (item.path == path) return folder;
+      }
+    }
+    return null;
+  }
+
+  /// Two fingers start resizing: remember the count they started on, because the
+  /// scale they report is cumulative and mapped FROM it.
+  void _startPinch() {
+    final width = MediaQuery.sizeOf(context).width;
+    _pinchStartColumns = videoGridBounds(
+      width: width,
+      mobile: isMobile,
+    ).resolve(ref.read(videoGridColumnsProvider));
+  }
+
+  /// Two fingers moved. A grid pinch sizes cells; a list pinch has two answers.
+  void _pinchScale(double scale) {
+    final width = MediaQuery.sizeOf(context).width;
+    final settings = ref.read(uiSettingsProvider);
+    if (settings.videoLayout == 'grid') {
+      final bounds = videoGridBounds(width: width, mobile: isMobile);
+      final target = pinchColumnCount(
+        startColumns: _pinchStartColumns,
+        scale: scale,
+        min: bounds.min,
+        max: bounds.max,
+      );
+      if (target != bounds.resolve(ref.read(videoGridColumnsProvider))) {
+        ref.read(videoGridColumnsProvider.notifier).set(target);
+      }
+      return;
+    }
+    final target = pinchListColumns(scale: scale);
+    if (target == null) return;
+    final mode = target == 1 ? 'one' : 'two';
+    // Only commit a mode that changes what is ON SCREEN. On a narrow window the
+    // list is one column whatever the stored preference says (see
+    // `kTwoColumnListMinWidth`), so a pinch-in there would store a preference
+    // with no visible answer — a gesture that does nothing AND changes a setting.
+    final current = videoListColumnCount(
+      mode: settings.videoListColumns,
+      width: width,
+    );
+    final next = videoListColumnCount(mode: mode, width: width);
+    if (next == current) return;
+    ref.read(uiSettingsProvider.notifier).setVideoListColumns(mode);
+  }
+
+  /// "Show in folder" — the one reveal this library can afford.
+  ///
+  /// The video tab's folders are DERIVED from the scanned list
+  /// (`videoFoldersProvider`), so switching the arrangement costs no re-scan and
+  /// no waiting. The photo tab's does: its albums are built inside the scanned
+  /// `MediaLibrary`, which is why the image menu has no such row at all. A row
+  /// that silently starts a full scan is a side effect, not a reveal.
+  void _revealInFolder(MediaItem item) {
+    if (ref.read(uiSettingsProvider).videoClassification != 'folder') {
+      _revealPath = item.path;
+      _closeFolder();
+      ref.read(uiSettingsProvider.notifier).setVideoClassification('folder');
+      return;
+    }
+    final folder = _folderContaining(item.path, ref.read(videoFoldersProvider));
+    if (folder != null) _setOpenPath(folder.path);
+  }
+
+  /// Long press / right-click on a video: its menu at the pointer.
+  Future<void> _showItemMenu(MediaItem item, Offset at) {
+    return showMediaItemMenu(
+      context: context,
+      item: item,
+      at: at,
+      isVideo: true,
+      onOpen: () => _openVideo(item),
+      onReveal: () => _revealInFolder(item),
+    );
+  }
+
   /// The folder's videos, in the order the toolbar's sort produced: the sorted
   /// list stays the authority, so a folder never re-sorts behind the toolbar's
   /// back — and the filter the user chose still applies inside it.
@@ -157,14 +256,40 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
     // Calculate max columns from available width (min 160 px per card).
     // This adapts naturally to portrait/landscape rotation on mobile
     // instead of a single hard 600 px cutoff.
-    final width = MediaQuery.of(context).size.width;
-    const minCardWidth = 160;
-    final maxByWidth = (width / minCardWidth).floor().clamp(1, 6);
-    final isMobile = Platform.isAndroid || Platform.isIOS;
-    final colMin = isMobile ? 1 : (maxByWidth < 2 ? 1 : 2);
-    final colMax = maxByWidth;
-    final effectiveColumns = columns.clamp(colMin, colMax);
+    final width = MediaQuery.sizeOf(context).width;
+    // ONE owner for the range the grid may use (utils/library_columns.dart):
+    // the toolbar, the pinch and this build must clamp to the same numbers, or
+    // a pinch asks for a column the build silently refuses.
+    final bounds = videoGridBounds(width: width, mobile: isMobile);
+    final effectiveColumns = bounds.resolve(columns);
+    // A wide window gets a two-column LIST, unless the user has pinned one.
+    final listColumns = videoListColumnCount(
+      mode: uiSettings.videoListColumns,
+      width: width,
+    );
+    // The row height follows the cell width and the reader's text scale: a
+    // two-column cell narrows the text column enough for the size line to wrap
+    // (that is 14dp more than the established 100dp row holds, measured at the
+    // 600dp floor), and the same row grows with the text it carries.
+    final listRowHeight = videoListRowHeight(
+      columns: listColumns,
+      textScale: MediaQuery.textScalerOf(context).scale(1),
+    );
     final open = _openFolder(folders);
+
+    // A "Show in folder" asked for while the tab was grouped another way is
+    // fulfilled on the build AFTER the grouping write — that write is what
+    // creates the folder list this looks in.
+    final reveal = _revealPath;
+    if (reveal != null && grouping == 'folder') {
+      _revealPath = null;
+      final target = _folderContaining(reveal, folders);
+      if (target != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _setOpenPath(target.path);
+        });
+      }
+    }
 
     // A re-scan can drop the folder the user is standing in (its files are gone,
     // or they moved). `_openFolder` re-resolves the path on every build, so the
@@ -227,8 +352,8 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
                     ? (c) => ref.read(videoGridColumnsProvider.notifier).set(c)
                     : null,
                 currentColumns: isGrid ? effectiveColumns : null,
-                minColumns: colMin,
-                maxColumns: colMax,
+                minColumns: bounds.min,
+                maxColumns: bounds.max,
                 isGrid: isGrid,
                 onLayoutToggle: () => ref
                     .read(uiSettingsProvider.notifier)
@@ -244,13 +369,23 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
                 },
               ),
               Expanded(
-                child: _body(
-                  open,
-                  videos,
-                  folders,
-                  grouping,
-                  isGrid,
-                  effectiveColumns,
+                child: TwoFingerPinch(
+                  onStart: _startPinch,
+                  onScale: _pinchScale,
+                  builder: (_, pinching) => _body(
+                    open,
+                    videos,
+                    folders,
+                    grouping,
+                    isGrid,
+                    effectiveColumns,
+                    listColumns,
+                    listRowHeight,
+                    // The grid/list must not scroll under the fingers sizing it.
+                    physics: pinching
+                        ? const NeverScrollableScrollPhysics()
+                        : null,
+                  ),
                 ),
               ),
             ],
@@ -281,7 +416,10 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
     String grouping,
     bool isGrid,
     int columns,
-  ) {
+    int listColumns,
+    double listRowHeight, {
+    ScrollPhysics? physics,
+  }) {
     if (open != null) {
       return Column(
         children: [
@@ -290,8 +428,12 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
             child: _VideoGrid(
               videos: _videosIn(open, videos),
               columns: columns,
+              listColumns: listColumns,
+              listRowHeight: listRowHeight,
               isGrid: isGrid,
+              physics: physics,
               onOpen: _openVideo,
+              onMenuRequested: _showItemMenu,
             ),
           ),
         ],
@@ -304,13 +446,18 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
       return _VideoGrid(
         videos: videos,
         columns: columns,
+        listColumns: listColumns,
+        listRowHeight: listRowHeight,
         isGrid: isGrid,
+        physics: physics,
         onOpen: _openVideo,
+        onMenuRequested: _showItemMenu,
       );
     }
     return _FolderGrid(
       folders: folders,
       columns: columns,
+      physics: physics,
       onOpen: (folder) => _setOpenPath(folder.path),
     );
   }
@@ -353,11 +500,13 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
 class _FolderGrid extends StatelessWidget {
   final List<Album> folders;
   final int columns;
+  final ScrollPhysics? physics;
   final void Function(Album) onOpen;
   const _FolderGrid({
     required this.folders,
     required this.columns,
     required this.onOpen,
+    this.physics,
   });
 
   @override
@@ -368,6 +517,7 @@ class _FolderGrid extends StatelessWidget {
         final cardHeight = cardWidth / 16 * 9 + 60;
         return GridView.builder(
           padding: const EdgeInsets.all(8),
+          physics: physics,
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: columns,
             childAspectRatio: cardWidth / cardHeight,
@@ -389,13 +539,25 @@ class _FolderGrid extends StatelessWidget {
 class _VideoGrid extends StatefulWidget {
   final List<MediaItem> videos;
   final int columns;
+
+  /// How many rows the LIST puts on one line — 1, or 2 on a wide window.
+  final int listColumns;
+
+  /// The height one list row needs at this text scale (and cell width).
+  final double listRowHeight;
   final bool isGrid;
+  final ScrollPhysics? physics;
   final void Function(MediaItem) onOpen;
+  final void Function(MediaItem item, Offset globalPosition)? onMenuRequested;
   const _VideoGrid({
     required this.videos,
     required this.columns,
+    required this.listColumns,
+    required this.listRowHeight,
     required this.isGrid,
     required this.onOpen,
+    this.physics,
+    this.onMenuRequested,
   });
   @override
   State<_VideoGrid> createState() => _VideoGridState();
@@ -450,6 +612,7 @@ class _VideoGridState extends State<_VideoGrid> {
         final cardHeight = cardWidth / 16 * 9 + 60;
         return GridView.builder(
           padding: const EdgeInsets.all(8),
+          physics: widget.physics,
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: cols,
             childAspectRatio: cardWidth / cardHeight,
@@ -465,6 +628,9 @@ class _VideoGridState extends State<_VideoGrid> {
               item: v,
               preview: _surface.isActive(v.path),
               onTap: () => widget.onOpen(v),
+              onMenuRequested: widget.onMenuRequested == null
+                  ? null
+                  : (at) => widget.onMenuRequested!(v, at),
             );
           },
         );
@@ -472,21 +638,41 @@ class _VideoGridState extends State<_VideoGrid> {
     );
   }
 
+  /// The list: one row per line, or two on a wide window.
+  ///
+  /// ONE `GridView` for both counts, not a `ListView` plus a `GridView`:
+  /// swapping the scrollable's type is what threw the scroll position away when
+  /// a pinch flipped 1 <-> 2 columns (measured: the list jumped from row 10
+  /// back to row 0). A grid whose `crossAxisCount` changes keeps the same
+  /// Scrollable, so the reader stays where they were.
+  ///
+  /// `mainAxisExtent` is the row's own height and nothing else: an aspect ratio
+  /// would stretch the row with the WINDOW and turn the 16:9 poster into a
+  /// band. `videoListRowHeight` adds the one thing that legitimately changes
+  /// it — a narrower two-column cell (one more wrapped line) and the reader's
+  /// text scale.
   Widget _list(List<MediaItem> videos) {
-    return ListView.builder(
+    final menu = widget.onMenuRequested;
+    return GridView.builder(
       padding: const EdgeInsets.all(8),
+      physics: widget.physics,
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: widget.listColumns,
+        mainAxisExtent: widget.listRowHeight,
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
+      ),
       itemCount: videos.length,
       addRepaintBoundaries: true,
       itemBuilder: (_, i) {
         final v = videos[i];
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: VideoListTile(
-            item: v,
-            cardKey: _surface.keyFor(v.path),
-            preview: _surface.isActive(v.path),
-            onTap: () => widget.onOpen(v),
-          ),
+        return VideoListTile(
+          item: v,
+          cardKey: _surface.keyFor(v.path),
+          preview: _surface.isActive(v.path),
+          height: widget.listRowHeight,
+          onTap: () => widget.onOpen(v),
+          onMenuRequested: menu == null ? null : (at) => menu(v, at),
         );
       },
     );

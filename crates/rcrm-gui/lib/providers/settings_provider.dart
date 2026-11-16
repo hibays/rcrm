@@ -41,6 +41,12 @@ class SettingsState {
   /// `ThumbCache.limitMb`.
   final int thumbCacheLimitMb;
   final String videoLayout; // 'grid' or 'list'
+
+  /// How many rows the video LIST puts on one line: 'auto' (the responsive
+  /// answer — two columns on a wide window), 'one' or 'two'. A two-finger pinch
+  /// on the list commits 'one'/'two'; Settings offers the same three choices so
+  /// "auto" is reachable again after a pinch has overruled it.
+  final String videoListColumns; // 'auto' | 'one' | 'two'
   final String imageClassification; // 'folder' or 'format'
 
   /// How the video tab organizes its list: 'none' (flat grid, the default and
@@ -95,6 +101,7 @@ class SettingsState {
     this.appearanceAccent = 'marquee',
     this.thumbCacheLimitMb = 0,
     this.videoLayout = 'grid',
+    this.videoListColumns = 'auto',
     this.imageClassification = 'folder',
     this.videoClassification = 'none',
     this.pipEnabled = true,
@@ -118,6 +125,7 @@ class SettingsState {
     String? appearanceAccent,
     int? thumbCacheLimitMb,
     String? videoLayout,
+    String? videoListColumns,
     String? imageClassification,
     String? videoClassification,
     bool? pipEnabled,
@@ -140,6 +148,7 @@ class SettingsState {
       appearanceAccent: appearanceAccent ?? this.appearanceAccent,
       thumbCacheLimitMb: thumbCacheLimitMb ?? this.thumbCacheLimitMb,
       videoLayout: videoLayout ?? this.videoLayout,
+      videoListColumns: videoListColumns ?? this.videoListColumns,
       imageClassification: imageClassification ?? this.imageClassification,
       videoClassification: videoClassification ?? this.videoClassification,
       playbackMode: playbackMode ?? this.playbackMode,
@@ -188,6 +197,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
     final thumbCacheLimitMb = await _service.getThumbCacheLimitMb();
     ThumbCache.limitMb = thumbCacheLimitMb;
     final videoLayout = await _service.getVideoLayout();
+    final videoListColumns = await _service.getVideoListColumns();
     final imageClassification = await _service.getImageClassification();
     final videoClassification = await _service.getVideoClassification();
     final pipEnabled = await _service.getPipEnabled();
@@ -241,6 +251,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
       appearanceAccent: appearanceAccent,
       thumbCacheLimitMb: thumbCacheLimitMb,
       videoLayout: videoLayout,
+      videoListColumns: videoListColumns,
       imageClassification: imageClassification,
       videoClassification: videoClassification,
       pipEnabled: pipEnabled,
@@ -284,6 +295,18 @@ class SettingsNotifier extends Notifier<SettingsState> {
   Future<void> setVideoLayout(String layout) async {
     state = state.copyWith(videoLayout: layout);
     await _service.setVideoLayout(layout);
+  }
+
+  /// The video list's column count — committed by the two-finger pinch on the
+  /// list and by Settings → Display.
+  ///
+  /// No re-scan and no provider elsewhere: the list reads this on its next
+  /// build (the pinch applies live, one step per gesture commit).
+  Future<void> setVideoListColumns(String mode) async {
+    final v = (mode == 'one' || mode == 'two') ? mode : 'auto';
+    if (v == state.videoListColumns) return;
+    state = state.copyWith(videoListColumns: v);
+    await _service.setVideoListColumns(v);
   }
 
   Future<void> setImageClassification(String method) async {

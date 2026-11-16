@@ -16,6 +16,7 @@ import '../providers/library_provider.dart';
 import '../providers/server_provider.dart';
 import '../widgets/doctor_panel.dart';
 import '../widgets/album_preview.dart';
+import '../widgets/media_item_menu.dart';
 import '../widgets/video_card.dart';
 import '../widgets/finger_preview_listener.dart';
 import '../widgets/double_back_exit.dart';
@@ -363,6 +364,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         item: recommended[index],
                         preview: _recommended.isActive(recommended[index].path),
                         onTap: () => _openVideo(recommended[index]),
+                        // The same long-press/right-click menu the video tab
+                        // gives an item, without "Show in folder": the folder
+                        // view belongs to the video tab, and a row that changed
+                        // tab would be a journey, not an action on this card.
+                        onMenuRequested: (at) => showMediaItemMenu(
+                          context: context,
+                          item: recommended[index],
+                          at: at,
+                          isVideo: true,
+                          onOpen: () => _openVideo(recommended[index]),
+                        ),
                       ),
                     ),
                   );
@@ -400,6 +412,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         item: item,
                         preview: _recent.isActive(item.path),
                         onTap: () => _openVideo(item),
+                        onMenuRequested: (at) => showMediaItemMenu(
+                          context: context,
+                          item: item,
+                          at: at,
+                          isVideo: true,
+                          onOpen: () => _openVideo(item),
+                        ),
                       ),
                     ),
                   );

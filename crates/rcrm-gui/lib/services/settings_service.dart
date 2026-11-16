@@ -70,6 +70,7 @@ class SettingsService {
   static const _keyServerConfig = 'server_config';
   static const _keyVideoLayout = 'video_layout'; // 'grid' or 'list'
   static const _keyVideoGridColumns = 'video_grid_columns';
+  static const _keyVideoListColumns = 'video_list_columns'; // 'auto'|'one'|'two'
   static const _keyVideoSort = 'video_sort';
   static const _keyVideoSortAsc = 'video_sort_asc';
   static const _keyImageLayout = 'image_layout'; // 'masonry' or 'uniform'
@@ -160,6 +161,27 @@ class SettingsService {
   Future<void> setVideoGridColumns(int cols) async {
     final p = await prefs;
     await p.setInt(_keyVideoGridColumns, cols.clamp(1, 8));
+  }
+
+  /// How many rows the video LIST puts on one line.
+  ///
+  /// `auto` is the responsive answer (two columns from 840dp — Material's
+  /// "expanded" window class, see `utils/library_columns.dart`); `one` and
+  /// `two` are what a two-finger pinch commits when the user overrules it.
+  /// An unknown value reads as `auto`, so a preference file this build did not
+  /// write cannot invent a layout.
+  Future<String> getVideoListColumns() async {
+    final p = await prefs;
+    final v = p.getString(_keyVideoListColumns);
+    return v == 'one' || v == 'two' ? v! : 'auto';
+  }
+
+  Future<void> setVideoListColumns(String mode) async {
+    final p = await prefs;
+    await p.setString(
+      _keyVideoListColumns,
+      mode == 'one' || mode == 'two' ? mode : 'auto',
+    );
   }
 
   Future<String> getVideoSort() async {

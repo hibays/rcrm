@@ -211,9 +211,21 @@ void main() {
       expect(find.text('Allow Screenshots'), findsNothing);
       expect(find.text('Privacy'), findsNothing);
       // The sections that stay are still there, so this is the row being gated
-      // rather than the page failing to build.
-      expect(find.text('Thumbnail Cache'), findsOneWidget);
+      // rather than the page failing to build. They sit below the fold, and the
+      // page is a lazy ListView: scroll to them rather than asserting on rows
+      // that were never built.
+      await tester.scrollUntilVisible(
+        find.text('Cast Auto-Next'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('Cast Auto-Next'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Thumbnail Cache'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
+      expect(find.text('Thumbnail Cache'), findsOneWidget);
     });
 
     testWidgets('offers the choice where the platform has a capture surface', (

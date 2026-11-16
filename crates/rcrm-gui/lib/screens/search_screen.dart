@@ -12,6 +12,7 @@ import '../models/media_item.dart';
 import '../providers/library_provider.dart';
 import '../widgets/album_card.dart';
 import '../widgets/image_card.dart';
+import '../widgets/media_item_menu.dart';
 import '../widgets/video_card.dart';
 import '../utils/poster_quiet_route.dart';
 import 'image_screen.dart'; // selectedAlbumProvider
@@ -82,6 +83,36 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
       MaterialPageRoute(
         builder: (_) => ImageViewerScreen(items: images, initialIndex: index),
       ),
+    );
+  }
+
+  /// A result's own menu: the actions that make sense where the item was FOUND.
+  ///
+  /// No "Show in folder" here: the folder view belongs to the video tab, which
+  /// is a different screen — a search result's menu offers what can be done to
+  /// the result itself (play/open, facts, copy), not a journey to another tab
+  /// that would also have to change its grouping.
+  Future<void> _showVideoMenu(MediaItem item, Offset at) {
+    return showMediaItemMenu(
+      context: context,
+      item: item,
+      at: at,
+      isVideo: true,
+      onOpen: () => _openVideo(item),
+    );
+  }
+
+  Future<void> _showImageMenu(MediaItem item, Offset at, List<MediaItem> images) {
+    final index = images.indexOf(item);
+    final safe = index < 0 ? 0 : index;
+    return showMediaItemMenu(
+      context: context,
+      item: item,
+      at: at,
+      isVideo: false,
+      index: safe + 1,
+      total: images.length,
+      onOpen: () => _openImage(images, safe),
     );
   }
 
@@ -357,6 +388,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             key: ValueKey(videos[index].url),
             item: videos[index],
             onTap: () => _openVideo(videos[index]),
+            onMenuRequested: (at) => _showVideoMenu(videos[index], at),
           ),
           childCount: videos.length,
         ),
@@ -384,6 +416,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             key: ValueKey(images[index].url),
             item: images[index],
             onTap: () => _openImage(images, index),
+            onMenuRequested: (at) => _showImageMenu(images[index], at, images),
           ),
           childCount: images.length,
         ),
@@ -406,6 +439,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             // reused for a different video.
             cardKey: ValueKey(item.url),
             onTap: () => _openVideo(item),
+            onMenuRequested: (at) => _showVideoMenu(item, at),
           ),
         );
       }, childCount: videos.length),
@@ -430,6 +464,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                       key: ValueKey(img.url),
                       item: img,
                       onTap: () => _openImage(images, index),
+                      onMenuRequested: (at) =>
+                          _showImageMenu(img, at, images),
                     ),
                   ),
                 ),
@@ -438,6 +474,15 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onTap: () => _openImage(images, index),
+                    onLongPressStart: (d) => requestItemMenu(
+                      (at) => _showImageMenu(img, at, images),
+                      d.globalPosition,
+                      haptic: true,
+                    ),
+                    onSecondaryTapDown: (d) => requestItemMenu(
+                      (at) => _showImageMenu(img, at, images),
+                      d.globalPosition,
+                    ),
                     child: _listInfo(context, img),
                   ),
                 ),

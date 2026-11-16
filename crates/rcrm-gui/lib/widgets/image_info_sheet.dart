@@ -16,6 +16,8 @@ import 'package:material_ui/material_ui.dart';
 import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../services/media_metadata.dart';
+import '../utils/format.dart';
+import 'info_rows.dart';
 
 class ImageInfoSheet extends StatelessWidget {
   final MediaItem item;
@@ -123,7 +125,7 @@ class ImageInfoSheet extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  captured == null ? item.name : _formatDate(captured),
+                  captured == null ? item.name : formatStamp(captured),
                   style: TextStyle(
                     color: RCrmColors.textPrimary,
                     fontSize: captured == null ? 18 : 21,
@@ -164,7 +166,7 @@ class ImageInfoSheet extends StatelessWidget {
             const _MetaSkeleton()
           else ...[
             _LocationLine(exif: exif, known: meta.parsed),
-            const _Rule(),
+            const InfoRule(),
             ..._cameraBlock(meta),
           ],
           Text(
@@ -175,15 +177,15 @@ class ImageInfoSheet extends StatelessWidget {
               height: 1.4,
             ),
           ),
-          const _Rule(),
+          const InfoRule(),
 
-          _Row(icon: Icons.folder_outlined, label: _folderLabel()),
-          _Row(
+          InfoRow(icon: Icons.folder_outlined, label: _folderLabel()),
+          InfoRow(
             icon: Icons.photo_library_outlined,
             label: 'Image $index of $total',
           ),
           if (animated)
-            const _Row(
+            const InfoRow(
               icon: Icons.motion_photos_on_outlined,
               label: 'Animated',
               value: 'Plays on long-press',
@@ -389,31 +391,6 @@ class ImageInfoSheet extends StatelessWidget {
     if (h > 0) return '${h}h ${m.toString().padLeft(2, '0')}m';
     return m > 0 ? '${m}m ${s.toString().padLeft(2, '0')}s' : '${s}s';
   }
-
-  static const _months = [
-    'Jan',
-    'Feb',
-    'Mar',
-    'Apr',
-    'May',
-    'Jun',
-    'Jul',
-    'Aug',
-    'Sep',
-    'Oct',
-    'Nov',
-    'Dec',
-  ];
-
-  /// "Sep 30, 2026 · 2:24 AM" — locale-free, unambiguous, and the one line a
-  /// person actually reads first.
-  static String _formatDate(DateTime d) {
-    final hour12 = d.hour % 12 == 0 ? 12 : d.hour % 12;
-    final minute = d.minute.toString().padLeft(2, '0');
-    final period = d.hour < 12 ? 'AM' : 'PM';
-    return '${_months[d.month - 1]} ${d.day}, ${d.year}'
-        ' · $hour12:$minute $period';
-  }
 }
 
 /// Where the picture was taken. A missing location is stated, not hidden —
@@ -453,16 +430,6 @@ class _LocationLine extends StatelessWidget {
   }
 }
 
-class _Rule extends StatelessWidget {
-  const _Rule();
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 14),
-    child: Divider(height: 1, thickness: 1, color: ImageInfoSheet._hairline),
-  );
-}
-
 /// Stand-in for the location line and the camera block while the parse is in
 /// flight. Two dimmed bars, sized like the text they replace (a 16px icon line
 /// and a two-line camera block), so the real answer drops in without ever
@@ -489,53 +456,6 @@ class _MetaSkeleton extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [bar(0.62, 15), const SizedBox(height: 8), bar(0.38, 15)],
-    );
-  }
-}
-
-class _Row extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String? value;
-
-  const _Row({required this.icon, required this.label, this.value});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 7),
-      child: Row(
-        children: [
-          Icon(icon, size: 19, color: RCrmColors.textSecondary),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Text(
-              label,
-              style: TextStyle(
-                color: RCrmColors.textPrimary,
-                fontSize: 14,
-                height: 1.3,
-              ),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          if (value != null) ...[
-            const SizedBox(width: 12),
-            // Both sides are long in practice (folder path, album name), so
-            // the trailing value must be able to give way — never overflow.
-            Flexible(
-              child: Text(
-                value!,
-                style: TextStyle(color: RCrmColors.textSecondary, fontSize: 13),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.end,
-              ),
-            ),
-          ],
-        ],
-      ),
     );
   }
 }
