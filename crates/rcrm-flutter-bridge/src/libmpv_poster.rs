@@ -16,6 +16,12 @@
 //! a REDRAW/REPEAT is the previous picture, not the seek's — `time-pos` moves to
 //! the target before that picture is replaced. Without them, a poster for 60 s
 //! shows the frame at 3 s, or a black opening is filed as every candidate.
+//!
+//! Where the frame comes FROM is a measured trade too: a large source is sought
+//! with `absolute+keyframes` (one decoded frame instead of the whole GOP, 37-46
+//! ms against 102-111 ms on a 2730x1440 sample), which lands up to
+//! [keyframe_tolerance] early, and only falls back to the exact seek when the
+//! landing is further than that.
 
 use std::time::{Duration, Instant};
 
@@ -44,6 +50,11 @@ const POSITION_TOLERANCE: f64 = 0.5;
 /// The first frame after `loadfile`. It normally arrives in milliseconds; the
 /// bound only stops a file that never paints one from stalling the job.
 const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(2);
+/// The smallest source (in pixels) that uses the keyframe seek. Below it the
+/// exact seek is already cheap — 17-37 ms at 1920x1080 against 9-14 ms keyframe
+/// — so landing up to 3 s early would not be paid for; at 2730x1440 the exact
+/// seek is 102-111 ms against 37-46 ms keyframe, which is what the trade is for.
+const KEYFRAME_MIN_PIXELS: u64 = 3_000_000;
 /// How long to sleep between frame polls. Checking for a frame is a read of a
 /// flag libmpv keeps in memory; the sleep is what stops a pool of workers from
 /// spinning a core each while a seek decodes.
@@ -103,6 +114,7 @@ pub(crate) fn generate(
 	let (source_width, source_height) = display_size(&mpv);
 	let (width, height) = target_size(source_width, source_height, target_width)?;
 	let mut surface = Surface::new(width, height);
+	let keyframe_first = keyframe_seek_for(source_width, source_height);
 	let duration = mpv.get_f64("duration").filter(|seconds| *seconds > 0.0);
 	rcrm_core::log_debug!(
 		"[poster] libmpv source={source_width}x{source_height} surface={width}x{height} duration={duration:?} loaded_ms={}",
@@ -125,7 +137,15 @@ pub(crate) fn generate(
 				timeout: JOB_TIMEOUT,
 			});
 		}
-		match attempt(&mpv, &render, &mut surface, position, quality, deadline) {
+		match attempt(
+			&mpv,
+			&render,
+			&mut surface,
+			position,
+			keyframe_first,
+			quality,
+			deadline,
+		) {
 			Ok(Some(buffer)) => return Ok(PosterFrame::Encoded(buffer)),
 			Ok(None) => rcrm_core::log_debug!("[poster] no usable frame at {position}s"),
 			Err(error) => rcrm_core::log_debug!("[poster] position {position}s failed: {error}"),
@@ -136,6 +156,14 @@ pub(crate) fn generate(
 
 /// One candidate position: seek, wait for the frame, and encode it.
 ///
+/// Two seek paths exist. `keyframe_first` (large sources only, see
+/// [keyframe_seek_for]) tries `absolute+keyframes` first: it decodes only the
+/// keyframe at or before the target, which lands up to [keyframe_tolerance]
+/// early — acceptable for a poster, and 37-46 ms against 102-111 ms exact on a
+/// 2730x1440 sample. A landing outside that tolerance falls back to the exact
+/// seek. Small sources skip straight to `absolute+exact`, where the keyframe win
+/// is only 9-14 ms against 17-37 ms and not worth the earlier landing.
+///
 /// `Ok(None)` means nothing usable came back at this position (the frame was
 /// blank, or the seek never produced one) and the caller should try the next;
 /// only a real libmpv failure is an `Err`, and it is per-position too.
@@ -144,30 +172,61 @@ fn attempt(
 	render: &RenderContext<'_>,
 	surface: &mut Surface,
 	position: f64,
+	keyframe_first: bool,
 	quality: u8,
 	job_deadline: Instant,
 ) -> Result<Option<Box<WebpBuf>>, LibMpvError> {
 	drain(render, surface)?;
+	let started = Instant::now();
 	let target = format!("{position:.3}");
-	let seek_started = Instant::now();
-	mpv.command(&["seek", &target, "absolute+exact"])?;
-	wait_for_seek(mpv, stage_deadline(job_deadline, SEEK_TIMEOUT))?;
-	let seek_ms = seek_started.elapsed().as_millis();
-	let frame_started = Instant::now();
-	render_frame_at(
-		mpv,
-		render,
-		surface,
-		position,
-		stage_deadline(job_deadline, FRAME_TIMEOUT),
-	)?;
-	let frame_ms = frame_started.elapsed().as_millis();
+	let mut landed = None;
+	let mut keyframe_accepted = false;
+	if keyframe_first {
+		// A keyframe seek decodes ONE frame — the keyframe at or before the
+		// target — instead of every frame from that keyframe to the target. Its
+		// landing point is the answer, so [render_next_frame] rather than the
+		// time-pos-checked [render_frame_at]; how far early it may be is
+		// [keyframe_tolerance]. A landing beyond that falls back to the exact
+		// seek below: one extra keyframe seek, and it is what keeps a short clip
+		// from being answered with its first frame.
+		mpv.command(&["seek", &target, "absolute+keyframes"])?;
+		wait_for_seek(mpv, stage_deadline(job_deadline, SEEK_TIMEOUT))?;
+		landed = render_next_frame(
+			mpv,
+			render,
+			surface,
+			stage_deadline(job_deadline, FRAME_TIMEOUT),
+		)?;
+		keyframe_accepted =
+			landed.is_some_and(|at| (at - position).abs() <= keyframe_tolerance(position));
+		if !keyframe_accepted {
+			drain(render, surface)?;
+		}
+	}
+	if !keyframe_accepted {
+		mpv.command(&["seek", &target, "absolute+exact"])?;
+		wait_for_seek(mpv, stage_deadline(job_deadline, SEEK_TIMEOUT))?;
+		render_frame_at(
+			mpv,
+			render,
+			surface,
+			position,
+			stage_deadline(job_deadline, FRAME_TIMEOUT),
+		)?;
+		landed = mpv.get_f64("time-pos");
+	}
+	let frame_ms = started.elapsed().as_millis();
 	let (width, height) = surface.size();
 	let encode_started = Instant::now();
 	let encoded = poster::encode_poster_frame(surface.pixels_mut(), width, height, quality);
 	rcrm_core::log_debug!(
-		"[poster] libmpv pos={position}s seek_ms={} frame_ms={} encode_ms={}",
-		seek_ms,
+		"[poster] libmpv pos={position}s path={} at={:.3}s frame_ms={} encode_ms={}",
+		if keyframe_accepted {
+			"keyframe"
+		} else {
+			"exact"
+		},
+		landed.unwrap_or(position),
 		frame_ms,
 		encode_started.elapsed().as_millis()
 	);
@@ -255,7 +314,7 @@ fn render_frame_at(
 					// Keep waiting: mpv is still decoding towards the target and
 					// will report the frame it lands on.
 					Some(at) => {
-						rcrm_core::log_debug!("[poster] frame at {at}s is not {target}s yet")
+						rcrm_core::log_debug!("[poster] frame at {at}s is not {target}s yet");
 					}
 					// No clock to check against (should not happen for a loaded
 					// video): the frame is the best answer available.
@@ -266,6 +325,60 @@ fn render_frame_at(
 		let left = remaining(deadline, "frame", FRAME_TIMEOUT)?;
 		std::thread::sleep(left.min(FRAME_POLL));
 	}
+}
+
+/// Render the first frame after a seek that is NOT a redraw of the previous
+/// picture, and return the position the player reports with it.
+///
+/// This is the keyframe path's counterpart to [render_frame_at]: a keyframe
+/// seek lands on the keyframe, not on the requested position, so `time-pos`
+/// cannot be the acceptance rule — the landing point itself is the answer, and
+/// the caller compares it with [keyframe_tolerance]. The REDRAW/REPEAT rule
+/// still applies, because that frame is never the seek's result. `None` means
+/// the player reported no position for it; the caller then takes the exact path
+/// rather than guessing.
+fn render_next_frame(
+	mpv: &Mpv,
+	render: &RenderContext<'_>,
+	surface: &mut Surface,
+	deadline: Instant,
+) -> Result<Option<f64>, LibMpvError> {
+	loop {
+		if render.has_frame() {
+			let stale = is_previous_frame(render.frame_info());
+			render.render(surface)?;
+			render.report_swap();
+			if !stale {
+				return Ok(mpv.get_f64("time-pos"));
+			}
+			rcrm_core::log_debug!("[poster] redraw after a keyframe seek");
+		}
+		let left = remaining(deadline, "frame", FRAME_TIMEOUT)?;
+		std::thread::sleep(left.min(FRAME_POLL));
+	}
+}
+
+/// Whether a source uses the keyframe seek: at least [KEYFRAME_MIN_PIXELS].
+///
+/// A negative or missing size is not a large source — `display_size` would have
+/// failed the job before this matters — so it is `false` rather than an
+/// arithmetic error.
+fn keyframe_seek_for(source_width: i64, source_height: i64) -> bool {
+	let width = u64::try_from(source_width).unwrap_or(0);
+	let height = u64::try_from(source_height).unwrap_or(0);
+	width.saturating_mul(height) >= KEYFRAME_MIN_PIXELS
+}
+
+/// How far a keyframe seek may land from the requested position and still be
+/// accepted as that position's poster.
+///
+/// A poster is representative and the seek plan is already "a fraction of the
+/// length", so a few seconds early is fine on a long video. It cannot be a
+/// FLAT few seconds: on a 10 s clip the plan's 1 s candidate would land on the
+/// keyframe at 0 — the leader the plan exists to skip — so the tolerance grows
+/// with the position (15%, capped at 3 s, never below 0.5 s).
+fn keyframe_tolerance(position: f64) -> f64 {
+	(position * 0.15).clamp(0.5, 3.0)
 }
 
 /// Wait until the load has painted its first frame.
@@ -667,5 +780,27 @@ mod tests {
 		// and ask time-pos", never "this is the previous picture".
 		assert!(!is_previous_frame(info(FRAME_INFO_REDRAW)));
 		assert!(!is_previous_frame(None));
+	}
+
+	/// The gate: only sources big enough for the exact seek to hurt take the
+	/// earlier keyframe landing.
+	#[test]
+	fn the_keyframe_seek_is_only_for_large_sources() {
+		assert!(!keyframe_seek_for(1920, 1080), "1080p is 2.07 MP");
+		assert!(keyframe_seek_for(2560, 1440), "1440p is 3.69 MP");
+		assert!(keyframe_seek_for(3840, 2160), "4K is 8.29 MP");
+		assert!(!keyframe_seek_for(0, 0));
+		assert!(!keyframe_seek_for(-1, 2160));
+	}
+
+	/// The tolerance shrinks towards the start, so a short clip's early
+	/// candidate cannot land on its first frame.
+	#[test]
+	fn keyframe_tolerance_shrinks_towards_the_start() {
+		assert_eq!(keyframe_tolerance(0.0), 0.5);
+		assert_eq!(keyframe_tolerance(1.0), 0.5);
+		assert!((keyframe_tolerance(10.0) - 1.5).abs() < 1e-9);
+		assert!((keyframe_tolerance(20.0) - 3.0).abs() < 1e-9);
+		assert_eq!(keyframe_tolerance(300.0), 3.0);
 	}
 }

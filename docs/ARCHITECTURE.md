@@ -639,7 +639,12 @@ with the `libmpv-poster` feature.
   otherwise arrives while the seek's frame is decoding, with `time-pos` already
   at the target); and a `REDRAW`/`REPEAT` update — render.h's own flag, from
   `MPV_RENDER_PARAM_NEXT_FRAME_INFO` — is the previous picture, not the
-  candidate's, so it is not accepted.
+  candidate's, so it is not accepted. Large sources (≥3 MP,
+  `KEYFRAME_MIN_PIXELS`) seek `absolute+keyframes` first — one decoded frame
+  instead of the whole GOP, 37-46 ms against 102-111 ms on a 1440p sample — and
+  fall back to the exact seek when the landing is more than
+  `keyframe_tolerance` (15% of the position, 0.5-3 s) early. Smaller sources
+  keep the exact seek, where the keyframe win is only 9-14 ms against 17-37 ms.
 - **media_kit** (iOS, whose libmpv is statically linked and cannot be dlopen'ed;
   also any build without the export) — a pool of `Player`+`VideoController`
   pairs takes `screenshot()` frames and Rust does the blank test, the downscale
