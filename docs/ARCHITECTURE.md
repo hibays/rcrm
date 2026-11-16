@@ -621,7 +621,14 @@ with the `libmpv-poster` feature.
   context, seeks to each candidate position and renders the frame straight into
   a target-sized BGR0 buffer in Rust. The opaque-alpha pass, the blank test and
   the WebP encode read that same buffer; no frame ever enters Dart, and libmpv
-  is reused across candidate positions within one job.
+  is reused across candidate positions within one job. The client runs with the
+  **poster budgets**, not a player's: `demuxer-max-bytes`/`-back-bytes` 4 MiB,
+  `cache-on-disk=no`, `network-timeout=5`, `vd-lavc-threads=4` — mpv's
+  defaults (150 + 50 MiB demux cache, 60 s timeout, auto threads) are sized for
+  playback and killed the Android app at the first uncached poster for a large
+  video. A stale frame is consumed with `MPV_RENDER_PARAM_SKIP_RENDERING`: the
+  seek only needs the frame *after* it, so the SW backend is not asked to
+  colour-convert and scale frames nobody sees.
 - **media_kit** (iOS, whose libmpv is statically linked and cannot be dlopen'ed;
   also any build without the export) — a pool of `Player`+`VideoController`
   pairs takes `screenshot()` frames and Rust does the blank test, the downscale

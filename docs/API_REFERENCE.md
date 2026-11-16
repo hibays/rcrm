@@ -205,6 +205,15 @@ void rcrm_generate_poster_async(const char *url,        /* borrowed, copied */
   job, created and destroyed on that thread (render.h's rule), reused across the
   candidate positions of that job. Load 25 s, seek 5 s, frame 3 s, whole job
   40 s — every stage answers, so a stuck file cannot hold a poster slot forever.
+- The client carries the **poster budgets**, not a player's: `demuxer-max-bytes`
+  and `demuxer-max-back-bytes` 4 MiB, `cache-on-disk=no`, `network-timeout=5`,
+  `vd-lavc-threads=4`, `hwdec=no`. A poster needs one frame, so mpv's playback
+  defaults (150 + 50 MiB of demux cache, a 60 s network timeout, one decoder
+  frame per core) are memory the caller never gets back — on a phone they are
+  how a large file's first poster killed the app (2026-11-16).
+- Frames the context still holds from before a seek are consumed with
+  `MPV_RENDER_PARAM_SKIP_RENDERING`: `report_swap` is still required, but the
+  software backend does no conversion or scaling for a frame that is thrown away.
 
 Caller: `LibMpvPoster.generate` (`services/poster_libmpv.dart`), reached from
 `ThumbnailService` through `utils/poster_backend.dart`'s backend choice.

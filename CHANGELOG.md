@@ -963,3 +963,17 @@ Update report:
 		④ **排除的假阳性**：捏合首指按下会触发移动端「指下预览」——与今天任何一次单指触摸的行为一致，不是本轮引入；`SmartDialog` 的 attach 在向下溢出时会钉到屏幕底边（`attach_widget.dart::_adjustReactInfo`），所以 `menu_placement.dart` 里「两边都放不下取空间大的一侧」不会让菜单跑出屏幕；`InfoRule` 用的 `RCrmColors.hairline` 与旧 `ImageInfoSheet._hairline` 是同一个 getter，分隔线颜色逐像素不变。
 		⑤ **未修（记录）**：`_copy` 在 Android < 13 上既无系统提示也无自绘提示（代码注释把「系统提示」当成 13+ 的既有能力），属于产品取舍，需要 SDK 判断才改。
 		⑥ 门禁：`flutter analyze lib test` **No issues**；全量 `flutter test` **876 例全绿**（原 873 + 3 个新回归用例）。
+42. 2026.11.16.4.30.AM.Monday
+	*修上一批 libmpv 海报在 Android 上的整进程闪退：新海报 client 丢了旧 media_kit 海报播放器的内存/超时预算（mpv 默认 150+50 MiB demux 缓存、60 s 网络超时、按核数开帧线程），顺手把 stale 帧的整帧缩放去掉，并按「统一出清一轮」做了死代码审计*
+
+	1) **根因（代码 + mpv 0.36 源码核实，非推测）**：
+		① 旧路径 `MpvPoster` → `PlayerFactory.poster()`：demux 缓存 4 MiB + 4 MiB、`cache-on-disk=no`、`network-timeout=5`、`hwdec=auto-safe`（Android 走 MediaCodec）。
+		② 新路径 `libmpv_poster::generate` 裸建 client，`options()` 未设任何缓存/超时项 → mpv 0.36 的默认值生效：`demuxer-max-bytes=150 MiB`、`demuxer-max-back-bytes=50 MiB`、`cache=auto`（HTTP 是 stream，缓存开启）、`network-timeout=60`、`hwdec=no`（软解）。单张封面从「8 MiB 缓存 + 硬解」变成「200 MiB 预读 + 4K 软解」，滑到第一个未缓存的大文件即被系统 OOM 杀掉整个进程（图片缩略图走 `ThumbWebpWorker`，不受影响，所以表现为「图片很快、某项视频必闪退」）。
+		③ 放大项：`loadfile`/`mpv_terminate_destroy` 是阻塞调用，阶段 deadline 管不到；Dart 60 s 超时先释放并发槽（移动端并发 1），老 Rust 线程可能仍持 client + 缓存，新 job 再起一个 → 两份 200 MiB 并存。
+		④ **逐项排除（二次确认）**：`Surface` 尺寸（`target_width` 来自 Dart 常量 640、height 被 `MAX_HEIGHT=8192` 夹住 → ≤21 MiB）、`render` 的 u32→c_int、空 `positions` 三条在现有调用链上不可达；`libmpv_sw.c` 的 SW 后端 `destroy` 是 nop、`priv` 在 init 里 `talloc_zero`，故 media-kit#480 那类「loadfile 失败后 `mpv_render_context_free` 崩」只属 GL 后端，本路径不适用；SW 参数形状（SIZE `int[2]*`、STRIDE `size_t*`、FORMAT/POINTER 的 data 本身就是值）与 `libmpv_sw.c` 的 `get_mpv_render_param` 逐项一致。
+	2) **修复（`libmpv_poster::options`）**：`demuxer-max-bytes`/`demuxer-max-back-bytes=4M`（与旧 poster 播放器一致；一张封面不需要预读）、`cache-on-disk=no`（零明文落盘，写死而不是依赖默认值）、`network-timeout=5`（`loadfile`/`terminate_destroy` 不再能挂到 60 s）、`vd-lavc-threads=4`（软解 4K 的帧线程内存减半，长 GOP 的 seek 仍能在 `FRAME_TIMEOUT` 内解到目标帧）。
+	3) **性能**：`drain()` 与 seek 前残留帧改用 `MPV_RENDER_PARAM_SKIP_RENDERING`（`libmpv.rs::RenderContext::skip`）——帧仍算已渲染、仍需 `report_swap`，但 SW 后端不再做色彩转换与整帧缩放；`drain` 的 `surface` 参数随之删除。
+	4) **死代码审计（「统一出清一轮」的结论）**：27 个 `rcrm_*` 导出全部仍有 Dart 调用方（脚本比对 + 人工核）；5 种 feature 组合（default / `libmpv-poster` / `mpv-poster` / `mobile-decode` / 三开）`cargo check --all-targets` 零 warning、无「never used」。**JPEG 空帧函数 `rcrm_is_blank_frame` 不能删**：它只被 media_kit 后端的 JPEG 回退调用（iOS 正常路径，以及 libmpv 不可用时的移动端回退），且 `zune-jpeg` 还被 `qr_scan` 使用；`rcrm_encode_poster_webp` 同理（iOS 唯一编码器 + Android 回退）。出清结果：**0 个函数删除，1 个参数删除**（`drain` 的 surface）。
+	5) **验证**：`cargo fmt --all --check` 干净；clippy 三种态（`libmpv-poster` / `mpv-poster` / `mobile-decode,mpv-poster,libmpv-poster`）零 warning；`cargo test -p rcrm-flutter-bridge --features libmpv-poster` 39 例、`--features mpv-poster` 34 例全绿；`RCRM_MPV_POSTER_TEST_VIDEO=testres/mayvid/驱蛇小鼠.mp4`（1280×720）跑通完整链路：load 30 ms → seek 200 ms → frame 14 ms → debug encode 984 ms，输出 640×360 不透明 WebP；同一用例对纯黑样本正确判 blank（no usable frame），说明空帧阈值未被本轮改动影响。
+	6) **未验证**：未在 Android 真机复验闪退是否消失（本机无设备）；`demuxer-max-bytes=4M` 对超大文件的 seek 延迟未压测；R2 的「Dart 超时先行」只靠 `network-timeout=5` 缓解，未改成「并发槽跟到原生回调」；渲染线程上调用普通 libmpv API（`render.h` 明确禁止）仍未重构，其后果是丢帧/无封面而不是崩溃，列为后续硬化项。
+

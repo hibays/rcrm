@@ -74,6 +74,9 @@ const FORMAT_DOUBLE: c_int = 5;
 // `MPV_RENDER_PARAM_*` (render.h).
 const PARAM_INVALID: c_int = 0;
 const PARAM_API_TYPE: c_int = 1;
+/// `MPV_RENDER_PARAM_SKIP_RENDERING` (render.h): count the frame as rendered
+/// without drawing it.
+const PARAM_SKIP_RENDERING: c_int = 13;
 const PARAM_SW_SIZE: c_int = 17;
 const PARAM_SW_FORMAT: c_int = 18;
 const PARAM_SW_STRIDE: c_int = 19;
@@ -658,6 +661,37 @@ impl<'mpv> RenderContext<'mpv> {
 		// SAFETY: the surface is exclusively ours for the call, its pointer is
 		// 64-byte aligned and at least `stride * height` bytes long, and every
 		// parameter matches the type render.h documents for it.
+		let code = unsafe { (self.api.render)(self.context, params.as_mut_ptr()) };
+		if code < 0 {
+			Err(self.api.call_error("mpv_render_context_render", code))
+		} else {
+			Ok(())
+		}
+	}
+
+	/// Consume the pending frame WITHOUT drawing it.
+	///
+	/// render.h's SKIP_RENDERING: the frame still counts as rendered (so
+	/// [Self::report_swap] is still required and `has_frame` stops repeating
+	/// it), but the software backend performs no colour conversion, no scaling
+	/// and touches no surface — the surface is not even required. That is the
+	/// point: throwing away a stale frame is otherwise a full 640-wide bilinear
+	/// scale of a frame nobody will look at.
+	pub(crate) fn skip(&self) -> Result<(), LibMpvError> {
+		let mut skip: c_int = 1;
+		let mut params = [
+			RenderParam {
+				kind: PARAM_SKIP_RENDERING,
+				data: std::ptr::from_mut(&mut skip).cast(),
+			},
+			RenderParam {
+				kind: PARAM_INVALID,
+				data: std::ptr::null_mut(),
+			},
+		];
+		// SAFETY: the context is live and used from its own thread; `params` is
+		// the documented terminator-ended array, and SKIP_RENDERING needs no
+		// surface parameters (render.h).
 		let code = unsafe { (self.api.render)(self.context, params.as_mut_ptr()) };
 		if code < 0 {
 			Err(self.api.call_error("mpv_render_context_render", code))

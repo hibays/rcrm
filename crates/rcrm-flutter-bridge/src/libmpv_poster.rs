@@ -133,7 +133,7 @@ fn attempt(
 	quality: u8,
 	job_deadline: Instant,
 ) -> Result<Option<Box<WebpBuf>>, LibMpvError> {
-	drain(render, surface)?;
+	drain(render)?;
 	let target = format!("{position:.3}");
 	let seek_started = Instant::now();
 	mpv.command(&["seek", &target, "absolute+exact"])?;
@@ -164,13 +164,17 @@ fn attempt(
 	}
 }
 
-/// Render and discard every frame the context is still holding.
-fn drain(render: &RenderContext<'_>, surface: &mut Surface) -> Result<(), LibMpvError> {
+/// Consume (without drawing) every frame the context is still holding.
+fn drain(render: &RenderContext<'_>) -> Result<(), LibMpvError> {
 	for _ in 0..MAX_DRAINED_FRAMES {
 		if !render.has_frame() {
 			return Ok(());
 		}
-		render.render(surface)?;
+		// Not drawn: this frame is the one still on screen from before the seek,
+		// and only its consumption matters (the next update then reports the
+		// frame the seek produced). Skipping the draw saves the software colour
+		// conversion + scale the SW backend would otherwise do per stale frame.
+		render.skip()?;
 		render.report_swap();
 	}
 	Ok(())
@@ -300,6 +304,29 @@ fn options(header_fields: &str) -> Vec<(&'static str, String)> {
 		// ending the file at its last frame.
 		("pause", "yes".to_string()),
 		("keep-open", "yes".to_string()),
+		// A poster needs ONE frame, not a playback buffer. These are the budgets
+		// the media_kit poster player had (PlayerFactory.poster(): 4 MiB + 4 MiB)
+		// and mpv's own defaults are 150 MiB forward + 50 MiB back, PER CLIENT —
+		// on a phone that is the difference between a poster and the whole app
+		// being killed for memory, which is exactly what the small budget in
+		// PlayerFactory exists to prevent. Fixed for every platform: a 150 MiB
+		// read-ahead buys a single frame nothing.
+		("demuxer-max-bytes", "4M".to_string()),
+		("demuxer-max-back-bytes", "4M".to_string()),
+		// Zero plaintext on disk (the project rule). media_kit hardcodes
+		// cache-on-disk=yes and PlayerFactory has to override it; mpv's own
+		// default is no, and saying it here keeps that true if a default flips.
+		("cache-on-disk", "no".to_string()),
+		// loadfile and mpv_terminate_destroy are blocking calls that no stage
+		// deadline below can interrupt, and mpv's default network timeout is
+		// 60 s (media_kit used 5 s). A stuck fetch must not outlive the job.
+		("network-timeout", "5".to_string()),
+		// Software decode (hwdec is impossible on a software render surface)
+		// frame-threads into one full frame buffer per thread plus the DPB, so
+		// mpv's auto thread count multiplies a 4K frame (12 MB at 10 bit) by the
+		// core count. Four threads halve that on an 8-core phone and still
+		// decode a long-GOP seek from its keyframe inside FRAME_TIMEOUT.
+		("vd-lavc-threads", "4".to_string()),
 		// No user configuration, terminal, OSD or key bindings: a poster must
 		// render the same on a user's machine as in a test.
 		("config", "no".to_string()),
