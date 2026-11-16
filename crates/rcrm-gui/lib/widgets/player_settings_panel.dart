@@ -12,6 +12,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../config/theme.dart';
+import '../utils/keep_screen_on.dart';
 import '../utils/player_orientation.dart';
 
 /// One read-only fact about the media that is playing, as the player itself
@@ -39,6 +40,20 @@ class PlayerSettingsPanel extends StatelessWidget {
   /// kind of control this app does not ship.
   final bool showOrientation;
 
+  /// Whether the screen-awake row belongs on this screen at all.
+  ///
+  /// The caller passes true only for a MOBILE FULLSCREEN panel: the flag is
+  /// held by `services/screen_wakelock.dart`, a desktop player does not have
+  /// it, and a windowed player always follows playback regardless of the
+  /// switch. A control that cannot act is not shown.
+  final bool showKeepScreenOn;
+
+  /// The stored "Keep Screen On" choice. It holds a PLAYING fullscreen video
+  /// (`utils/keep_screen_on.dart`); a paused one is left to the system
+  /// timeout.
+  final bool keepScreenOn;
+  final ValueChanged<bool> onKeepScreenOnChanged;
+
   /// What is playing, from `PlayerState`. Empty is a normal answer: it means
   /// the player has not reported anything yet, not that the file is unusual.
   final List<PlayerMediaFact> facts;
@@ -51,7 +66,10 @@ class PlayerSettingsPanel extends StatelessWidget {
     required this.orientation,
     required this.onOrientationChanged,
     required this.onDismiss,
+    required this.keepScreenOn,
+    required this.onKeepScreenOnChanged,
     this.showOrientation = false,
+    this.showKeepScreenOn = false,
     this.facts = const [],
     this.showShortcuts = false,
   });
@@ -124,6 +142,10 @@ class PlayerSettingsPanel extends StatelessWidget {
                           const SizedBox(height: 10),
                           _lockSegments(context),
                         ],
+                      ],
+                      if (showKeepScreenOn) ...[
+                        const SizedBox(height: 18),
+                        _keepScreenOnRow(),
                       ],
                       if (facts.isNotEmpty) ...[
                         const SizedBox(height: 22),
@@ -226,6 +248,51 @@ class PlayerSettingsPanel extends StatelessWidget {
       ),
     );
   }
+
+  /// The screen-awake switch. A switch rather than a pair of segments because
+  /// it is one boolean with one meaning, and its note is the part that says
+  /// WHEN it acts (fullscreen) — the panel cannot rely on the word "screen" to
+  /// carry that.
+  Widget _keepScreenOnRow() => Material(
+    // The panel surface is a decorated Container, and a ListTile paints its ink
+    // on the nearest Material ancestor; without this one the switch's splash
+    // would be hidden behind that decoration (the framework asserts on it in
+    // debug). Transparent, because the panel's own surface is the background.
+    type: MaterialType.transparency,
+    child: SwitchListTile(
+      value: keepScreenOn,
+      onChanged: onKeepScreenOnChanged,
+      // The panel is 400dp wide with its own 24dp padding; a tile inset would
+      // put this row's text on a different left edge from every other row here.
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      title: Text(
+        'Keep Screen On',
+        style: TextStyle(
+          color: RCrmColors.playerText,
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      subtitle: Text(
+        keepScreenOnNote,
+        style: TextStyle(
+          color: RCrmColors.playerTextSecondary,
+          fontSize: 11,
+          height: 1.4,
+        ),
+      ),
+      // The panel keeps the player's fixed dark treatment in both appearances
+      // (docs/DESIGN.md), so the switch takes the player tokens rather than the
+      // ListTile theme's ink -- which is the PAGE's ink and would be unreadable
+      // here in Day.
+      activeThumbColor: RCrmColors.darkPitch,
+      activeTrackColor: _accent,
+      inactiveThumbColor: RCrmColors.playerTextFaint,
+      inactiveTrackColor: RCrmColors.playerText.withValues(alpha: 0.12),
+    ),
+  );
 
   /// The direction the lock means, shown only while the lock is the policy.
   Widget _lockSegments(BuildContext context) {

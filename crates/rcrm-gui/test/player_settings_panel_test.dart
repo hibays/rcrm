@@ -8,6 +8,7 @@
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:rcrm_gui/utils/keep_screen_on.dart';
 import 'package:rcrm_gui/utils/player_orientation.dart';
 import 'package:rcrm_gui/widgets/player_settings_panel.dart';
 
@@ -19,6 +20,9 @@ Widget _panel({
   PlayerOrientation orientation = defaultOrientation,
   ValueChanged<PlayerOrientation>? onOrientationChanged,
   bool showOrientation = false,
+  bool showKeepScreenOn = false,
+  bool keepScreenOn = true,
+  ValueChanged<bool>? onKeepScreenOnChanged,
   List<PlayerMediaFact> facts = const [],
   bool showShortcuts = false,
   VoidCallback? onDismiss,
@@ -28,6 +32,9 @@ Widget _panel({
     onOrientationChanged: onOrientationChanged ?? (_) {},
     onDismiss: onDismiss ?? () {},
     showOrientation: showOrientation,
+    showKeepScreenOn: showKeepScreenOn,
+    keepScreenOn: keepScreenOn,
+    onKeepScreenOnChanged: onKeepScreenOnChanged ?? (_) {},
     facts: facts,
     showShortcuts: showShortcuts,
   ),
@@ -92,6 +99,40 @@ void main() {
       findsOneWidget,
     );
     expect(find.text(orientationNote(OrientationPolicy.fill)), findsNothing);
+  });
+
+  testWidgets('the screen-awake row appears only when the caller offers it', (
+    tester,
+  ) async {
+    // The caller passes true only for a mobile fullscreen panel: the flag is
+    // the platform's (services/screen_wakelock.dart), and a desktop or
+    // windowed player would get a control that could not act.
+    await tester.pumpWidget(_panel(showKeepScreenOn: false));
+    await tester.pumpAndSettle();
+    expect(find.text('Keep Screen On'), findsNothing);
+
+    bool? picked;
+    await tester.pumpWidget(
+      _panel(
+        showKeepScreenOn: true,
+        keepScreenOn: true,
+        onKeepScreenOnChanged: (v) => picked = v,
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Keep Screen On'), findsOneWidget);
+    // The note is the half that says WHEN the switch acts: playing only,
+    // with the paused state handed back to the system timeout.
+    expect(find.text(keepScreenOnNote), findsOneWidget);
+    expect(keepScreenOnNote, contains('playing'));
+    expect(keepScreenOnNote, contains('paused'));
+    expect(
+      tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value,
+      isTrue,
+    );
+
+    await tester.tap(find.text('Keep Screen On'));
+    expect(picked, isFalse);
   });
 
   testWidgets('the lock reveals its direction, and neither is a no-op', (
@@ -192,9 +233,10 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
       _panel(
-        // The tallest the panel ever gets: both mobile rows, the lock's
-        // direction row, and a long fact list.
+        // The tallest the panel ever gets: the mobile rows (policy, its
+        // lock direction, screen awake), and a long fact list.
         showOrientation: true,
+        showKeepScreenOn: true,
         orientation: PlayerOrientation.landscape,
         showShortcuts: true,
         facts: [

@@ -99,6 +99,8 @@ class SettingsService {
   static const _keyVideoJumpHistory = 'video_jump_history_limit'; // int, 1..50
   static const _keyAllowScreenshots = 'allow_screenshots'; // bool, mobile only
   static const _keyUseSystemVolume = 'use_system_volume'; // bool, mobile only
+  static const _keyPlayerKeepScreenOn =
+      'player_keep_screen_on'; // bool, mobile fullscreen player
 
   SharedPreferences? _prefs;
 
@@ -401,6 +403,21 @@ class SettingsService {
   Future<void> setPlaybackMode(String mode) async {
     final p = await prefs;
     await p.setString(_keyPlaybackMode, mode);
+  }
+
+  // ── Screen awake (mobile fullscreen) ─────────────────────
+  // Mobile only (`services/screen_wakelock.dart`), and its effect is scoped to
+  // the fullscreen player (`utils/keep_screen_on.dart`). Default: ON — a video
+  // that dims while it is being watched is the behaviour this setting exists to
+  // stop, and the player is the only thing that acts on it.
+  Future<bool> getPlayerKeepScreenOn() async {
+    final p = await prefs;
+    return p.getBool(_keyPlayerKeepScreenOn) ?? true;
+  }
+
+  Future<void> setPlayerKeepScreenOn(bool enabled) async {
+    final p = await prefs;
+    await p.setBool(_keyPlayerKeepScreenOn, enabled);
   }
 
   // ── Cast auto-next ────────────────────────────────────────

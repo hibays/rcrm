@@ -69,6 +69,14 @@ class SettingsState {
   /// `autoRotate` boolean, whose switch promised the rotation-lock override and
   /// could not deliver it.
   final PlayerOrientation playerOrientation;
+
+  /// Whether a PLAYING fullscreen video keeps the screen awake
+  /// (`utils/keep_screen_on.dart`). Mobile only and **on by default** — a
+  /// video that dims while it is being watched is the behaviour the setting
+  /// exists to stop; a paused one is left to the system timeout. The platform
+  /// is what holds the flag (`services/screen_wakelock.dart`); this is only
+  /// the choice.
+  final bool playerKeepScreenOn;
   final bool castAutoNext;
 
   /// Whether the system may capture the app's pixels — screenshots, screen
@@ -107,6 +115,7 @@ class SettingsState {
     this.pipEnabled = true,
     this.playbackMode = 'pauseAfter',
     this.playerOrientation = defaultOrientation,
+    this.playerKeepScreenOn = true,
     this.castAutoNext = true,
     this.pipSize = 'normal',
     this.videoJumpHistoryLimit = kVideoJumpHistoryDefault,
@@ -131,6 +140,7 @@ class SettingsState {
     bool? pipEnabled,
     String? playbackMode,
     PlayerOrientation? playerOrientation,
+    bool? playerKeepScreenOn,
     bool? castAutoNext,
     String? pipSize,
     int? videoJumpHistoryLimit,
@@ -154,6 +164,7 @@ class SettingsState {
       playbackMode: playbackMode ?? this.playbackMode,
       pipEnabled: pipEnabled ?? this.pipEnabled,
       playerOrientation: playerOrientation ?? this.playerOrientation,
+      playerKeepScreenOn: playerKeepScreenOn ?? this.playerKeepScreenOn,
       castAutoNext: castAutoNext ?? this.castAutoNext,
       pipSize: pipSize ?? this.pipSize,
       videoJumpHistoryLimit:
@@ -204,6 +215,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
     final pipSize = await _service.getPipSize();
     final playbackMode = await _service.getPlaybackMode();
     final playerOrientation = await _service.getPlayerOrientation();
+    final playerKeepScreenOn = await _service.getPlayerKeepScreenOn();
     final castAutoNext = await _service.getCastAutoNext();
     final videoJumpHistoryLimit = await _service.getVideoJumpHistoryLimit();
     final allowScreenshots = await _service.getAllowScreenshots();
@@ -257,6 +269,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
       pipEnabled: pipEnabled,
       playbackMode: playbackMode,
       playerOrientation: playerOrientation,
+      playerKeepScreenOn: playerKeepScreenOn,
       castAutoNext: castAutoNext,
       pipSize: pipSize,
       videoJumpHistoryLimit: videoJumpHistoryLimit,
@@ -395,6 +408,17 @@ class SettingsNotifier extends Notifier<SettingsState> {
   Future<void> setPlayerOrientation(PlayerOrientation mode) async {
     state = state.copyWith(playerOrientation: mode);
     await _service.setPlayerOrientation(mode);
+  }
+
+  /// The fullscreen player's screen-awake switch — its settings panel, mobile
+  /// only.
+  ///
+  /// The player listens to this value (`video_player_screen.build`), so this
+  /// only remembers the choice; `_applyKeepScreenOn` is what the platform
+  /// hears.
+  Future<void> setPlayerKeepScreenOn(bool enabled) async {
+    state = state.copyWith(playerKeepScreenOn: enabled);
+    await _service.setPlayerKeepScreenOn(enabled);
   }
 
   Future<void> setCastAutoNext(bool enabled) async {

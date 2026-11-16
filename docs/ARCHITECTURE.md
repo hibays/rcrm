@@ -441,6 +441,50 @@ The old `auto_rotate` boolean is still READ once (`getPlayerOrientation`): `true
 meant `device` (and silently got `system`), `false` meant `fit`.
 ```
 
+### Screen Awake in the Fullscreen Player (mobile)
+
+```
+settings panel → settings_provider.playerKeepScreenOn (default ON)
+  → video_player_screen._applyKeepScreenOn(), called when fullscreen changes,
+    when the switch changes, when playback starts/stops, when the player is
+    created, and on the way out
+  → services/screen_wakelock.dart → wakelock_plus
+  → FLAG_KEEP_SCREEN_ON (Android window) / isIdleTimerDisabled (iOS)
+
+The rule is pure and tested (utils/keep_screen_on.dart):
+  mobile && playing && (!fullscreen || enabled)
+
+The switch is shown only while the player is fullscreen, and it governs only a
+PLAYING fullscreen video: ON holds the screen while the file rolls, OFF hands it
+to the system timeout even then. A paused video is never held -- once the viewer
+stops, the system's own timeout is the right answer -- and a windowed player
+keeps the pre-existing behaviour (awake while playing, asleep when paused).
+Desktop is not part of this policy and is not offered the row.
+```
+
+The player's own `Video` widgets pass `wakelock: false` on mobile, and the
+video card's preview passes it everywhere, so `screen_wakelock` is the ONE
+writer of the flag. The engine cannot be left in charge: its only public
+control, `Video(wakelock:)`, follows `playing` (on while the file rolls, off on
+pause and on dispose), so it cannot honour a switch that turns a PLAYING
+fullscreen video off; it is read only in `initState`, so a live switch could not
+change it without remounting the picture. Worse, its wakelock is held through a
+PROCESS-WIDE static count whose zero calls `WakelockPlus.disable()` -- a preview
+clip ending beside the player would clear this service's hold while it is still
+playing. The other `Video`s in the app (the cast receiver, a live photo) keep
+the engine's behaviour because they live on their own routes/tabs and are not
+mounted beside a player; any future one that can be must opt out too.
+
+The package is the same `wakelock_plus` that `media_kit_video` already ships;
+declaring it in `pubspec.yaml` is only because this file imports it directly.
+It is the one platform flag with one owner, not a second mechanism.
+
+The flag is turned off at the START of an exit (`_restoreExitChrome`, beside
+`_releaseOrientation`), so the library does not arrive under a fullscreen
+player's lock. A jump (`_go`) deliberately does not release it: the
+replacement player applies its own answer, exactly as the orientation hand-over
+works -- and a switch to a video with the setting off does turn it off.
+
 ### Thumbnail Pipeline
 
 > The on-disk `ThumbCache` (mobile by default) is **managed, not evicted**:

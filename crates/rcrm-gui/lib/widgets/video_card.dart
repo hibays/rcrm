@@ -245,7 +245,16 @@ class _VideoCardState extends State<VideoCard> {
       return Stack(
         fit: StackFit.expand,
         children: [
-          Video(controller: _previewController!, fit: BoxFit.cover),
+          // A preview clip is a few seconds under a finger or a cursor, and
+          // the engine's wakelock is a PROCESS-WIDE count: a preview that ends
+          // calls `WakelockPlus.disable()` once the count reaches zero, which
+          // would clear the player's own hold (services/screen_wakelock.dart).
+          // The card never needs the screen held awake.
+          Video(
+            controller: _previewController!,
+            fit: BoxFit.cover,
+            wakelock: false,
+          ),
           Positioned.fill(
             child: FractionallySizedBox(
               alignment: Alignment.topCenter,

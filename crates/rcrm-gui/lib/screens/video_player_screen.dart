@@ -21,6 +21,7 @@ import '../config/theme.dart';
 import '../services/net.dart';
 import '../services/player_factory.dart';
 import '../services/screen_orientation.dart';
+import '../services/screen_wakelock.dart';
 import '../services/system_volume.dart';
 import '../providers/library_provider.dart';
 import '../providers/settings_provider.dart';
@@ -38,6 +39,7 @@ import '../widgets/finger_preview_listener.dart';
 import '../widgets/player_settings_panel.dart';
 import '../widgets/episode_picker_panel.dart';
 import '../utils/format.dart';
+import '../utils/keep_screen_on.dart';
 import '../utils/pan_lock.dart';
 import '../utils/playback_open_guard.dart';
 import '../utils/player_eof.dart';
@@ -678,6 +680,12 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       // expensive native init is behind us; otherwise create it here as
       // before. Either way exactly one player, owned by this screen.
       _ensurePlayer();
+      if (_isMobile) {
+        // The player was just created (or adopted), so its `playing` value is
+        // known and the screen-awake flag can be settled before the first frame
+        // of a fullscreen session.
+        _applyKeepScreenOn();
+      }
       if (_isMobile && fullscreen) {
         // Apply NOW. A player that STARTS fullscreen (a route step with
         // `startFullscreen: true`) has no `_setFullscreen` call to apply its
@@ -741,7 +749,12 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     });
     _playingSub = player.stream.playing.listen((isPlaying) {
       if (isPlaying) hasBeenPlaying = true;
-      if (mounted) _playing.value = isPlaying;
+      if (!mounted) return;
+      _playing.value = isPlaying;
+      // A WINDOWED player keeps the screen on while the file rolls, exactly as
+      // it did before the fullscreen setting existed; a fullscreen one is
+      // governed by the setting (`utils/keep_screen_on.dart`).
+      _applyKeepScreenOn();
     });
     _volumeSub = player.stream.volume.listen(_onPlayerGain);
     _bufferingSub = player.stream.buffering.listen((buffering) {
@@ -1028,6 +1041,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         on ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
       );
       _applyOrientation();
+      _applyKeepScreenOn();
     } else {
       if (on || !_globalImmersive) {
         windowManager.setFullScreen(on);
@@ -1082,6 +1096,47 @@ class _State extends ConsumerState<VideoPlayerScreen> {
             _orientation.followThrough(ScreenOrientation.followDevice, follow),
       ),
     );
+  }
+
+  /// The mobile player's screen-awake policy, carried out.
+  ///
+  /// The rule is pure (`utils/keep_screen_on.dart`, with tests) and the
+  /// platform write is `services/screen_wakelock.dart`; this method is the one
+  /// caller, on every event that can change the answer: entering or leaving
+  /// fullscreen, the panel's switch, playback starting or stopping (a WINDOWED
+  /// player still follows the file), the player being created, and leaving.
+  void _applyKeepScreenOn() {
+    if (!_isMobile) return;
+    // The exit's release must not be undone by a stream or panel event that
+    // lands while the route is leaving: a pop keeps the player's streams
+    // subscribed until `dispose`, and the library must not arrive under this
+    // screen's flag. A jump is the incoming screen's answer, not this one's
+    // (`_applyOrientation` refuses for the same two reasons).
+    if (_disposed || _navigating || _isRoutePopping) return;
+    unawaited(
+      ScreenWakelock.setAwake(
+        shouldKeepScreenOn(
+          mobile: _isMobile,
+          fullscreen: fullscreen,
+          enabled: ref.read(uiSettingsProvider).playerKeepScreenOn,
+          playing: _playing.value,
+        ),
+      ),
+    );
+  }
+
+  /// Hands the screen back to the system's timeout on the way out — the same
+  /// moment the orientation and system chrome are restored, so a fullscreen
+  /// session that ends does not leave a flag on behind it.
+  ///
+  /// A JUMP is deliberately not an exit: `_go` never calls this, and
+  /// `dispose()` only restores the chrome when it is not navigating. The
+  /// replacement player applies its own answer (a switch to a video with the
+  /// setting off must turn the flag off), exactly as the orientation hand-over
+  /// works.
+  void _releaseKeepScreenOn() {
+    if (!_isMobile) return;
+    unawaited(ScreenWakelock.setAwake(false));
   }
 
   /// The video's own aspect: true for a wide picture, false for a tall one, and
@@ -1841,6 +1896,11 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     if (_isMobile) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
       _releaseOrientation();
+      // The player is leaving, so the screen may sleep with the system again.
+      // Like the orientation release, this runs at the START of the exit so the
+      // flag is already off while the library is arriving, and the disposal
+      // path calls it too (idempotent).
+      _releaseKeepScreenOn();
     } else if (fullscreen) {
       if (!_globalImmersive) {
         windowManager.setFullScreen(false);
@@ -1909,6 +1969,15 @@ class _State extends ConsumerState<VideoPlayerScreen> {
 
   @override
   Widget build(BuildContext c) {
+    // The flag follows the stored choice even when it changes outside this
+    // panel's switch. The case that matters is launch: `SettingsNotifier.load`
+    // runs unawaited by the shell, so a player opened before it finishes would
+    // otherwise keep the default ON while the stored answer is OFF for the
+    // rest of the session.
+    ref.listen(
+      uiSettingsProvider.select((s) => s.playerKeepScreenOn),
+      (_, _) => _applyKeepScreenOn(),
+    );
     final allVideos = ref.watch(videosListProvider);
     final scanGen = ref.watch(scanStateProvider).scanGen;
     // The jump stack is an input to the Related list — its entries are excluded
@@ -1986,6 +2055,12 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                                   controller: vc!,
                                   fit: BoxFit.contain,
                                   controls: NoVideoControls,
+                                  // Mobile owns this flag itself: the
+                                  // engine's wakelock follows `playing` and
+                                  // is read at mount, so left on it would hold
+                                  // a fullscreen video the setting has turned
+                                  // OFF (see services/screen_wakelock.dart).
+                                  wakelock: !_isMobile,
                                 )
                               : const SizedBox(),
                         ),
@@ -2263,6 +2338,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                         controller: vc!,
                         fit: BoxFit.contain,
                         controls: NoVideoControls,
+                        // Same one-owner rule as the fullscreen surface.
+                        wakelock: !_isMobile,
                       )
                     : const Center(child: CircularProgressIndicator()),
                 if (!_showControls && p != null && !_seeking)
@@ -2694,6 +2771,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                   controller: vc!,
                   fit: BoxFit.contain,
                   controls: NoVideoControls,
+                  // Same one-owner rule as the fullscreen surface.
+                  wakelock: !_isMobile,
                 ),
               // Close button
               Positioned(
@@ -2890,11 +2969,14 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     return Positioned.fill(
       child: PlayerSettingsPanel(
         facts: _playbackInfo(),
-        // Both rows are about what THIS platform can do: orientation is mobile
+        // Every row is about what THIS platform can do: orientation is mobile
         // only (both mobile platforms, each with its own way of following the
-        // phone — see `services/screen_orientation.dart`), the key map is desktop
-        // only, and a control that cannot act is not shown at all.
+        // phone — see `services/screen_orientation.dart`), the key map is
+        // desktop only, and the screen-awake switch is FULLSCREEN only, because
+        // that is the only state it governs (a windowed player always follows
+        // playback). A control that cannot act is not shown at all.
         showOrientation: _isMobile,
+        showKeepScreenOn: _isMobile && fullscreen,
         showShortcuts: !_isMobile,
         orientation: settings.playerOrientation,
         onOrientationChanged: (o) {
@@ -2902,6 +2984,13 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           // The strategy is a property of the screen the viewer is looking at,
           // so it applies now rather than at the next fullscreen.
           _applyOrientation();
+        },
+        keepScreenOn: settings.playerKeepScreenOn,
+        onKeepScreenOnChanged: (on) {
+          ref.read(uiSettingsProvider.notifier).setPlayerKeepScreenOn(on);
+          // The screen listens to this value (see `build`), so the new answer
+          // is applied by that one path -- including switching OFF while
+          // fullscreen, which hands the screen back to the system timeout.
         },
         onDismiss: () {
           setState(() => _showSettings = false);
