@@ -282,9 +282,8 @@ void main() {
   // ═══════════════════════════════════════════════════════════
   group('poster URL encoding', () {
     test('URL encoding preserves @ in auth URL', () {
-      final u = Uri.parse(
-        'http://user:pass@127.0.0.1:8080/test.mp4',
-      ).toString();
+      final u = Uri.parse('http://user:pass@127.0.0.1:8080/test.mp4')
+          .toString();
       expect(u.contains('@'), isTrue);
     });
   });

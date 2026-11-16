@@ -150,7 +150,9 @@ class _DoctorPanelState extends ConsumerState<DoctorPanel> {
               hasResult
                   ? (_allOk ? Icons.check_circle : Icons.warning)
                   : Icons.health_and_safety,
-              color: hasResult ? (_allOk ? RCrmColors.ok : RCrmColors.warn) : null,
+              color: hasResult
+                  ? (_allOk ? RCrmColors.ok : RCrmColors.warn)
+                  : null,
             ),
             title: const Text('Library Health Check'),
             subtitle: hasResult
@@ -225,7 +227,9 @@ class _DoctorPanelState extends ConsumerState<DoctorPanel> {
                           TextSpan(
                             text: c.detail,
                             style: TextStyle(
-                              color: c.ok ? RCrmColors.textSecondary : RCrmColors.bad,
+                              color: c.ok
+                                  ? RCrmColors.textSecondary
+                                  : RCrmColors.bad,
                               fontSize: 12,
                             ),
                           ),

@@ -206,7 +206,6 @@ void main() {
     });
   });
 
-
   group('the screen session', () {
     test('the record is the request that went out', () {
       final s = PlayerOrientationSession(lockedShape: false);
@@ -220,12 +219,21 @@ void main() {
     test('no size is never news, and the shape in force is not news', () {
       final s = PlayerOrientationSession();
       s.record(requestFor(PlayerOrientation.fill, landscapeVideo: false));
-      expect(s.videoShapeIsNews(PlayerOrientation.fill, null), isFalse,
-          reason: 'between files');
-      expect(s.videoShapeIsNews(PlayerOrientation.fill, false), isFalse,
-          reason: 'already held');
-      expect(s.videoShapeIsNews(PlayerOrientation.fill, true), isTrue,
-          reason: 'a different shape');
+      expect(
+        s.videoShapeIsNews(PlayerOrientation.fill, null),
+        isFalse,
+        reason: 'between files',
+      );
+      expect(
+        s.videoShapeIsNews(PlayerOrientation.fill, false),
+        isFalse,
+        reason: 'already held',
+      );
+      expect(
+        s.videoShapeIsNews(PlayerOrientation.fill, true),
+        isTrue,
+        reason: 'a different shape',
+      );
     });
 
     test('only fit reads the video, so only fit treats a shape as news', () {
@@ -362,12 +370,17 @@ void main() {
 
   group('applying a request', () {
     /// Records the order the two platform calls were made in.
-    ({List<String> order, OrientationMaskWriter mask, DeviceFollowWriter follow})
+    ({
+      List<String> order,
+      OrientationMaskWriter mask,
+      DeviceFollowWriter follow,
+    })
     recorder() {
       final order = <String>[];
       return (
         order: order,
-        mask: (List<DeviceOrientation> o) async => order.add('mask:${o.length}'),
+        mask: (List<DeviceOrientation> o) async =>
+            order.add('mask:${o.length}'),
         follow: (bool f) async {
           order.add('follow:$f');
           return true;
@@ -392,18 +405,21 @@ void main() {
       expect(r.order, ['mask:4', 'follow:true']);
     });
 
-    test('and both parts are always sent, even for the framework-only ones', () async {
-      // `follow:false` is not noise: it is what stops the iOS half from forcing a
-      // geometry after the user picked another strategy.
-      final r = recorder();
-      await applyOrientationRequest(
-        requestFor(PlayerOrientation.landscape),
-        writeMask: r.mask,
-        writeFollow: r.follow,
-        platform: OrientationPlatform.ios,
-      );
-      expect(r.order, ['mask:2', 'follow:false']);
-    });
+    test(
+      'and both parts are always sent, even for the framework-only ones',
+      () async {
+        // `follow:false` is not noise: it is what stops the iOS half from forcing a
+        // geometry after the user picked another strategy.
+        final r = recorder();
+        await applyOrientationRequest(
+          requestFor(PlayerOrientation.landscape),
+          writeMask: r.mask,
+          writeFollow: r.follow,
+          platform: OrientationPlatform.ios,
+        );
+        expect(r.order, ['mask:2', 'follow:false']);
+      },
+    );
 
     test('on Android a Follow request is the sensor alone', () async {
       // The all-four mask decodes to FULL_USER on Android -- the lock-RESPECTING
@@ -524,14 +540,8 @@ void main() {
     test('the old auto_rotate boolean keeps its meaning', () {
       // `true` was asking for exactly what `device` now delivers (and silently
       // got `system`); `false` was the fit-the-video default this app shipped.
-      expect(
-        orientationFromLegacyAutoRotate(true),
-        PlayerOrientation.device,
-      );
-      expect(
-        orientationFromLegacyAutoRotate(false),
-        PlayerOrientation.fill,
-      );
+      expect(orientationFromLegacyAutoRotate(true), PlayerOrientation.device);
+      expect(orientationFromLegacyAutoRotate(false), PlayerOrientation.fill);
     });
 
     test('a stored choice is read, and the legacy bool is the fallback', () async {
@@ -547,10 +557,16 @@ void main() {
       );
 
       SharedPreferences.setMockInitialValues({'auto_rotate': true});
-      expect(await SettingsService().getPlayerOrientation(), PlayerOrientation.device);
+      expect(
+        await SettingsService().getPlayerOrientation(),
+        PlayerOrientation.device,
+      );
 
       SharedPreferences.setMockInitialValues({'auto_rotate': false});
-      expect(await SettingsService().getPlayerOrientation(), PlayerOrientation.fill);
+      expect(
+        await SettingsService().getPlayerOrientation(),
+        PlayerOrientation.fill,
+      );
 
       SharedPreferences.setMockInitialValues({
         'auto_rotate': true,
@@ -563,8 +579,13 @@ void main() {
       );
 
       // An unknown stored value falls back rather than throwing.
-      SharedPreferences.setMockInitialValues({'player_orientation': 'sideways'});
-      expect(await SettingsService().getPlayerOrientation(), defaultOrientation);
+      SharedPreferences.setMockInitialValues({
+        'player_orientation': 'sideways',
+      });
+      expect(
+        await SettingsService().getPlayerOrientation(),
+        defaultOrientation,
+      );
 
       // And a write round-trips.
       SharedPreferences.setMockInitialValues({});
@@ -573,7 +594,10 @@ void main() {
         (await SharedPreferences.getInstance()).getString('player_orientation'),
         'landscape',
       );
-      expect(await SettingsService().getPlayerOrientation(), PlayerOrientation.landscape);
+      expect(
+        await SettingsService().getPlayerOrientation(),
+        PlayerOrientation.landscape,
+      );
     });
 
     test('loading brings it into the settings the app reads', () async {
@@ -583,7 +607,10 @@ void main() {
 
       await c.read(uiSettingsProvider.notifier).load();
 
-      expect(c.read(uiSettingsProvider).playerOrientation, PlayerOrientation.device);
+      expect(
+        c.read(uiSettingsProvider).playerOrientation,
+        PlayerOrientation.device,
+      );
     });
   });
 
@@ -599,7 +626,8 @@ void main() {
         expect(
           note,
           isNot(contains('iOS')),
-          reason: '${p.label}: a caveat would be a promise this app cannot keep',
+          reason:
+              '${p.label}: a caveat would be a promise this app cannot keep',
         );
       }
       expect(

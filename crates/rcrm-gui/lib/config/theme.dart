@@ -298,13 +298,9 @@ abstract final class RCrmColors {
     // The notice banner inverts in Day: the cream chip is invisible on the
     // cream canvas, so the chip becomes the deep amber and the ink becomes
     // white. Both read over the camera and on the canvas.
-    _noticeSurface = dark
-        ? const Color(0xFFFFF3CD)
-        : const Color(0xFF8A5A00);
+    _noticeSurface = dark ? const Color(0xFFFFF3CD) : const Color(0xFF8A5A00);
     _noticeInk = dark ? const Color(0xFF806415) : const Color(0xFFFFFFFF);
-    _noticeBorder = dark
-        ? const Color(0xFFE6C463)
-        : const Color(0xFF6B4600);
+    _noticeBorder = dark ? const Color(0xFFE6C463) : const Color(0xFF6B4600);
   }
 }
 
@@ -325,10 +321,8 @@ abstract final class RCrmSpacing {
 /// Theme builder — the app's single source of ThemeData.
 abstract final class RCrmTheme {
   /// The original Night world. Kept as the test fixture for the whole suite.
-  static ThemeData get dark => build(
-    accent: RCrmAccent.marquee,
-    brightness: Brightness.dark,
-  );
+  static ThemeData get dark =>
+      build(accent: RCrmAccent.marquee, brightness: Brightness.dark);
 
   /// The effective accent: a preset's own colour, or the OS-supplied Material
   /// You primary when that swatch is active. Shared by ThemeData and the
@@ -386,27 +380,28 @@ abstract final class RCrmTheme {
       dividerColor: dim,
       hintColor: subtle,
       disabledColor: dark ? const Color(0x33FFFFFF) : const Color(0x33000000),
-      colorScheme: (dark
-              ? ColorScheme.dark(
-                  primary: primary,
-                  surface: ash,
-                  onSurface: ink,
-                )
-              : ColorScheme.light(
-                  primary: primary,
-                  surface: ash,
-                  onSurface: ink,
-                ))
-          .copyWith(
-        primary: primary,
-        onPrimary: onPrimary,
-        surface: ash,
-        onSurface: ink,
-        onSurfaceVariant: subtle,
-        // A border is a control boundary: it owes 3:1, which `dim` (1.35–1.55)
-        // never had. `faint` is 5.0 in Night and 4.9 in Day.
-        outline: faint,
-      ),
+      colorScheme:
+          (dark
+                  ? ColorScheme.dark(
+                      primary: primary,
+                      surface: ash,
+                      onSurface: ink,
+                    )
+                  : ColorScheme.light(
+                      primary: primary,
+                      surface: ash,
+                      onSurface: ink,
+                    ))
+              .copyWith(
+                primary: primary,
+                onPrimary: onPrimary,
+                surface: ash,
+                onSurface: ink,
+                onSurfaceVariant: subtle,
+                // A border is a control boundary: it owes 3:1, which `dim` (1.35–1.55)
+                // never had. `faint` is 5.0 in Night and 4.9 in Day.
+                outline: faint,
+              ),
       appBarTheme: AppBarTheme(
         backgroundColor: ash,
         foregroundColor: ink,
@@ -433,9 +428,8 @@ abstract final class RCrmTheme {
             (states) => states.contains(WidgetState.selected) ? primary : null,
           ),
           foregroundColor: WidgetStateProperty.resolveWith(
-            (states) => states.contains(WidgetState.selected)
-                ? onPrimary
-                : subtle,
+            (states) =>
+                states.contains(WidgetState.selected) ? onPrimary : subtle,
           ),
         ),
       ),

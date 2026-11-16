@@ -189,8 +189,7 @@ class StorageAccess {
   static Future<StorageAccessStatus> status() async {
     if (!supported) return StorageAccessStatus.unknown;
     try {
-      final Map<String, Object?>? reply =
-          await PlatformBridge.storageStatus();
+      final Map<String, Object?>? reply = await PlatformBridge.storageStatus();
       return StorageAccessStatus.fromPlatform(reply);
     } catch (_) {
       // MissingPluginException on a host without the native half, or a reply

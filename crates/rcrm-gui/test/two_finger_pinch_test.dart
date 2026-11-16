@@ -179,7 +179,8 @@ void main() {
     expect(
       pinching,
       isFalse,
-      reason: 'a two-finger trackpad SCROLL shares this event and belongs to '
+      reason:
+          'a two-finger trackpad SCROLL shares this event and belongs to '
           'the grid, not to the column count',
     );
     expect(starts, 0);

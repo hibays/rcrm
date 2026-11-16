@@ -84,10 +84,7 @@ void main() {
     final c = _container(columns: 3);
     await _pump(tester, c);
 
-    expect(
-      tester.widget<ImageGrid>(find.byType(ImageGrid)).crossAxisCount,
-      3,
-    );
+    expect(tester.widget<ImageGrid>(find.byType(ImageGrid)).crossAxisCount, 3);
 
     // Two fingers 100dp apart, spread to 200dp: scale 2, so 3 columns -> 2.
     final a = await tester.createGesture(pointer: 1);

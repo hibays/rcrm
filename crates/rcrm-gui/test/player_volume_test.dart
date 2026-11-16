@@ -34,7 +34,8 @@ SystemVolumeReading phone({
 );
 
 /// What the device answers when it is currently on [index].
-SystemVolumeReading onStep(int index) => phone(index: index, lastAudible: index);
+SystemVolumeReading onStep(int index) =>
+    phone(index: index, lastAudible: index);
 
 void main() {
   group('seeding a session', () {
@@ -302,7 +303,9 @@ void main() {
       );
       // `lastAudible: 0` in the READING, so this can only pass if the session
       // preserved its own memory rather than taking the reading's.
-      final muted = bound.reported(phone(index: 8, muted: true, lastAudible: 0));
+      final muted = bound.reported(
+        phone(index: 8, muted: true, lastAudible: 0),
+      );
       expect(muted.level, 0);
       expect(muted.lastAudible, closeTo(53.33, 0.01));
     });

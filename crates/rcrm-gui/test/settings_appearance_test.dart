@@ -31,36 +31,42 @@ void main() {
     // The palette is a process-wide snapshot; leave it as a fresh Night app
     // would find it so other tests in this file cannot inherit a Day ramp.
     RCrmColors.setSystemColors();
-    RCrmColors.apply(
-      accent: RCrmAccent.marquee,
-      brightness: Brightness.dark,
-    );
+    RCrmColors.apply(accent: RCrmAccent.marquee, brightness: Brightness.dark);
   });
 
-  test('appearance mode round-trips, default SYSTEM, unknown falls back', () async {
-    final s = SettingsService();
-    expect(await s.getAppearanceMode(), 'system');
+  test(
+    'appearance mode round-trips, default SYSTEM, unknown falls back',
+    () async {
+      final s = SettingsService();
+      expect(await s.getAppearanceMode(), 'system');
 
-    for (final mode in ['day', 'night', 'system']) {
-      await s.setAppearanceMode(mode);
-      expect(await s.getAppearanceMode(), mode);
-    }
-    await s.setAppearanceMode('garbage');
-    expect(await s.getAppearanceMode(), 'system',
-        reason: 'a preference file this build did not write cannot invent a mode');
-  });
+      for (final mode in ['day', 'night', 'system']) {
+        await s.setAppearanceMode(mode);
+        expect(await s.getAppearanceMode(), mode);
+      }
+      await s.setAppearanceMode('garbage');
+      expect(
+        await s.getAppearanceMode(),
+        'system',
+        reason:
+            'a preference file this build did not write cannot invent a mode',
+      );
+    },
+  );
 
-  test('accent round-trips, default Marquee, unknown resolves at the consumer',
-      () async {
-    final s = SettingsService();
-    expect(await s.getAppearanceAccent(), 'marquee');
+  test(
+    'accent round-trips, default Marquee, unknown resolves at the consumer',
+    () async {
+      final s = SettingsService();
+      expect(await s.getAppearanceAccent(), 'marquee');
 
-    await s.setAppearanceAccent('neon');
-    expect(await s.getAppearanceAccent(), 'neon');
-    expect(RCrmAccent.fromKey('neon'), RCrmAccent.neon);
-    expect(RCrmAccent.fromKey('garbage'), RCrmAccent.marquee);
-    expect(RCrmAccent.fromKey(null), RCrmAccent.marquee);
-  });
+      await s.setAppearanceAccent('neon');
+      expect(await s.getAppearanceAccent(), 'neon');
+      expect(RCrmAccent.fromKey('neon'), RCrmAccent.neon);
+      expect(RCrmAccent.fromKey('garbage'), RCrmAccent.marquee);
+      expect(RCrmAccent.fromKey(null), RCrmAccent.marquee);
+    },
+  );
 
   test('six presets, distinct stable keys (incl. Material You)', () {
     expect(RCrmAccent.values, hasLength(6));
@@ -69,8 +75,7 @@ void main() {
     expect(RCrmAccent.values.map((a) => a.light).toSet(), hasLength(6));
   });
 
-  test('Material You uses the OS colour, and hides itself when there is none',
-      () {
+  test('Material You uses the OS colour, and hides itself when there is none', () {
     const wallpaperLight = Color(0xFF3F51B5);
     const wallpaperDark = Color(0xFFB0BEC5);
     expect(RCrmColors.hasSystemColor, isFalse);
@@ -80,10 +85,7 @@ void main() {
       reason: 'no OS scheme -> neutral fallback, and the swatch is hidden',
     );
 
-    RCrmColors.setSystemColors(
-      light: wallpaperLight,
-      dark: wallpaperDark,
-    );
+    RCrmColors.setSystemColors(light: wallpaperLight, dark: wallpaperDark);
     // `hasSystemColor` is Android-only on purpose (dynamic_color also offers a
     // desktop accent, which would let the OS blue replace the brand). This
     // host is desktop, so the gate stays closed even with colours supplied —
@@ -110,23 +112,29 @@ void main() {
     RCrmColors.setSystemColors();
   });
 
-  test('Day and Night build different canvases; the accent deepens on cream', () {
-    for (final accent in RCrmAccent.values) {
-      final night = RCrmTheme.build(
-        accent: accent,
-        brightness: Brightness.dark,
-      );
-      final day = RCrmTheme.build(
-        accent: accent,
-        brightness: Brightness.light,
-      );
-      expect(night.scaffoldBackgroundColor, RCrmColors.darkPitch);
-      expect(day.scaffoldBackgroundColor, RCrmColors.lightPitch);
-      expect(night.colorScheme.primary, accent.dark);
-      expect(day.colorScheme.primary, accent.light,
-          reason: '${accent.label} must be readable on cream');
-    }
-  });
+  test(
+    'Day and Night build different canvases; the accent deepens on cream',
+    () {
+      for (final accent in RCrmAccent.values) {
+        final night = RCrmTheme.build(
+          accent: accent,
+          brightness: Brightness.dark,
+        );
+        final day = RCrmTheme.build(
+          accent: accent,
+          brightness: Brightness.light,
+        );
+        expect(night.scaffoldBackgroundColor, RCrmColors.darkPitch);
+        expect(day.scaffoldBackgroundColor, RCrmColors.lightPitch);
+        expect(night.colorScheme.primary, accent.dark);
+        expect(
+          day.colorScheme.primary,
+          accent.light,
+          reason: '${accent.label} must be readable on cream',
+        );
+      }
+    },
+  );
 
   test('applying the palette flips every ramp step and the ink', () {
     RCrmColors.apply(accent: RCrmAccent.footlight, brightness: Brightness.dark);
@@ -135,7 +143,10 @@ void main() {
     expect(RCrmColors.coal, RCrmColors.darkCoal);
     expect(RCrmColors.textPrimary, RCrmColors.darkWhite);
 
-    RCrmColors.apply(accent: RCrmAccent.footlight, brightness: Brightness.light);
+    RCrmColors.apply(
+      accent: RCrmAccent.footlight,
+      brightness: Brightness.light,
+    );
     expect(RCrmColors.primary, RCrmAccent.footlight.light);
     expect(RCrmColors.pitch, RCrmColors.lightPitch);
     expect(RCrmColors.ash, RCrmColors.lightAsh);

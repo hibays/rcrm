@@ -104,11 +104,7 @@ void main() {
 
   testWidgets('a choice is handed back as the action', (tester) async {
     var opened = 0;
-    await _pump(
-      tester,
-      at: const Offset(300, 200),
-      onOpen: () => opened++,
-    );
+    await _pump(tester, at: const Offset(300, 200), onOpen: () => opened++);
 
     await tester.tap(find.text('Play'));
     await tester.pumpAndSettle();
@@ -127,7 +123,8 @@ void main() {
     expect(
       first.top,
       closeTo(108, 1),
-      reason: "the panel's top-left starts at the pointer, and its own 8dp of "
+      reason:
+          "the panel's top-left starts at the pointer, and its own 8dp of "
           'menu padding is the first row',
     );
   });
@@ -143,7 +140,8 @@ void main() {
     expect(
       last.bottom,
       closeTo(492, 1),
-      reason: "the panel's bottom-left ends at the pointer, so the menu stays "
+      reason:
+          "the panel's bottom-left ends at the pointer, so the menu stays "
           'on screen above it (minus its own 8dp of menu padding)',
     );
   });

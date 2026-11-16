@@ -97,7 +97,9 @@ abstract final class PlatformArgs {
 class PlatformBridge {
   PlatformBridge._();
 
-  static const MethodChannel window = MethodChannel(PlatformChannelNames.window);
+  static const MethodChannel window = MethodChannel(
+    PlatformChannelNames.window,
+  );
   static const MethodChannel tv = MethodChannel(PlatformChannelNames.tv);
   static const MethodChannel orientation = MethodChannel(
     PlatformChannelNames.orientation,
@@ -159,13 +161,12 @@ class PlatformBridge {
   static Future<Map<String, Object?>?> volumeRead() async =>
       reply(await volume.invokeMethod<Object?>(PlatformMethods.read));
 
-  static Future<Map<String, Object?>?> volumeSetIndex(int index) async =>
-      reply(
-        await volume.invokeMethod<Object?>(
-          PlatformMethods.setIndex,
-          <String, Object?>{PlatformArgs.index: index},
-        ),
-      );
+  static Future<Map<String, Object?>?> volumeSetIndex(int index) async => reply(
+    await volume.invokeMethod<Object?>(
+      PlatformMethods.setIndex,
+      <String, Object?>{PlatformArgs.index: index},
+    ),
+  );
 
   /// Installs the ONE handler for the native→Dart push. Non-onChanged calls
   /// are ignored, and arguments are normalised before they reach the caller.

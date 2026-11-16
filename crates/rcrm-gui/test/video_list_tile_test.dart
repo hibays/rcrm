@@ -35,7 +35,9 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(
       MaterialApp(
-        home: Scaffold(body: VideoListTile(item: _video(), onTap: () {})),
+        home: Scaffold(
+          body: VideoListTile(item: _video(), onTap: () {}),
+        ),
       ),
     );
     await tester.pump();

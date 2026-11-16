@@ -78,19 +78,22 @@ void main() {
     expect(cacheDir.listSync().whereType<File>(), hasLength(2));
   });
 
-  test('the generation time it grades by is the file\'s own write time', () async {
-    // Written in this order, ages the other way round: only the file's mtime can
-    // tell them apart, so a policy fed the wrong field would pick the wrong one.
-    await _seed(cacheDir, 'actuallyNew', age: const Duration(minutes: 1));
-    await _seed(cacheDir, 'actuallyOld', age: const Duration(days: 10));
-    await _seed(cacheDir, 'middle', age: const Duration(hours: 5));
+  test(
+    'the generation time it grades by is the file\'s own write time',
+    () async {
+      // Written in this order, ages the other way round: only the file's mtime can
+      // tell them apart, so a policy fed the wrong field would pick the wrong one.
+      await _seed(cacheDir, 'actuallyNew', age: const Duration(minutes: 1));
+      await _seed(cacheDir, 'actuallyOld', age: const Duration(days: 10));
+      await _seed(cacheDir, 'middle', age: const Duration(hours: 5));
 
-    final plan = await ThumbCache.manage(maxBytes: 250);
+      final plan = await ThumbCache.manage(maxBytes: 250);
 
-    expect(plan.drop, ['actuallyOld']);
-    expect(File('${cacheDir.path}/actuallyOld').existsSync(), isFalse);
-    expect(File('${cacheDir.path}/actuallyNew').existsSync(), isTrue);
-  });
+      expect(plan.drop, ['actuallyOld']);
+      expect(File('${cacheDir.path}/actuallyOld').existsSync(), isFalse);
+      expect(File('${cacheDir.path}/actuallyNew').existsSync(), isTrue);
+    },
+  );
 
   test('an empty or missing cache is not an error', () async {
     final plan = await ThumbCache.manage(maxBytes: 1000);

@@ -23,20 +23,18 @@ final class RustWebpBuf extends Struct {
 
 // ── C function typedefs ──────────────────────────────────────────
 
-typedef RcrmStartServerC =
-    Int32 Function(
-      Pointer<Utf8> dirsJson,
-      Pointer<Utf8> password,
-      Pointer<Utf8> bindAddr,
-      Uint16 port,
-    );
-typedef RcrmStartServerDart =
-    int Function(
-      Pointer<Utf8> dirsJson,
-      Pointer<Utf8> password,
-      Pointer<Utf8> bindAddr,
-      int port,
-    );
+typedef RcrmStartServerC = Int32 Function(
+  Pointer<Utf8> dirsJson,
+  Pointer<Utf8> password,
+  Pointer<Utf8> bindAddr,
+  Uint16 port,
+);
+typedef RcrmStartServerDart = int Function(
+  Pointer<Utf8> dirsJson,
+  Pointer<Utf8> password,
+  Pointer<Utf8> bindAddr,
+  int port,
+);
 
 typedef RcrmStopServerC = Int32 Function(Int32 handle);
 typedef RcrmStopServerDart = int Function(int handle);
@@ -47,10 +45,16 @@ typedef RcrmGetServerUrlDart = Pointer<Utf8> Function(int handle);
 typedef RcrmGetServerStatusC = Int32 Function(Int32 handle);
 typedef RcrmGetServerStatusDart = int Function(int handle);
 
-typedef RcrmCryptFolderC =
-    Int32 Function(Pointer<Utf8> path, Pointer<Utf8> password, Int32 isEncrypt);
-typedef RcrmCryptFolderDart =
-    int Function(Pointer<Utf8> path, Pointer<Utf8> password, int isEncrypt);
+typedef RcrmCryptFolderC = Int32 Function(
+  Pointer<Utf8> path,
+  Pointer<Utf8> password,
+  Int32 isEncrypt,
+);
+typedef RcrmCryptFolderDart = int Function(
+  Pointer<Utf8> path,
+  Pointer<Utf8> password,
+  int isEncrypt,
+);
 
 typedef RcrmLastVerifyC = Pointer<Utf8> Function();
 typedef RcrmLastVerifyDart = Pointer<Utf8> Function();
@@ -81,39 +85,35 @@ typedef RcrmGenTvCertDart = Pointer<Utf8> Function();
 typedef RcrmDecodeQrC = Pointer<Utf8> Function(Pointer<Uint8> data, IntPtr len);
 typedef RcrmDecodeQrDart = Pointer<Utf8> Function(Pointer<Uint8> data, int len);
 
-typedef RcrmDecodeQrBgraC =
-    Pointer<Utf8> Function(
-      Pointer<Uint8> data,
-      IntPtr len,
-      Uint32 width,
-      Uint32 height,
-      Uint32 rowStride,
-    );
-typedef RcrmDecodeQrBgraDart =
-    Pointer<Utf8> Function(
-      Pointer<Uint8> data,
-      int len,
-      int width,
-      int height,
-      int rowStride,
-    );
+typedef RcrmDecodeQrBgraC = Pointer<Utf8> Function(
+  Pointer<Uint8> data,
+  IntPtr len,
+  Uint32 width,
+  Uint32 height,
+  Uint32 rowStride,
+);
+typedef RcrmDecodeQrBgraDart = Pointer<Utf8> Function(
+  Pointer<Uint8> data,
+  int len,
+  int width,
+  int height,
+  int rowStride,
+);
 
-typedef RcrmDecodeQrLumaC =
-    Pointer<Utf8> Function(
-      Pointer<Uint8> data,
-      IntPtr len,
-      Uint32 width,
-      Uint32 height,
-      Uint32 rowStride,
-    );
-typedef RcrmDecodeQrLumaDart =
-    Pointer<Utf8> Function(
-      Pointer<Uint8> data,
-      int len,
-      int width,
-      int height,
-      int rowStride,
-    );
+typedef RcrmDecodeQrLumaC = Pointer<Utf8> Function(
+  Pointer<Uint8> data,
+  IntPtr len,
+  Uint32 width,
+  Uint32 height,
+  Uint32 rowStride,
+);
+typedef RcrmDecodeQrLumaDart = Pointer<Utf8> Function(
+  Pointer<Uint8> data,
+  int len,
+  int width,
+  int height,
+  int rowStride,
+);
 
 // ── Mobile image decoder typedefs (shared with MobileImageDecoder) ──
 
@@ -124,22 +124,20 @@ typedef RcrmDecodeResultC = Void Function(Pointer<Void> buf, Pointer<Void> ctx);
 
 /// Async decode: TAKES OWNERSHIP of `data` synchronously (no copy), spawns a
 /// immediately. Result delivered via `callback`.
-typedef RcrmDecodeAsyncC =
-    Void Function(
-      Pointer<Uint8> data,
-      IntPtr len,
-      Uint32 tw,
-      Pointer<NativeFunction<RcrmDecodeResultC>> callback,
-      Pointer<Void> ctx,
-    );
-typedef RcrmDecodeAsyncDart =
-    void Function(
-      Pointer<Uint8> data,
-      int len,
-      int tw,
-      Pointer<NativeFunction<RcrmDecodeResultC>> callback,
-      Pointer<Void> ctx,
-    );
+typedef RcrmDecodeAsyncC = Void Function(
+  Pointer<Uint8> data,
+  IntPtr len,
+  Uint32 tw,
+  Pointer<NativeFunction<RcrmDecodeResultC>> callback,
+  Pointer<Void> ctx,
+);
+typedef RcrmDecodeAsyncDart = void Function(
+  Pointer<Uint8> data,
+  int len,
+  int tw,
+  Pointer<NativeFunction<RcrmDecodeResultC>> callback,
+  Pointer<Void> ctx,
+);
 
 typedef RcrmFreeDecodeBufC = Void Function(Pointer<Void> ptr);
 typedef RcrmFreeDecodeBufDart = void Function(Pointer<Void> ptr);
@@ -153,30 +151,30 @@ typedef RcrmFreeDecodeBufDart = void Function(Pointer<Void> ptr);
 ///
 /// The input is BORROWED (the caller keeps and frees it); the reply is a
 /// `WebpBuf` freed with `rcrm_free_webp_buf`.
-typedef RcrmGenerateThumbWebpFromImageC =
-    Pointer<Void> Function(
-      Pointer<Uint8> data,
-      IntPtr len,
-      Uint32 targetWidth,
-      Uint8 quality,
-      Uint8 kindHint,
-    );
-typedef RcrmGenerateThumbWebpFromImageDart =
-    Pointer<Void> Function(
-      Pointer<Uint8> data,
-      int len,
-      int targetWidth,
-      int quality,
-      int kindHint,
-    );
+typedef RcrmGenerateThumbWebpFromImageC = Pointer<Void> Function(
+  Pointer<Uint8> data,
+  IntPtr len,
+  Uint32 targetWidth,
+  Uint8 quality,
+  Uint8 kindHint,
+);
+typedef RcrmGenerateThumbWebpFromImageDart = Pointer<Void> Function(
+  Pointer<Uint8> data,
+  int len,
+  int targetWidth,
+  int quality,
+  int kindHint,
+);
 
 // ── Media metadata (EXIF / track) — all platforms ─────────────────
 
 /// Native callback: Rust calls this from a background thread with the JSON
 /// result of a metadata parse. The string must be freed with
 /// `rcrm_free_string`; Dart routes the call through `NativeCallable.listener`.
-typedef RcrmMetadataResultC =
-    Void Function(Pointer<Utf8> json, Pointer<Void> ctx);
+typedef RcrmMetadataResultC = Void Function(
+  Pointer<Utf8> json,
+  Pointer<Void> ctx,
+);
 
 /// Async metadata parse. Rust takes ownership of the buffer, so Dart must not
 /// free it (or touch it) after the call — the bytes are handed over in place,
@@ -188,41 +186,37 @@ typedef RcrmMetadataResultC =
 /// wrong one would free a wrong layout. Dart supplies the guarantee by type:
 /// `NativeTransfer` (`services/native_bytes.dart`) can only be built from a
 /// whole-file `NativeBytes`, whose allocation and payload are the same size.
-typedef RcrmMetadataAsyncC =
-    Void Function(
-      Pointer<Uint8> data,
-      IntPtr len,
-      Uint8 kindHint,
-      Pointer<NativeFunction<RcrmMetadataResultC>> callback,
-      Pointer<Void> ctx,
-    );
-typedef RcrmMetadataAsyncDart =
-    void Function(
-      Pointer<Uint8> data,
-      int len,
-      int kindHint,
-      Pointer<NativeFunction<RcrmMetadataResultC>> callback,
-      Pointer<Void> ctx,
-    );
+typedef RcrmMetadataAsyncC = Void Function(
+  Pointer<Uint8> data,
+  IntPtr len,
+  Uint8 kindHint,
+  Pointer<NativeFunction<RcrmMetadataResultC>> callback,
+  Pointer<Void> ctx,
+);
+typedef RcrmMetadataAsyncDart = void Function(
+  Pointer<Uint8> data,
+  int len,
+  int kindHint,
+  Pointer<NativeFunction<RcrmMetadataResultC>> callback,
+  Pointer<Void> ctx,
+);
 
 // ── Thumbnail WebP encoding (all platforms) ──────────────────
 
-typedef RcrmWebpBufC =
-    Pointer<Void> Function(
-      Pointer<Uint8> data,
-      IntPtr len,
-      Uint32 width,
-      Uint32 height,
-      Uint8 quality,
-    );
-typedef RcrmWebpBufDart =
-    Pointer<Void> Function(
-      Pointer<Uint8> data,
-      int len,
-      int width,
-      int height,
-      int quality,
-    );
+typedef RcrmWebpBufC = Pointer<Void> Function(
+  Pointer<Uint8> data,
+  IntPtr len,
+  Uint32 width,
+  Uint32 height,
+  Uint8 quality,
+);
+typedef RcrmWebpBufDart = Pointer<Void> Function(
+  Pointer<Uint8> data,
+  int len,
+  int width,
+  int height,
+  int quality,
+);
 
 /// Poster encoder for a raw mpv screenshot (tight BGRA): blank test and
 /// bilinear downscale happen in Rust, then the frame is encoded as WebP.
@@ -230,26 +224,24 @@ typedef RcrmWebpBufDart =
 /// The input is BORROWED; the reply is a `WebpBuf` freed with
 /// `rcrm_free_webp_buf`. `outBlank` is set to 1 for a blank frame (null
 /// return), 0 otherwise.
-typedef RcrmEncodePosterWebpC =
-    Pointer<Void> Function(
-      Pointer<Uint8> data,
-      IntPtr len,
-      Uint32 width,
-      Uint32 height,
-      Uint32 targetWidth,
-      Uint8 quality,
-      Pointer<Int32> outBlank,
-    );
-typedef RcrmEncodePosterWebpDart =
-    Pointer<Void> Function(
-      Pointer<Uint8> data,
-      int len,
-      int width,
-      int height,
-      int targetWidth,
-      int quality,
-      Pointer<Int32> outBlank,
-    );
+typedef RcrmEncodePosterWebpC = Pointer<Void> Function(
+  Pointer<Uint8> data,
+  IntPtr len,
+  Uint32 width,
+  Uint32 height,
+  Uint32 targetWidth,
+  Uint8 quality,
+  Pointer<Int32> outBlank,
+);
+typedef RcrmEncodePosterWebpDart = Pointer<Void> Function(
+  Pointer<Uint8> data,
+  int len,
+  int width,
+  int height,
+  int targetWidth,
+  int quality,
+  Pointer<Int32> outBlank,
+);
 
 /// Poster renderer that runs INSIDE libmpv: no frame ever crosses into Dart.
 ///
@@ -258,34 +250,39 @@ typedef RcrmEncodePosterWebpDart =
 /// and `(WebpBuf*, status, ctx)` comes back through a `NativeCallable`.
 /// `status` is 0 for a poster, 1 for "libmpv ran but this file gave no usable
 /// frame" and 2 for "this build has no usable libmpv".
-typedef RcrmPosterResultC =
-    Void Function(Pointer<Void> buf, Int32 status, Pointer<Void> ctx);
+typedef RcrmPosterResultC = Void Function(
+  Pointer<Void> buf,
+  Int32 status,
+  Pointer<Void> ctx,
+);
 
-typedef RcrmGeneratePosterAsyncC =
-    Void Function(
-      Pointer<Utf8> url,
-      Pointer<Utf8> headers,
-      Pointer<Utf8> positions,
-      Uint32 targetWidth,
-      Uint8 quality,
-      Pointer<NativeFunction<RcrmPosterResultC>> callback,
-      Pointer<Void> ctx,
-    );
-typedef RcrmGeneratePosterAsyncDart =
-    void Function(
-      Pointer<Utf8> url,
-      Pointer<Utf8> headers,
-      Pointer<Utf8> positions,
-      int targetWidth,
-      int quality,
-      Pointer<NativeFunction<RcrmPosterResultC>> callback,
-      Pointer<Void> ctx,
-    );
+typedef RcrmGeneratePosterAsyncC = Void Function(
+  Pointer<Utf8> url,
+  Pointer<Utf8> headers,
+  Pointer<Utf8> positions,
+  Uint32 targetWidth,
+  Uint8 quality,
+  Pointer<NativeFunction<RcrmPosterResultC>> callback,
+  Pointer<Void> ctx,
+);
+typedef RcrmGeneratePosterAsyncDart = void Function(
+  Pointer<Utf8> url,
+  Pointer<Utf8> headers,
+  Pointer<Utf8> positions,
+  int targetWidth,
+  int quality,
+  Pointer<NativeFunction<RcrmPosterResultC>> callback,
+  Pointer<Void> ctx,
+);
 
-typedef RcrmGenerateQrWebpC =
-    Pointer<Void> Function(Pointer<Uint8> data, IntPtr len);
-typedef RcrmGenerateQrWebpDart =
-    Pointer<Void> Function(Pointer<Uint8> data, int len);
+typedef RcrmGenerateQrWebpC = Pointer<Void> Function(
+  Pointer<Uint8> data,
+  IntPtr len,
+);
+typedef RcrmGenerateQrWebpDart = Pointer<Void> Function(
+  Pointer<Uint8> data,
+  int len,
+);
 
 typedef RcrmFreeWebpBufC = Void Function(Pointer<Void> ptr);
 typedef RcrmFreeWebpBufDart = void Function(Pointer<Void> ptr);

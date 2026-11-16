@@ -7,6 +7,7 @@
 import 'dart:async';
 import 'dart:io' show Platform;
 import 'dart:math' as math;
+
 import 'package:material_ui/material_ui.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:flutter/services.dart';
@@ -14,6 +15,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:screen_brightness/screen_brightness.dart';
+
 import '../models/media_item.dart';
 import '../config/theme.dart';
 import '../services/net.dart';
@@ -26,7 +28,9 @@ import '../providers/video_jump_stack.dart';
 import '../providers/window_chrome_provider.dart';
 import '../widgets/video_card.dart';
 import '../widgets/media_player_keys.dart';
+
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../widgets/player_controls.dart';
 import '../widgets/player_end_card.dart';
 import '../widgets/player_overlays.dart';
@@ -1939,8 +1943,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
           },
           child: Scaffold(
             // The player is a PAGE, not a floating badge: its letterbox follows
-          // the appearance (Night near-black, Day cream) like any other screen.
-          backgroundColor: RCrmColors.pitch,
+            // the appearance (Night near-black, Day cream) like any other screen.
+            backgroundColor: RCrmColors.pitch,
             body: MouseRegion(
               onHover: (_) => _poke(),
               onEnter: (_) => _show(),

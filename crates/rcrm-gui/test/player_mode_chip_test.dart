@@ -94,9 +94,7 @@ double _contrast(Color a, Color b) {
 }
 
 Color _chipColor(WidgetTester tester) {
-  final box = tester.widget<Container>(
-    find.byKey(const ValueKey('mode_chip')),
-  );
+  final box = tester.widget<Container>(find.byKey(const ValueKey('mode_chip')));
   return (box.decoration! as BoxDecoration).color!;
 }
 
@@ -181,24 +179,14 @@ void main() {
     // time readout ~2.5x its real width, and at 360 that budget pushes the chip
     // out of the plan. 375 is the narrowest width where this test host can see
     // the chip at all; the render harness (real Roboto) covers 360.
-    await _pumpBar(
-      tester,
-      size: const Size(375, 667),
-      onModeChanged: (_) {},
-    );
+    await _pumpBar(tester, size: const Size(375, 667), onModeChanged: (_) {});
     final face = tester.getSize(find.byKey(const ValueKey('mode_chip')));
-    final target = tester.getSize(
-      find.byType(SmartPopupMenu<PlaybackMode>),
-    );
+    final target = tester.getSize(find.byType(SmartPopupMenu<PlaybackMode>));
     expect(target, const Size(32, 40), reason: 'compact: 32x40, not 24x24');
     expect(face.width, lessThan(target.width));
     expect(face.height, lessThan(target.height));
 
-    await _pumpBar(
-      tester,
-      size: const Size(1280, 720),
-      onModeChanged: (_) {},
-    );
+    await _pumpBar(tester, size: const Size(1280, 720), onModeChanged: (_) {});
     expect(
       tester.getSize(find.byType(SmartPopupMenu<PlaybackMode>)),
       const Size(41, 44),
@@ -206,7 +194,9 @@ void main() {
     );
   });
 
-  testWidgets('the accent follows the state, not the selection', (tester) async {
+  testWidgets('the accent follows the state, not the selection', (
+    tester,
+  ) async {
     // Same rule as the speed chip beside it: a state other than the ordinary one
     // is worth an accent. `pauseAfter` is the app's default, so it is the one
     // that stays quiet.
@@ -336,36 +326,37 @@ void main() {
     await _dismissMenu(tester);
   });
 
-  testWidgets('a row keeps room around its sentence once it outgrows the floor', (
-    tester,
-  ) async {
-    // Material 3 hands a menu item no vertical padding at all, so a row whose
-    // note wraps past the nominal height grows into its neighbour and four
-    // choices read as one paragraph. The floor and the breathing are two jobs.
-    tester.platformDispatcher.textScaleFactorTestValue = 1.6;
-    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
-    await _pumpBar(tester, onModeChanged: (_) {});
-    await _openMenu(tester);
-    for (final mode in PlaybackMode.values) {
-      final row = tester.getRect(
-        find.ancestor(
-          of: find.text(mode.note),
-          matching: find.byType(SmartPopupMenuItem<PlaybackMode>),
-        ),
-      );
-      final label = tester.getRect(find.text(mode.label));
-      final note = tester.getRect(find.text(mode.note));
-      expect(
-        label.top - row.top,
-        greaterThanOrEqualTo(4),
-        reason: '${mode.label} has no air above it at 1.6x',
-      );
-      expect(
-        row.bottom - note.bottom,
-        greaterThanOrEqualTo(4),
-        reason: '${mode.label} sits on the next row at 1.6x',
-      );
-    }
-    await _dismissMenu(tester);
-  });
+  testWidgets(
+    'a row keeps room around its sentence once it outgrows the floor',
+    (tester) async {
+      // Material 3 hands a menu item no vertical padding at all, so a row whose
+      // note wraps past the nominal height grows into its neighbour and four
+      // choices read as one paragraph. The floor and the breathing are two jobs.
+      tester.platformDispatcher.textScaleFactorTestValue = 1.6;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      await _pumpBar(tester, onModeChanged: (_) {});
+      await _openMenu(tester);
+      for (final mode in PlaybackMode.values) {
+        final row = tester.getRect(
+          find.ancestor(
+            of: find.text(mode.note),
+            matching: find.byType(SmartPopupMenuItem<PlaybackMode>),
+          ),
+        );
+        final label = tester.getRect(find.text(mode.label));
+        final note = tester.getRect(find.text(mode.note));
+        expect(
+          label.top - row.top,
+          greaterThanOrEqualTo(4),
+          reason: '${mode.label} has no air above it at 1.6x',
+        );
+        expect(
+          row.bottom - note.bottom,
+          greaterThanOrEqualTo(4),
+          reason: '${mode.label} sits on the next row at 1.6x',
+        );
+      }
+      await _dismissMenu(tester);
+    },
+  );
 }

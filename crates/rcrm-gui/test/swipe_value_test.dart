@@ -39,8 +39,14 @@ void main() {
     // what the value does, whatever the device does with the number. The span is
     // kVerticalSwipeSpanRatio of the area's height -- see the ratio's own test.
     const span = height * kVerticalSwipeSpanRatio;
-    expect(advanceVerticalValue(current: 0, deltaDy: -span, height: height), 100);
-    expect(advanceVerticalValue(current: 100, deltaDy: span, height: height), 0);
+    expect(
+      advanceVerticalValue(current: 0, deltaDy: -span, height: height),
+      100,
+    );
+    expect(
+      advanceVerticalValue(current: 100, deltaDy: span, height: height),
+      0,
+    );
     expect(
       advanceVerticalValue(current: 0, deltaDy: -span, height: height, max: 1),
       1,
@@ -71,11 +77,7 @@ void main() {
     // Four pixels on a 600px area is 1.1% -- a fifth of the step a 15-step phone
     // can even reach -- and the accumulator is what keeps that travel instead of
     // losing it to the device's quantisation.
-    final v = advanceVerticalValue(
-      current: 50,
-      deltaDy: -4,
-      height: height,
-    );
+    final v = advanceVerticalValue(current: 50, deltaDy: -4, height: height);
     expect(v, closeTo(50 + 4 / (height * kVerticalSwipeSpanRatio) * 100, 0.01));
   });
 
@@ -89,7 +91,10 @@ void main() {
     for (final dy in <double>[-8, -8, 1, -8, -8]) {
       v = advanceVerticalValue(current: v, deltaDy: dy, height: height);
     }
-    expect(v, closeTo(40 + 31 / (height * kVerticalSwipeSpanRatio) * 100, 0.0001));
+    expect(
+      v,
+      closeTo(40 + 31 / (height * kVerticalSwipeSpanRatio) * 100, 0.0001),
+    );
   });
 
   test('a one-pixel wobble moves it one pixel, not one step', () {

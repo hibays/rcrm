@@ -3,7 +3,9 @@
 // gate so a freshly-opened grid never kicks off dozens of decodes at once.
 
 import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
+
 import '../config/theme.dart';
 import '../services/image_load_gate.dart';
 import 'auth_image.dart';
@@ -236,7 +238,10 @@ class _PooledImageState extends State<PooledImage> {
       child: SizedBox(
         width: 18,
         height: 18,
-        child: CircularProgressIndicator(strokeWidth: 2, color: RCrmColors.textFaint),
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: RCrmColors.textFaint,
+        ),
       ),
     ),
   );

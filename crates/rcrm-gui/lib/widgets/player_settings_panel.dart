@@ -276,16 +276,15 @@ class PlayerSettingsPanel extends StatelessWidget {
           : RCrmColors.playerTextFaint,
     ),
     textStyle: WidgetStateProperty.all(
-      (Theme.of(context).textTheme.labelLarge ??
-              const TextStyle())
-          .copyWith(fontSize: 12, fontWeight: FontWeight.w600),
+      (Theme.of(context).textTheme.labelLarge ?? const TextStyle()).copyWith(
+        fontSize: 12,
+        fontWeight: FontWeight.w600,
+      ),
     ),
     visualDensity: VisualDensity.compact,
     padding: WidgetStateProperty.all(const EdgeInsets.symmetric(vertical: 8)),
     shape: WidgetStateProperty.all(
-      RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(RCrmRadii.md),
-      ),
+      RoundedRectangleBorder(borderRadius: BorderRadius.circular(RCrmRadii.md)),
     ),
   );
 

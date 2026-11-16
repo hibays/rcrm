@@ -210,9 +210,8 @@ class MobileImageDecoder {
     final id = ++_nextId;
     _pending[id] = completer;
 
-    final decodeFn = Pointer<NativeFunction<RcrmDecodeAsyncC>>.fromAddress(
-      addr,
-    ).asFunction<RcrmDecodeAsyncDart>();
+    final decodeFn = Pointer<NativeFunction<RcrmDecodeAsyncC>>.fromAddress(addr)
+        .asFunction<RcrmDecodeAsyncDart>();
 
     decodeFn(
       data,
@@ -297,9 +296,8 @@ class MobileImageDecoder {
   static void _free(Pointer<_DB> buf) {
     final addr = RustBridge.freeDecodeBufAddr;
     if (addr == 0) return;
-    Pointer<NativeFunction<Void Function(Pointer<_DB>)>>.fromAddress(
-      addr,
-    ).asFunction<void Function(Pointer<_DB>)>()(buf);
+    Pointer<NativeFunction<Void Function(Pointer<_DB>)>>.fromAddress(addr)
+        .asFunction<void Function(Pointer<_DB>)>()(buf);
   }
 
   // ── helpers ───────────────────────────────────────────────────

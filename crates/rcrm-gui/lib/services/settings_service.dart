@@ -70,7 +70,8 @@ class SettingsService {
   static const _keyServerConfig = 'server_config';
   static const _keyVideoLayout = 'video_layout'; // 'grid' or 'list'
   static const _keyVideoGridColumns = 'video_grid_columns';
-  static const _keyVideoListColumns = 'video_list_columns'; // 'auto'|'one'|'two'
+  static const _keyVideoListColumns =
+      'video_list_columns'; // 'auto'|'one'|'two'
   static const _keyVideoSort = 'video_sort';
   static const _keyVideoSortAsc = 'video_sort_asc';
   static const _keyImageLayout = 'image_layout'; // 'masonry' or 'uniform'
@@ -90,8 +91,10 @@ class SettingsService {
   static const _keyPipSize = 'pip_size'; // 'normal' or 'small'
   static const _keyPlaybackMode =
       'playback_mode'; // 'loopAll' | 'loopOne' | 'pauseAfter'
-  static const _keyAutoRotate = 'auto_rotate'; // bool, legacy -- read once, never written
-  static const _keyPlayerOrientation = 'player_orientation'; // PlayerOrientation.key
+  static const _keyAutoRotate =
+      'auto_rotate'; // bool, legacy -- read once, never written
+  static const _keyPlayerOrientation =
+      'player_orientation'; // PlayerOrientation.key
   static const _keyCastAutoNext = 'cast_auto_next'; // bool
   static const _keyVideoJumpHistory = 'video_jump_history_limit'; // int, 1..50
   static const _keyAllowScreenshots = 'allow_screenshots'; // bool, mobile only
@@ -386,7 +389,10 @@ class SettingsService {
   Future<String> getPlaybackMode() async {
     final p = await prefs;
     final v = p.getString(_keyPlaybackMode);
-    if (v == 'loopAll' || v == 'shuffle' || v == 'loopOne' || v == 'pauseAfter') {
+    if (v == 'loopAll' ||
+        v == 'shuffle' ||
+        v == 'loopOne' ||
+        v == 'pauseAfter') {
       return v!;
     }
     return 'pauseAfter';

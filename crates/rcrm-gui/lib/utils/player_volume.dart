@@ -144,11 +144,7 @@ class PlayerVolume {
   PlayerVolume withLevel(double v) {
     if (!v.isFinite) return this;
     final nv = v.clamp(0.0, 100.0);
-    return PlayerVolume(
-      bound: bound,
-      level: nv,
-      lastAudible: _audibleAt(nv),
-    );
+    return PlayerVolume(bound: bound, level: nv, lastAudible: _audibleAt(nv));
   }
 
   /// What the DEVICE reports: the level pushed after somebody moved it with the
@@ -172,20 +168,13 @@ class PlayerVolume {
 
   PlayerVolume _boundTo(SystemVolumeReading reading) {
     final v = reading.percent;
-    return PlayerVolume(
-      bound: true,
-      level: v,
-      lastAudible: _audibleAt(v),
-    );
+    return PlayerVolume(bound: true, level: v, lastAudible: _audibleAt(v));
   }
 
   /// The same session handed back to the app's own volume, keeping [kept] on
   /// screen -- the device can no longer attenuate, so the player has to.
-  PlayerVolume _unboundAt(double kept) => PlayerVolume(
-    bound: false,
-    level: kept,
-    lastAudible: _audibleAt(kept),
-  );
+  PlayerVolume _unboundAt(double kept) =>
+      PlayerVolume(bound: false, level: kept, lastAudible: _audibleAt(kept));
 
   /// The level the memory should hold after seeing [v]: the last AUDIBLE one,
   /// which is what an unmute comes back to.
@@ -194,8 +183,7 @@ class PlayerVolume {
   /// A level from outside the session, put through the same rules as one from
   /// inside it: a hand-edited preference cannot put the bar outside 0..100, and
   /// a value that is not a number leaves the session alone.
-  double _normalise(double v) =>
-      v.isFinite ? v.clamp(0.0, 100.0) : level;
+  double _normalise(double v) => v.isFinite ? v.clamp(0.0, 100.0) : level;
 
   @override
   String toString() =>

@@ -260,7 +260,9 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.text('By folder'), findsOneWidget);
-      await tester.tap(find.widgetWithText(SmartPopupMenuItem<String>, 'By folder'));
+      await tester.tap(
+        find.widgetWithText(SmartPopupMenuItem<String>, 'By folder'),
+      );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       // SmartDialog's dismiss is async (animation -> post-frame -> future), so
@@ -290,7 +292,9 @@ void main() {
       await tester.tap(find.byTooltip('Organize'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
-      await tester.tap(find.widgetWithText(SmartPopupMenuItem<String>, 'Ungrouped'));
+      await tester.tap(
+        find.widgetWithText(SmartPopupMenuItem<String>, 'Ungrouped'),
+      );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       // Flush the async dismiss continuation before reading the new arrangement.

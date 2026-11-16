@@ -172,7 +172,10 @@ class _EpisodePickerPanelState extends State<EpisodePickerPanel>
                     item.name,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(color: RCrmColors.playerText, fontSize: 13),
+                    style: TextStyle(
+                      color: RCrmColors.playerText,
+                      fontSize: 13,
+                    ),
                   ),
                   const SizedBox(height: 4),
                   Text(
@@ -181,7 +184,10 @@ class _EpisodePickerPanelState extends State<EpisodePickerPanel>
                       item.formattedSize,
                       item.extension.toUpperCase(),
                     ].join(' • '),
-                    style: TextStyle(color: RCrmColors.playerTextSecondary, fontSize: 11),
+                    style: TextStyle(
+                      color: RCrmColors.playerTextSecondary,
+                      fontSize: 11,
+                    ),
                   ),
                 ],
               ),
@@ -261,7 +267,10 @@ class _EpisodePickerPanelState extends State<EpisodePickerPanel>
                 const SizedBox(width: 8),
                 Text(
                   '${widget.items.length}',
-                  style: TextStyle(color: RCrmColors.playerTextFaint, fontSize: 13),
+                  style: TextStyle(
+                    color: RCrmColors.playerTextFaint,
+                    fontSize: 13,
+                  ),
                 ),
                 const Spacer(),
                 IconButton(
@@ -279,7 +288,10 @@ class _EpisodePickerPanelState extends State<EpisodePickerPanel>
             ),
           ),
           Divider(height: 1, color: RCrmColors.playerHairline),
-          if (landscape) Expanded(child: listBody) else Flexible(child: listBody),
+          if (landscape)
+            Expanded(child: listBody)
+          else
+            Flexible(child: listBody),
         ],
       ),
     );

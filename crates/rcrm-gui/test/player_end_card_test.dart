@@ -36,10 +36,7 @@ Widget _host(Widget child, {bool? disableAnimations}) => MaterialApp(
         data: disableAnimations == null
             ? base
             : base.copyWith(disableAnimations: disableAnimations),
-        child: Scaffold(
-          backgroundColor: const Color(0xFF0E0E0E),
-          body: child,
-        ),
+        child: Scaffold(backgroundColor: const Color(0xFF0E0E0E), body: child),
       );
     },
   ),
@@ -360,9 +357,7 @@ void main() {
 
     // This is what `Cancel` does at the screen: the offer goes, the card and
     // its Related grid stay.
-    await tester.pumpWidget(
-      offerCard(offer: null, onAutoPlay: () => auto++),
-    );
+    await tester.pumpWidget(offerCard(offer: null, onAutoPlay: () => auto++));
     await tester.pump(const Duration(seconds: 3));
 
     expect(auto, 0);

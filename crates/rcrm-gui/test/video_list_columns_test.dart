@@ -245,7 +245,8 @@ void main() {
     expect(
       tester.takeException(),
       isNull,
-      reason: '600dp is the width Two columns is allowed at, so a two-line '
+      reason:
+          '600dp is the width Two columns is allowed at, so a two-line '
           'title and the size line must fit the row there',
     );
     // The row grew, and the poster it sizes follows it (the 16:9 derivation

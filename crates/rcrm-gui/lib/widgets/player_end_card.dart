@@ -147,7 +147,8 @@ class _PlayerEndCardState extends State<PlayerEndCard>
       // Cancelled: the ring goes and nothing plays. The card stays.
       _count.stop();
       _count.value = 0;
-    } else if (has && (!had || old.autoPlayItem!.path != widget.autoPlayItem!.path)) {
+    } else if (has &&
+        (!had || old.autoPlayItem!.path != widget.autoPlayItem!.path)) {
       // A fresh offer (the mode changed, a new ending): one clock, from zero.
       _count.forward(from: 0);
     }
@@ -397,11 +398,7 @@ class _PlayerEndCardState extends State<PlayerEndCard>
       spacing: RCrmSpacing.sm,
       runSpacing: RCrmSpacing.sm,
       children: [
-        _Action(
-          icon: Icons.replay,
-          label: 'Replay',
-          onTap: widget.onReplay,
-        ),
+        _Action(icon: Icons.replay, label: 'Replay', onTap: widget.onReplay),
         // There is deliberately no "Play next" here: the FIRST tile is the
         // next video, and it is already the thing the ring counts down to.
         // Two doors to one video is one too many, and the reference's end
@@ -455,10 +452,7 @@ class _PlayerEndCardState extends State<PlayerEndCard>
         padding: const EdgeInsets.symmetric(vertical: RCrmSpacing.md),
         child: Text(
           'No related videos',
-          style: TextStyle(
-            color: RCrmColors.playerTextSecondary,
-            fontSize: 12,
-          ),
+          style: TextStyle(color: RCrmColors.playerTextSecondary, fontSize: 12),
         ),
       );
     }
@@ -584,11 +578,7 @@ class _PlayerEndCardState extends State<PlayerEndCard>
 /// One action: an icon and its word, on a flat tonal chip. No border, no
 /// circle badge — the player's chrome is flat and the word is the label.
 class _Action extends StatelessWidget {
-  const _Action({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
+  const _Action({required this.icon, required this.label, required this.onTap});
 
   final IconData icon;
   final String label;
@@ -659,8 +649,7 @@ class _Tile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool isAuto = autoOverlay != null;
-    final FingerPreviewSurface? surface =
-        fingerPreview?.surface(_surfaceName);
+    final FingerPreviewSurface? surface = fingerPreview?.surface(_surfaceName);
     return Semantics(
       button: true,
       label: item.name,
@@ -689,8 +678,7 @@ class _Tile extends StatelessWidget {
                   // A countdown tile is about to play by itself; a second
                   // moving picture under the ring would be noise.
                   hoverPreview: !isAuto,
-                  preview:
-                      !isAuto && (surface?.isActive(item.path) ?? false),
+                  preview: !isAuto && (surface?.isActive(item.path) ?? false),
                   onTap: onTap,
                 ),
                 ?autoOverlay,

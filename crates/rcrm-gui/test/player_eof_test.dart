@@ -39,8 +39,10 @@ void main() {
         PlayerEof.idle,
         reason: 'the video is live again, and the record of the ending is gone',
       );
-      expect(finished().seeked(target: Duration.zero, current: at50).finished,
-          isFalse);
+      expect(
+        finished().seeked(target: Duration.zero, current: at50).finished,
+        isFalse,
+      );
     });
 
     test('forwards is never a take-back, however far', () {
@@ -69,11 +71,11 @@ void main() {
       for (final back in [0, 1, 199]) {
         expect(
           eof
-                  .seeked(
-                    target: at50 - Duration(milliseconds: back),
-                    current: at50,
-                  )
-                  .finished,
+              .seeked(
+                target: at50 - Duration(milliseconds: back),
+                current: at50,
+              )
+              .finished,
           isTrue,
           reason: '${back}ms backwards is still the same place',
         );
@@ -88,7 +90,10 @@ void main() {
       expect(
         eof
             .seeked(
-              target: at50 - PlayerEof.takeBackEpsilon - const Duration(milliseconds: 1),
+              target:
+                  at50 -
+                  PlayerEof.takeBackEpsilon -
+                  const Duration(milliseconds: 1),
               current: at50,
             )
             .finished,

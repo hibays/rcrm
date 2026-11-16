@@ -273,8 +273,7 @@ void main() {
         tester,
         ImageInfoSheet(
           item: _item(
-            name:
-                'Camera_XHS_1790706000_20260930_a-very-long-generative-name.png',
+            name: 'Camera_XHS_1790706000_20260930_a-very-long-generative-name.png',
             album: 'a-very-long-album-name-that-keeps-going',
             path: '/a-very-long/album/path/that/keeps/going/and/going/file.png',
           ),

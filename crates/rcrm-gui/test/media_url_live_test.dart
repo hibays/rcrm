@@ -51,22 +51,19 @@ void main() {
     );
   });
 
-  test(
-    'isLivePhotoUrl keeps the canonical path for both the .mov probe and the jpg range',
-    () async {
-      final result = await isLivePhotoUrl(url('foo%2520bar.jpg'));
+  test('isLivePhotoUrl keeps the canonical path for both the .mov probe and the jpg range', () async {
+    final result = await isLivePhotoUrl(url('foo%2520bar.jpg'));
 
-      expect(result, isFalse);
-      expect(
-        requests,
-        contains('HEAD /foo%2520bar.mov'),
-        reason: 'the companion path is derived from the canonical path',
-      );
-      expect(
-        requests,
-        contains('GET /foo%2520bar.jpg'),
-        reason: 'the range probe must keep the literal %2520',
-      );
-    },
-  );
+    expect(result, isFalse);
+    expect(
+      requests,
+      contains('HEAD /foo%2520bar.mov'),
+      reason: 'the companion path is derived from the canonical path',
+    );
+    expect(
+      requests,
+      contains('GET /foo%2520bar.jpg'),
+      reason: 'the range probe must keep the literal %2520',
+    );
+  });
 }

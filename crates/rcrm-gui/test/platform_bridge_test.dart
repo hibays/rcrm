@@ -103,7 +103,11 @@ void main() {
       final Map<String, Object?>? typed = PlatformBridge.reply(
         <String, Object?>{'index': 4, 'muted': false, 'extra': null},
       );
-      expect(typed, <String, Object?>{'index': 4, 'muted': false, 'extra': null});
+      expect(typed, <String, Object?>{
+        'index': 4,
+        'muted': false,
+        'extra': null,
+      });
     });
 
     test('non-map replies and non-string keys are no answer', () {
@@ -126,16 +130,19 @@ void main() {
       expect(await PlatformBridge.isTv(), isFalse);
     });
 
-    test('followDevice picks follow / release and sends no arguments', () async {
-      answer(PlatformBridge.orientation, (MethodCall call) async => null);
-      await PlatformBridge.followDevice(true);
-      await PlatformBridge.followDevice(false);
-      expect(
-        calls.map((MethodCall c) => c.method),
-        <String>['follow', 'release'],
-      );
-      expect(calls.every((MethodCall c) => c.arguments == null), isTrue);
-    });
+    test(
+      'followDevice picks follow / release and sends no arguments',
+      () async {
+        answer(PlatformBridge.orientation, (MethodCall call) async => null);
+        await PlatformBridge.followDevice(true);
+        await PlatformBridge.followDevice(false);
+        expect(calls.map((MethodCall c) => c.method), <String>[
+          'follow',
+          'release',
+        ]);
+        expect(calls.every((MethodCall c) => c.arguments == null), isTrue);
+      },
+    );
 
     test('setCaptureAllowed carries the typed allowed key', () async {
       answer(PlatformBridge.screen, (MethodCall call) async => null);
@@ -154,20 +161,17 @@ void main() {
           'canAsk': false,
         },
       );
-      expect(
-        await PlatformBridge.storageStatus(),
-        <String, Object?>{
-          'sdk': 33,
-          'granted': true,
-          'action': 'none',
-          'canAsk': false,
-        },
-      );
+      expect(await PlatformBridge.storageStatus(), <String, Object?>{
+        'sdk': 33,
+        'granted': true,
+        'action': 'none',
+        'canAsk': false,
+      });
       await PlatformBridge.requestStorageAccess();
-      expect(
-        calls.map((MethodCall c) => c.method),
-        <String>['status', 'request'],
-      );
+      expect(calls.map((MethodCall c) => c.method), <String>[
+        'status',
+        'request',
+      ]);
     });
 
     test('volume read / setIndex normalise the reply', () async {
@@ -209,37 +213,35 @@ void main() {
   });
 
   group('native-to-Dart volume push', () {
-    test('delivers onChanged as a typed map and ignores other methods',
-        () async {
-      final List<Map<String, Object?>> received = <Map<String, Object?>>[];
-      PlatformBridge.watchVolumeChanges(received.add);
+    test(
+      'delivers onChanged as a typed map and ignores other methods',
+      () async {
+        final List<Map<String, Object?>> received = <Map<String, Object?>>[];
+        PlatformBridge.watchVolumeChanges(received.add);
 
-      await push(
-        PlatformChannelNames.volume,
-        'onChanged',
-        <String, Object?>{'index': 5},
-      );
-      await push(
-        PlatformChannelNames.volume,
-        'somethingElse',
-        <String, Object?>{'index': 99},
-      );
-      await push(PlatformChannelNames.volume, 'onChanged', 'not a map');
+        await push(PlatformChannelNames.volume, 'onChanged', <String, Object?>{
+          'index': 5,
+        });
+        await push(
+          PlatformChannelNames.volume,
+          'somethingElse',
+          <String, Object?>{'index': 99},
+        );
+        await push(PlatformChannelNames.volume, 'onChanged', 'not a map');
 
-      expect(received, <Map<String, Object?>>[
-        <String, Object?>{'index': 5},
-      ]);
-    });
+        expect(received, <Map<String, Object?>>[
+          <String, Object?>{'index': 5},
+        ]);
+      },
+    );
 
     test('stopWatchingVolumeChanges removes the handler', () async {
       final List<Map<String, Object?>> received = <Map<String, Object?>>[];
       PlatformBridge.watchVolumeChanges(received.add);
       PlatformBridge.stopWatchingVolumeChanges();
-      await push(
-        PlatformChannelNames.volume,
-        'onChanged',
-        <String, Object?>{'index': 5},
-      );
+      await push(PlatformChannelNames.volume, 'onChanged', <String, Object?>{
+        'index': 5,
+      });
       expect(received, isEmpty);
     });
   });

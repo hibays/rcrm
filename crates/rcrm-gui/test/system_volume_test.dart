@@ -201,7 +201,8 @@ void main() {
       expect(SystemVolumeReading.fromPlatform(inverted), isNull);
     });
 
-    test('a fixed output IS a reading, so the row can say so', () {      // A TV box or an HDMI sink reports a stream with no travel AND says the
+    test('a fixed output IS a reading, so the row can say so', () {
+      // A TV box or an HDMI sink reports a stream with no travel AND says the
       // output is fixed. That is a fact about the device, not a broken reply:
       // the binding refuses it (`shouldBindSystemVolume`) and the Settings row
       // repeats it, which it could not do if this came back as "no reading".
@@ -398,52 +399,59 @@ void main() {
       await Future<void>.delayed(Duration.zero);
     });
 
-    test('a change made elsewhere is never suppressed by a stale request', () async {
-      final gate = Completer<Object?>();
-      answerWith((call) async {
-        if (call.method == 'read') return phoneReading(index: 5);
-        return gate.future;
-      });
+    test(
+      'a change made elsewhere is never suppressed by a stale request',
+      () async {
+        final gate = Completer<Object?>();
+        answerWith((call) async {
+          if (call.method == 'read') return phoneReading(index: 5);
+          return gate.future;
+        });
 
-      await SystemVolume.read();
-      unawaited(SystemVolume.setPercent(40)); // requests step 6, in flight
-      // The hardware keys move the phone while that write is out; the push
-      // REPLACES what the app believes it has asked for.
-      SystemVolume.watch();
-      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .handlePlatformMessage(
-            channel.name,
-            const StandardMethodCodec().encodeMethodCall(
-              MethodCall('onChanged', phoneReading(index: 9)),
-            ),
-            (_) {},
-          );
-      unawaited(SystemVolume.setPercent(40));
+        await SystemVolume.read();
+        unawaited(SystemVolume.setPercent(40)); // requests step 6, in flight
+        // The hardware keys move the phone while that write is out; the push
+        // REPLACES what the app believes it has asked for.
+        SystemVolume.watch();
+        await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .handlePlatformMessage(
+              channel.name,
+              const StandardMethodCodec().encodeMethodCall(
+                MethodCall('onChanged', phoneReading(index: 9)),
+              ),
+              (_) {},
+            );
+        unawaited(SystemVolume.setPercent(40));
 
-      expect(
-        calls.where((c) => c.method == 'setIndex').length,
-        2,
-        reason: 'the second request is a real change from step 9, not a repeat',
-      );
+        expect(
+          calls.where((c) => c.method == 'setIndex').length,
+          2,
+          reason:
+              'the second request is a real change from step 9, not a repeat',
+        );
 
-      gate.complete(phoneReading(index: 6));
-      await Future<void>.delayed(Duration.zero);
-    });
+        gate.complete(phoneReading(index: 6));
+        await Future<void>.delayed(Duration.zero);
+      },
+    );
 
-    test('but a MUTED stream is written to, because the write unmutes it', () async {
-      // Skipping the write here would leave the phone silent while the bar shows
-      // a level: `SystemVolumeChannel.apply` is what clears the mute flag.
-      answerWith(
-        (call) async => call.method == 'read'
-            ? phoneReading(index: 6, muted: true)
-            : phoneReading(index: 6),
-      );
+    test(
+      'but a MUTED stream is written to, because the write unmutes it',
+      () async {
+        // Skipping the write here would leave the phone silent while the bar shows
+        // a level: `SystemVolumeChannel.apply` is what clears the mute flag.
+        answerWith(
+          (call) async => call.method == 'read'
+              ? phoneReading(index: 6, muted: true)
+              : phoneReading(index: 6),
+        );
 
-      await SystemVolume.read();
-      final after = await SystemVolume.setPercent(40);
-      expect((calls.last.arguments as Map)['index'], 6);
-      expect(after!.muted, isFalse);
-    });
+        await SystemVolume.read();
+        final after = await SystemVolume.setPercent(40);
+        expect((calls.last.arguments as Map)['index'], 6);
+        expect(after!.muted, isFalse);
+      },
+    );
 
     test('a level that is not a number is never sent', () async {
       answerWith((_) async => phoneReading(index: 8));
@@ -646,7 +654,10 @@ void main() {
       await tester.pumpWidget(
         UncontrolledProviderScope(
           container: c,
-          child: MaterialApp(theme: RCrmTheme.dark, home: const SettingsScreen()),
+          child: MaterialApp(
+            theme: RCrmTheme.dark,
+            home: const SettingsScreen(),
+          ),
         ),
       );
       await tester.pump();

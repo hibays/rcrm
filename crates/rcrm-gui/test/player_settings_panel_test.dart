@@ -84,10 +84,7 @@ void main() {
 
     // Picking another strategy moves the note with it.
     await tester.pumpWidget(
-      _panel(
-        showOrientation: true,
-        orientation: PlayerOrientation.device,
-      ),
+      _panel(showOrientation: true, orientation: PlayerOrientation.device),
     );
     await tester.pumpAndSettle();
     expect(

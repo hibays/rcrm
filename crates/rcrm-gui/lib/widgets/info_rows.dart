@@ -18,7 +18,12 @@ class InfoRow extends StatelessWidget {
   final String label;
   final String? value;
 
-  const InfoRow({super.key, required this.icon, required this.label, this.value});
+  const InfoRow({
+    super.key,
+    required this.icon,
+    required this.label,
+    this.value,
+  });
 
   @override
   Widget build(BuildContext context) {

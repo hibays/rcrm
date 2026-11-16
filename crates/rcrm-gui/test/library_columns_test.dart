@@ -37,7 +37,12 @@ void main() {
       // What the caller must keep: two calls at the same scale answer the same
       // number even after the grid has already resized between them.
       final first = pinchColumnCount(startColumns: 4, scale: 2, min: 1, max: 8);
-      final second = pinchColumnCount(startColumns: 4, scale: 2, min: 1, max: 8);
+      final second = pinchColumnCount(
+        startColumns: 4,
+        scale: 2,
+        min: 1,
+        max: 8,
+      );
       expect(first, second);
       expect(first, 2);
       // The compounded version (feeding 2 back in) is the bug: it would say 1.

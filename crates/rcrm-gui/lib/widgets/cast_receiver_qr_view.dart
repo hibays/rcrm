@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:material_ui/material_ui.dart';
+
 import 'smart_popup_menu.dart';
 
 import '../config/theme.dart';
@@ -157,9 +158,8 @@ class _QrCardState extends State<CastReceiverQrCard> {
                           vertical: 8,
                         ),
                         decoration: BoxDecoration(
-                          color: const Color(
-                            0xFF101428,
-                          ).withValues(alpha: 0.85),
+                          color: const Color(0xFF101428)
+                              .withValues(alpha: 0.85),
                           borderRadius: BorderRadius.circular(20),
                           border: Border.all(
                             color: Colors.white.withValues(alpha: 0.5),
@@ -422,44 +422,44 @@ class CastReceiverQrView extends StatelessWidget {
               colors: [Color(0xFF101428), Color(0xFF1A1030), Color(0xFF0B0B14)],
             ),
           ),
-        child: SafeArea(
-          child: Stack(
-            children: [
-              Positioned.fill(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    // Landscape (TV, desktop windows, landscape phones):
-                    // side-by-side info + QR. Portrait: stacked, centered.
-                    final landscape =
-                        constraints.maxWidth > 700 &&
-                        constraints.maxWidth > constraints.maxHeight * 1.02;
-                    if (landscape) {
-                      return _buildLandscape(context, constraints);
-                    }
-                    return _buildPortrait(context, constraints);
-                  },
+          child: SafeArea(
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      // Landscape (TV, desktop windows, landscape phones):
+                      // side-by-side info + QR. Portrait: stacked, centered.
+                      final landscape =
+                          constraints.maxWidth > 700 &&
+                          constraints.maxWidth > constraints.maxHeight * 1.02;
+                      if (landscape) {
+                        return _buildLandscape(context, constraints);
+                      }
+                      return _buildPortrait(context, constraints);
+                    },
+                  ),
                 ),
-              ),
-              if (showBack)
-                Positioned(
-                  top: 4,
-                  left: 4,
-                  child: IconButton(
-                    tooltip: 'Back',
-                    onPressed: () => Navigator.of(context).maybePop(),
-                    icon: const Icon(Icons.arrow_back, color: Colors.white),
-                    style: IconButton.styleFrom(
-                      backgroundColor: Colors.white.withValues(alpha: 0.08),
-                      side: BorderSide(
-                        color: Colors.white.withValues(alpha: 0.15),
+                if (showBack)
+                  Positioned(
+                    top: 4,
+                    left: 4,
+                    child: IconButton(
+                      tooltip: 'Back',
+                      onPressed: () => Navigator.of(context).maybePop(),
+                      icon: const Icon(Icons.arrow_back, color: Colors.white),
+                      style: IconButton.styleFrom(
+                        backgroundColor: Colors.white.withValues(alpha: 0.08),
+                        side: BorderSide(
+                          color: Colors.white.withValues(alpha: 0.15),
+                        ),
                       ),
                     ),
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
-      ),
       ),
     );
   }

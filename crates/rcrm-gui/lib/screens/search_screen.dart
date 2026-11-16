@@ -6,6 +6,7 @@
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../config/theme.dart';
 import '../models/album.dart';
 import '../models/media_item.dart';
@@ -102,7 +103,11 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
     );
   }
 
-  Future<void> _showImageMenu(MediaItem item, Offset at, List<MediaItem> images) {
+  Future<void> _showImageMenu(
+    MediaItem item,
+    Offset at,
+    List<MediaItem> images,
+  ) {
     final index = images.indexOf(item);
     final safe = index < 0 ? 0 : index;
     return showMediaItemMenu(
@@ -216,9 +221,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
               Icon(
                 Icons.search_off,
                 size: 64,
-                color: Theme.of(
-                  context,
-                ).colorScheme.primary.withValues(alpha: 0.4),
+                color: Theme.of(context).colorScheme.primary
+                    .withValues(alpha: 0.4),
               ),
               const SizedBox(height: 16),
               Text(
@@ -464,8 +468,7 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
                       key: ValueKey(img.url),
                       item: img,
                       onTap: () => _openImage(images, index),
-                      onMenuRequested: (at) =>
-                          _showImageMenu(img, at, images),
+                      onMenuRequested: (at) => _showImageMenu(img, at, images),
                     ),
                   ),
                 ),
@@ -565,9 +568,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             Icon(
               Icons.search,
               size: 56,
-              color: Theme.of(
-                context,
-              ).colorScheme.primary.withValues(alpha: 0.3),
+              color: Theme.of(context).colorScheme.primary
+                  .withValues(alpha: 0.3),
             ),
             const SizedBox(height: 16),
             Text(
@@ -582,9 +584,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
             const SizedBox(height: 20),
             Text(
               'Start typing a file name or extension\ne.g. mkv, avif, jpg',
-              style: Theme.of(
-                context,
-              ).textTheme.bodySmall?.copyWith(height: 1.5),
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(height: 1.5),
               textAlign: TextAlign.center,
             ),
           ],
@@ -600,9 +601,8 @@ class _SearchScreenState extends ConsumerState<SearchScreen> {
         const SizedBox(width: 8),
         Text(
           title,
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-            color: Theme.of(context).colorScheme.primary,
-          ),
+          style: Theme.of(context).textTheme.titleSmall
+              ?.copyWith(color: Theme.of(context).colorScheme.primary),
         ),
       ],
     );

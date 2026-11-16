@@ -14,8 +14,10 @@
 
 import 'dart:async';
 import 'dart:ui' as ui;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
+
 import '../ffi/rust_bridge.dart';
 import '../services/bounded_fetch.dart';
 import '../services/image_load_gate.dart';
@@ -88,7 +90,10 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
       // can only see this entry once the write has completed. An unawaited
       // write let that cell's hit path decode a half-written file and delete
       // the entry underneath the writer (ThumbCache.remove).
-      await ThumbCache.write(diskKey, thumb); // persist the SMALL thumbnail only
+      await ThumbCache.write(
+        diskKey,
+        thumb,
+      ); // persist the SMALL thumbnail only
     }
     return thumb;
   }

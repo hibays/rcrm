@@ -1,11 +1,13 @@
 // screens/settings_screen.dart
 // RCrm GUI — settings screen
 import 'dart:io';
+
 import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
+
 import '../models/server_config.dart';
 import '../config/theme.dart';
 import '../providers/server_provider.dart';
@@ -125,10 +127,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   void _snack(String message) {
     if (!mounted) return;
-    SmartDialog.showNotify(
-      msg: message,
-      notifyType: NotifyType.success,
-    );
+    SmartDialog.showNotify(msg: message, notifyType: NotifyType.success);
   }
 
   Future<void> _loadDeployMode() async {
@@ -316,9 +315,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         child: const Text('Stop'),
                       )
                     : TextButton(
-                        onPressed: () => Navigator.of(
-                          ctx,
-                        ).pushNamedAndRemoveUntil('/setup', (_) => false),
+                        onPressed: () => Navigator.of(ctx)
+                            .pushNamedAndRemoveUntil('/setup', (_) => false),
                         child: const Text('Start'),
                       ),
               ),
@@ -539,15 +537,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               segments: const [
                 ButtonSegment(
                   value: 'system',
-                  label: Text('System', maxLines: 1, overflow: TextOverflow.ellipsis),
+                  label: Text(
+                    'System',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
                 ButtonSegment(
                   value: 'day',
-                  label: Text('Day', maxLines: 1, overflow: TextOverflow.ellipsis),
+                  label: Text(
+                    'Day',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
                 ButtonSegment(
                   value: 'night',
-                  label: Text('Night', maxLines: 1, overflow: TextOverflow.ellipsis),
+                  label: Text(
+                    'Night',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ],
               onChanged: (v) {
@@ -1054,9 +1064,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }) {
     final valueLabel = Text(
       '$value',
-      style: Theme.of(
-        context,
-      ).textTheme.bodyLarge?.copyWith(color: RCrmColors.textSecondary),
+      style: Theme.of(context).textTheme.bodyLarge
+          ?.copyWith(color: RCrmColors.textSecondary),
     );
     final slider = SliderTheme(
       data: SliderTheme.of(context).copyWith(
@@ -1299,9 +1308,8 @@ class _DirEditorState extends State<_DirEditor> {
                 alignment: Alignment.centerLeft,
                 child: Text(
                   'Changes are saved as you make them.',
-                  style: Theme.of(
-                    ctx,
-                  ).textTheme.bodySmall?.copyWith(color: RCrmColors.textSecondary),
+                  style: Theme.of(ctx).textTheme.bodySmall
+                      ?.copyWith(color: RCrmColors.textSecondary),
                 ),
               ),
               const SizedBox(height: 8),
@@ -1356,10 +1364,7 @@ class _DirEditorState extends State<_DirEditor> {
         // Done, not Save: every change above has already been persisted. The
         // button only closes the dialog (and, back in the settings screen, lets
         // the running server restart against the new list).
-        TextButton(
-          onPressed: _finish,
-          child: const Text('Done'),
-        ),
+        TextButton(onPressed: _finish, child: const Text('Done')),
       ],
     ),
   );

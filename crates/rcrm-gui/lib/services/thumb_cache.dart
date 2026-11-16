@@ -8,6 +8,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path_provider/path_provider.dart';
 
@@ -200,9 +201,9 @@ class ThumbCache {
               : plan.drop.length;
           await Future.wait([
             for (final name in plan.drop.sublist(i, end))
-              File(
-                '${d.path}/$name',
-              ).delete().then<void>((_) {}, onError: (_) {}),
+              File('${d.path}/$name')
+                  .delete()
+                  .then<void>((_) {}, onError: (_) {}),
           ]);
         }
       } catch (_) {}

@@ -38,7 +38,9 @@ void main() {
     final log = <String>[];
     await tester.pumpWidget(host(log));
 
-    final g = await tester.startGesture(tester.getCenter(find.byKey(const ValueKey('surface'))));
+    final g = await tester.startGesture(
+      tester.getCenter(find.byKey(const ValueKey('surface'))),
+    );
     await tester.pump(kLongPressTimeout + const Duration(milliseconds: 100));
     expect(log, ['2x on'], reason: 'the file is running at 2x');
 
@@ -60,7 +62,9 @@ void main() {
     final log = <String>[];
     await tester.pumpWidget(host(log));
 
-    final g = await tester.startGesture(tester.getCenter(find.byKey(const ValueKey('surface'))));
+    final g = await tester.startGesture(
+      tester.getCenter(find.byKey(const ValueKey('surface'))),
+    );
     // Past the pan's slop (which is where it takes the arena), then a second
     // move — a pan reports `onPanStart` on the move that crosses slop and only
     // starts reporting updates on the ones after it, which is exactly why a

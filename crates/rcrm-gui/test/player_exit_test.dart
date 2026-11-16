@@ -161,31 +161,32 @@ void main() {
       );
     });
 
-    testWidgets('the player\'s PopScope(canPop: false) does not refuse the pop', (
-      tester,
-    ) async {
-      // `popDisposition` (what `canPop: false` drives) is consulted by
-      // `maybePop` only; `popUntil` pops directly. The screen's own handler is
-      // still told, with `didPop: true`, so it returns without navigating again.
-      await tester.pumpWidget(
-        MaterialApp(
-          initialRoute: kLibraryRouteName,
-          routes: {kLibraryRouteName: (_) => const Text('library')},
-        ),
-      );
-      final invoked = <bool>[];
-      final nav = tester.state<NavigatorState>(find.byType(Navigator));
-      await _pushPlayer(tester, onPopInvoked: invoked.add);
+    testWidgets(
+      'the player\'s PopScope(canPop: false) does not refuse the pop',
+      (tester) async {
+        // `popDisposition` (what `canPop: false` drives) is consulted by
+        // `maybePop` only; `popUntil` pops directly. The screen's own handler is
+        // still told, with `didPop: true`, so it returns without navigating again.
+        await tester.pumpWidget(
+          MaterialApp(
+            initialRoute: kLibraryRouteName,
+            routes: {kLibraryRouteName: (_) => const Text('library')},
+          ),
+        );
+        final invoked = <bool>[];
+        final nav = tester.state<NavigatorState>(find.byType(Navigator));
+        await _pushPlayer(tester, onPopInvoked: invoked.add);
 
-      nav.popUntil(isLibraryLandingRoute);
-      await tester.pumpAndSettle();
+        nav.popUntil(isLibraryLandingRoute);
+        await tester.pumpAndSettle();
 
-      expect(find.text('player'), findsNothing);
-      expect(invoked, [
-        true,
-      ], reason: 'told once, after the pop really happened');
-      expect(find.text('library'), findsOneWidget);
-    });
+        expect(find.text('player'), findsNothing);
+        expect(invoked, [
+          true,
+        ], reason: 'told once, after the pop really happened');
+        expect(find.text('library'), findsOneWidget);
+      },
+    );
   });
 
   group('leavePlayerForLibrary (what the player\'s Home calls)', () {

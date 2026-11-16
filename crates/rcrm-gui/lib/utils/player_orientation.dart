@@ -81,8 +81,8 @@ enum PlayerOrientation {
   /// policy with a direction, because that is how a person chooses it: "stay in
   /// one orientation" is the decision, and which one is the detail under it.
   OrientationPolicy get policy => switch (this) {
-    PlayerOrientation.portrait || PlayerOrientation.landscape =>
-      OrientationPolicy.lock,
+    PlayerOrientation.portrait ||
+    PlayerOrientation.landscape => OrientationPolicy.lock,
     PlayerOrientation.fill => OrientationPolicy.fill,
     PlayerOrientation.system => OrientationPolicy.system,
     PlayerOrientation.device => OrientationPolicy.device,
@@ -195,11 +195,8 @@ class OrientationRequest {
           _sameOrientations(other.orientations, orientations);
 
   @override
-  int get hashCode => Object.hash(
-    followDevice,
-    fittedShape,
-    Object.hashAll(orientations),
-  );
+  int get hashCode =>
+      Object.hash(followDevice, fittedShape, Object.hashAll(orientations));
 
   @override
   String toString() => followDevice
@@ -229,8 +226,9 @@ const List<DeviceOrientation> _portrait = <DeviceOrientation>[
 ];
 
 /// Writes the mask the framework channel carries.
-typedef OrientationMaskWriter =
-    Future<void> Function(List<DeviceOrientation> orientations);
+typedef OrientationMaskWriter = Future<void> Function(
+  List<DeviceOrientation> orientations,
+);
 
 /// Asks the app's own channel to follow (or stop following) the device, and
 /// reports whether the request reached the platform.

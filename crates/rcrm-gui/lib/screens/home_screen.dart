@@ -483,9 +483,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           const SizedBox(width: 10),
           Text(
             title,
-            style: Theme.of(
-              context,
-            ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w600),
+            style: Theme.of(context).textTheme.headlineSmall
+                ?.copyWith(fontWeight: FontWeight.w600),
           ),
           const Spacer(),
           if (onViewAll != null)
@@ -561,9 +560,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             Icon(
               Icons.folder_open,
               size: 64,
-              color: Theme.of(
-                context,
-              ).colorScheme.primary.withValues(alpha: 0.5),
+              color: Theme.of(context).colorScheme.primary
+                  .withValues(alpha: 0.5),
             ),
             const SizedBox(height: 16),
             Text(

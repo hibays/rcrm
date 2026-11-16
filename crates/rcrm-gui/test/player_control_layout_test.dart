@@ -86,7 +86,11 @@ void main() {
           expect(p.showMute, isFalse, reason: 'mute returned at ${w}dp');
         }
         if (!sawMode) {
-          expect(p.showMode, isFalse, reason: 'the mode chip returned at ${w}dp');
+          expect(
+            p.showMode,
+            isFalse,
+            reason: 'the mode chip returned at ${w}dp',
+          );
         }
         sawFullscreen = sawFullscreen && p.showFullscreen;
         sawMute = sawMute && p.showMute;
@@ -133,7 +137,11 @@ void main() {
       // there is no other door to the mode at all, and a setting nobody can
       // reach is the worse trade. Pinned in both directions below.
       final chipNotSlider = plan(440, window: const Size(440, 900));
-      expect(chipNotSlider.showMode, isTrue, reason: 'the new chip is admitted');
+      expect(
+        chipNotSlider.showMode,
+        isTrue,
+        reason: 'the new chip is admitted',
+      );
       expect(chipNotSlider.showVolumeSlider, isFalse);
       expect(chipNotSlider.contentWidth, lessThanOrEqualTo(440));
       // A little wider and the slider earns its minimum drag width as well...

@@ -7,8 +7,10 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+
 import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../widgets/marquee_text.dart';
@@ -281,9 +283,7 @@ class _VideoCardState extends State<VideoCard> {
         }
       },
       loading: Container(
-        color: widget.mediaSurface
-            ? RCrmColors.playerSurface
-            : RCrmColors.coal,
+        color: widget.mediaSurface ? RCrmColors.playerSurface : RCrmColors.coal,
         child: Center(
           child: SizedBox(
             width: 20,
@@ -308,9 +308,7 @@ class _VideoCardState extends State<VideoCard> {
     // it does not become a second rectangle inside the tile.
     final Color chipBg = onMedia
         ? Colors.black87
-        : (widget.mediaSurface
-              ? RCrmColors.playerSurface
-              : RCrmColors.char);
+        : (widget.mediaSurface ? RCrmColors.playerSurface : RCrmColors.char);
     final Color chipFg = onMedia
         ? Colors.white
         : (widget.mediaSurface
@@ -343,9 +341,7 @@ class _VideoCardState extends State<VideoCard> {
     // floating over the picture.
     final Color strip = _hasPoster
         ? Colors.transparent
-        : (widget.mediaSurface
-              ? RCrmColors.playerSurface
-              : RCrmColors.coal);
+        : (widget.mediaSurface ? RCrmColors.playerSurface : RCrmColors.coal);
     return Positioned(
       bottom: 0,
       left: 0,
@@ -362,11 +358,7 @@ class _VideoCardState extends State<VideoCard> {
                     Colors.black.withValues(alpha: 0.3),
                     Colors.transparent,
                   ]
-                : [
-                    strip,
-                    strip.withValues(alpha: 0.55),
-                    Colors.transparent,
-                  ],
+                : [strip, strip.withValues(alpha: 0.55), Colors.transparent],
           ),
         ),
         child: Column(
@@ -402,9 +394,7 @@ class _VideoCardState extends State<VideoCard> {
   Widget _ph() => Container(
     // The placeholder is a media overlay too: on the picture it stays dark in
     // both appearances, so a card on media never turns into a cream block.
-    color: widget.mediaSurface
-        ? RCrmColors.playerSurface
-        : RCrmColors.coal,
+    color: widget.mediaSurface ? RCrmColors.playerSurface : RCrmColors.coal,
     child: Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [

@@ -389,9 +389,9 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
                                     '${_passwords.length} password(s) accepted'
                                     '${_lockedRemaining > 0 ? '  ·  $_lockedRemaining still locked' : ''}',
                                     style: TextStyle(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.primary,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .primary,
                                       fontSize: 13,
                                     ),
                                     textAlign: TextAlign.center,
@@ -447,9 +447,8 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
                         Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.error.withValues(alpha: 0.1),
+                            color: Theme.of(context).colorScheme.error
+                                .withValues(alpha: 0.1),
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: Text(

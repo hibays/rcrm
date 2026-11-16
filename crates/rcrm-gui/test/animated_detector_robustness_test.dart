@@ -33,8 +33,7 @@ void main() {
   String url(String name) =>
       'http://127.0.0.1:${server.port}/${name.startsWith('/') ? name.substring(1) : name}';
 
-  test('isAnimatedUrl handles a 200-Full small body without hanging',
-      () async {
+  test('isAnimatedUrl handles a 200-Full small body without hanging', () async {
     // A server that answers the 0-4095 range with 200 (whole file) instead of
     // 206 must still be handled — the fetch caps at maxBytes, not the status.
     server.listen((req) async {

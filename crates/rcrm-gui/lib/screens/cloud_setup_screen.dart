@@ -2,6 +2,7 @@
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../config/theme.dart';
 import '../models/server_config.dart';
 import '../providers/server_provider.dart';
@@ -189,10 +190,7 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
       '${d.day.toString().padLeft(2, '0')}';
 
   void _showErr(String m) {
-    SmartDialog.showNotify(
-      msg: m,
-      notifyType: NotifyType.error,
-    );
+    SmartDialog.showNotify(msg: m, notifyType: NotifyType.error);
   }
 
   @override
@@ -406,12 +404,11 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
                                       if (mounted) {
                                         // Full stack reset: setup must end up
                                         // as the only route below home.
-                                        Navigator.of(
-                                          context,
-                                        ).pushNamedAndRemoveUntil(
-                                          '/setup',
-                                          (_) => false,
-                                        );
+                                        Navigator.of(context)
+                                            .pushNamedAndRemoveUntil(
+                                              '/setup',
+                                              (_) => false,
+                                            );
                                       }
                                     },
                               child: const Text('Switch to Local Deploy'),

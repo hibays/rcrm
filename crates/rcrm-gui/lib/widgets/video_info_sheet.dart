@@ -57,21 +57,33 @@ class VideoInfoSheet extends StatelessWidget {
     final technical = _technicalLine(track);
     final folder = _folderLabel();
     final createdAt = track?.createdAt;
-    final device = [track?.make, track?.model]
-        .whereType<String>()
-        .where((s) => s.trim().isNotEmpty)
-        .join(' ');
+    final device = [
+      track?.make,
+      track?.model,
+    ].whereType<String>().where((s) => s.trim().isNotEmpty).join(' ');
     final extraRows = <Widget>[
       if (createdAt != null)
-        InfoRow(icon: Icons.event_outlined, label: 'Created', value: formatStamp(createdAt)),
+        InfoRow(
+          icon: Icons.event_outlined,
+          label: 'Created',
+          value: formatStamp(createdAt),
+        ),
       if (track?.author != null)
-        InfoRow(icon: Icons.person_outline, label: 'Author', value: track!.author),
+        InfoRow(
+          icon: Icons.person_outline,
+          label: 'Author',
+          value: track!.author,
+        ),
       if (track?.software != null)
         InfoRow(icon: Icons.memory, label: 'Software', value: track!.software),
       if (device.isNotEmpty)
         InfoRow(icon: Icons.devices_other, label: 'Device', value: device),
       if (track?.gpsIso6709 != null)
-        InfoRow(icon: Icons.place_outlined, label: 'Location', value: track!.gpsIso6709),
+        InfoRow(
+          icon: Icons.place_outlined,
+          label: 'Location',
+          value: track!.gpsIso6709,
+        ),
     ];
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
@@ -128,10 +140,7 @@ class VideoInfoSheet extends StatelessWidget {
               label: 'Modified',
               value: formatStamp(item.modified!.toLocal()),
             ),
-          if (extraRows.isNotEmpty) ...[
-            const InfoRule(),
-            ...extraRows,
-          ],
+          if (extraRows.isNotEmpty) ...[const InfoRule(), ...extraRows],
         ],
       ),
     );

@@ -108,10 +108,7 @@ void main() {
 
     testWidgets('falls back to the scanner\'s resolution when the container '
         'has none', (tester) async {
-      await _pump(
-        tester,
-        VideoInfoSheet(item: _item(resolution: '1280x720')),
-      );
+      await _pump(tester, VideoInfoSheet(item: _item(resolution: '1280x720')));
       expect(
         find.text('1280 × 720 (720p) • 01:23 • 240.0 MB • MP4'),
         findsOneWidget,

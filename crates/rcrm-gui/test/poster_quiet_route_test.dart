@@ -527,41 +527,38 @@ void main() {
       await _drainPosterIdleTimer(tester);
     });
 
-    testWidgets(
-      'a back step LEAVES the page it replaces the way a pop leaves the page it '
-      'pops — Android, sample for sample',
-      (tester) async {
-        // The other half of the step. `backStep` alone fixed the page ARRIVING;
-        // without the hand-off the page being left kept a push's exit, so on
-        // Android both pages travelled left together (0 / -18.74 / -154.30 /
-        // -190.17 / -198.29px for the outgoing one) and the step read as another
-        // forward jump with a scrambled crossfade over it.
-        final native = await _popExitSamples(tester, TargetPlatform.android);
-        final back = await _leavingSamples(tester, backStep: true);
+    testWidgets('a back step LEAVES the page it replaces the way a pop leaves the page it '
+        'pops — Android, sample for sample', (tester) async {
+      // The other half of the step. `backStep` alone fixed the page ARRIVING;
+      // without the hand-off the page being left kept a push's exit, so on
+      // Android both pages travelled left together (0 / -18.74 / -154.30 /
+      // -190.17 / -198.29px for the outgoing one) and the step read as another
+      // forward jump with a scrambled crossfade over it.
+      final native = await _popExitSamples(tester, TargetPlatform.android);
+      final back = await _leavingSamples(tester, backStep: true);
 
-        expect(back, hasLength(native.length));
-        for (var i = 0; i < native.length; i++) {
-          expect(
-            back[i],
-            closeTo(native[i], 0.01),
-            reason:
-                'sample $i: the page being left has to leave on the platform\'s '
-                'own pop clock, not on the one a push covers it with',
-          );
-        }
-        // And the SIGN is the point: a pop never sends the page it pops
-        // leftwards — that is the push exit, and it is the exact mirror.
-        expect(native.first, closeTo(0, 0.01));
-        for (final x in native) {
-          expect(
-            x,
-            greaterThanOrEqualTo(-0.01),
-            reason: 'a popped page leaves to the right',
-          );
-        }
-        expect(native.last, greaterThan(0.2 * _pageWidth));
-      },
-    );
+      expect(back, hasLength(native.length));
+      for (var i = 0; i < native.length; i++) {
+        expect(
+          back[i],
+          closeTo(native[i], 0.01),
+          reason:
+              'sample $i: the page being left has to leave on the platform\'s '
+              'own pop clock, not on the one a push covers it with',
+        );
+      }
+      // And the SIGN is the point: a pop never sends the page it pops
+      // leftwards — that is the push exit, and it is the exact mirror.
+      expect(native.first, closeTo(0, 0.01));
+      for (final x in native) {
+        expect(
+          x,
+          greaterThanOrEqualTo(-0.01),
+          reason: 'a popped page leaves to the right',
+        );
+      }
+      expect(native.last, greaterThan(0.2 * _pageWidth));
+    });
 
     testWidgets('a forward jump still leaves the page it replaces as a push', (
       tester,
@@ -858,32 +855,33 @@ void main() {
       await _drainPosterIdleTimer(tester);
     });
 
-    testWidgets('a jump (pushReplacement) protects its OWN entrance, then opens', (
-      tester,
-    ) async {
-      // The hole this pins: the outgoing route's exit used to `resume()`
-      // unconditionally, so on a jump it opened the gate for the INCOMING route —
-      // the one that is still entering, which is the window the gate exists for.
-      // One release per route is what closes it.
-      final nav = await _host(tester, TargetPlatform.android);
-      nav.push(PosterQuietRoute<void>(build: (_) => const Text('first')));
-      await tester.pumpAndSettle();
-      expect(ThumbnailService.posterSuspended, isFalse);
+    testWidgets(
+      'a jump (pushReplacement) protects its OWN entrance, then opens',
+      (tester) async {
+        // The hole this pins: the outgoing route's exit used to `resume()`
+        // unconditionally, so on a jump it opened the gate for the INCOMING route —
+        // the one that is still entering, which is the window the gate exists for.
+        // One release per route is what closes it.
+        final nav = await _host(tester, TargetPlatform.android);
+        nav.push(PosterQuietRoute<void>(build: (_) => const Text('first')));
+        await tester.pumpAndSettle();
+        expect(ThumbnailService.posterSuspended, isFalse);
 
-      nav.pushReplacement(
-        PosterQuietRoute<void>(build: (_) => const Text('player')),
-      );
-      await tester.pump();
-      expect(
-        ThumbnailService.posterSuspended,
-        isTrue,
-        reason: 'the incoming route is entering: the outgoing one is done',
-      );
+        nav.pushReplacement(
+          PosterQuietRoute<void>(build: (_) => const Text('player')),
+        );
+        await tester.pump();
+        expect(
+          ThumbnailService.posterSuspended,
+          isTrue,
+          reason: 'the incoming route is entering: the outgoing one is done',
+        );
 
-      await tester.pumpAndSettle();
-      expect(ThumbnailService.posterSuspended, isFalse);
-      await _drainPosterIdleTimer(tester);
-    });
+        await tester.pumpAndSettle();
+        expect(ThumbnailService.posterSuspended, isFalse);
+        await _drainPosterIdleTimer(tester);
+      },
+    );
 
     testWidgets('one warm player per route, created inside the push and handed '
         'to the builder', (tester) async {

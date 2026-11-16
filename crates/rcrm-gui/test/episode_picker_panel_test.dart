@@ -47,9 +47,8 @@ void main() {
     Size size = const Size(1200, 800),
   }) => MaterialApp(
     home: MediaQuery(
-      data: MediaQueryData(size: size).copyWith(
-        disableAnimations: disableAnimations,
-      ),
+      data: MediaQueryData(size: size)
+          .copyWith(disableAnimations: disableAnimations),
       child: Scaffold(
         backgroundColor: Colors.black,
         body: Stack(children: [Positioned.fill(child: child)]),
@@ -192,9 +191,7 @@ void main() {
       tester,
     ) async {
       var dismissed = 0;
-      await tester.pumpWidget(
-        panel(still: true, onDismiss: () => dismissed++),
-      );
+      await tester.pumpWidget(panel(still: true, onDismiss: () => dismissed++));
       await tester.pump();
       expect(sheetOffset(tester), Offset.zero, reason: 'no travel at all');
       expect(scrim(tester).$1, closeTo(0.45, 0.01), reason: 'but fully there');

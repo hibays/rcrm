@@ -3,6 +3,7 @@
 // format badge, animated indicator, live-photo badge.
 
 import 'package:material_ui/material_ui.dart';
+
 import '../models/media_item.dart';
 import '../services/animated_detector.dart';
 import '../services/live_photo.dart';

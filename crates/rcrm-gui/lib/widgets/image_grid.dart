@@ -8,6 +8,7 @@
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
+
 import '../services/item_cache_limit.dart';
 import '../models/media_item.dart';
 import 'image_card.dart';

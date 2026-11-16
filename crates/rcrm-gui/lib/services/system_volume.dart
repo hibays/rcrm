@@ -56,9 +56,10 @@ int systemVolumeIndex(double percent, {required int min, required int max}) {
   if (max <= min) return min;
   if (!percent.isFinite) return min;
   final span = max - min;
-  return (min + (percent.clamp(0.0, 100.0) / 100) * span)
-      .round()
-      .clamp(min, max);
+  return (min + (percent.clamp(0.0, 100.0) / 100) * span).round().clamp(
+    min,
+    max,
+  );
 }
 
 /// The percentage [index] means on that stream -- the inverse of
@@ -104,8 +105,7 @@ bool shouldBindSystemVolume({
   required bool supported,
   required bool setting,
   SystemVolumeReading? reading,
-}) =>
-    supported && setting && reading != null && !reading.fixed;
+}) => supported && setting && reading != null && !reading.fixed;
 
 /// The device's media volume, as the platform last reported it.
 ///
@@ -157,7 +157,8 @@ class SystemVolumeReading {
       systemVolumePercent(lastAudible, min: min, max: max);
 
   /// The step that means [percent] on this stream.
-  int indexFor(double percent) => systemVolumeIndex(percent, min: min, max: max);
+  int indexFor(double percent) =>
+      systemVolumeIndex(percent, min: min, max: max);
 
   /// Reads a platform map without trusting a single field of it.
   ///
@@ -279,8 +280,9 @@ class SystemVolume {
     if (!supported || _watching) return;
     _watching = true;
     PlatformBridge.watchVolumeChanges((Map<String, Object?> args) {
-      final SystemVolumeReading? reading =
-          SystemVolumeReading.fromPlatform(args);
+      final SystemVolumeReading? reading = SystemVolumeReading.fromPlatform(
+        args,
+      );
       if (reading != null) _publish(reading);
     });
   }
@@ -292,9 +294,7 @@ class SystemVolume {
   /// that case, so a failed read can never look like a reading.
   static Future<SystemVolumeReading?> read() async {
     if (!supported) return null;
-    final SystemVolumeReading? reading = await _call(
-      PlatformBridge.volumeRead,
-    );
+    final SystemVolumeReading? reading = await _call(PlatformBridge.volumeRead);
     if (reading != null) _publish(reading);
     return reading;
   }
@@ -317,7 +317,8 @@ class SystemVolume {
     final SystemVolumeReading? current = state.value;
     if (!supported || current == null || !percent.isFinite) return null;
     final int index = current.indexFor(percent);
-    if (index == (_requested ?? current.index) && !current.muted) return current;
+    if (index == (_requested ?? current.index) && !current.muted)
+      return current;
     _requested = index;
     final SystemVolumeReading? reading = await _call(
       () => PlatformBridge.volumeSetIndex(index),

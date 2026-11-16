@@ -222,7 +222,9 @@ class MpvPoster {
           if (rawUsable) {
             final shotStarted = DateTime.now();
             final raw = await _tryShot(player);
-            final shotMs = DateTime.now().difference(shotStarted).inMilliseconds;
+            final shotMs = DateTime.now()
+                .difference(shotStarted)
+                .inMilliseconds;
             if (raw != null && raw.length == videoWidth * videoHeight * 4) {
               final compareStarted = DateTime.now();
               final stale = isStalePosterFrame(

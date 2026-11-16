@@ -1,6 +1,7 @@
 // providers/server_provider.dart
 import 'dart:async';
 import 'dart:io' show HandshakeException;
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../ffi/rust_bridge.dart';

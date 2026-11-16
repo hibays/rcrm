@@ -1,10 +1,12 @@
 // main.dart
 import 'dart:io' show Platform;
+
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import 'app.dart';
 
 import 'package:rcrm_gui/services/settings_service.dart';

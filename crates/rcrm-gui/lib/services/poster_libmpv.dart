@@ -97,9 +97,8 @@ class LibMpvPoster {
     final id = ++_nextId;
     _pending[id] = completer;
     try {
-      Pointer<NativeFunction<RcrmGeneratePosterAsyncC>>.fromAddress(
-        address,
-      ).asFunction<RcrmGeneratePosterAsyncDart>()(
+      Pointer<NativeFunction<RcrmGeneratePosterAsyncC>>.fromAddress(address)
+          .asFunction<RcrmGeneratePosterAsyncDart>()(
         urlPtr,
         headersPtr,
         positionsPtr,
@@ -135,8 +134,9 @@ class LibMpvPoster {
 
   static void _ensureCallback() {
     _callback ??=
-        NativeCallable<Void Function(Pointer<Void>, Int32, Pointer<Void>)>
-            .listener(_onResult);
+        NativeCallable<
+          Void Function(Pointer<Void>, Int32, Pointer<Void>)
+        >.listener(_onResult);
   }
 
   static void _onResult(Pointer<Void> buffer, int status, Pointer<Void> ctx) {

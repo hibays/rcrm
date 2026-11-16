@@ -107,10 +107,7 @@ int videoListColumnCount({required String mode, required double width}) {
 /// Capped at 1.5x for the same reason `estimatedMenuHeight` caps: past that the
 /// row's own padding takes over, and an unbounded multiple would push a phone
 /// list into one row per screen.
-double videoListRowHeight({
-  required int columns,
-  required double textScale,
-}) {
+double videoListRowHeight({required int columns, required double textScale}) {
   final scale = textScale.isFinite ? textScale.clamp(1.0, 1.5) : 1.0;
   return (columns > 1 ? 116.0 : 100.0) * scale;
 }
@@ -143,10 +140,7 @@ class VideoGridBounds {
 /// what one-handed browsing wants); a desktop window keeps at least two, because
 /// one column of 160dp-wide cards on a 1920px screen is a list pretending to be
 /// a grid.
-VideoGridBounds videoGridBounds({
-  required double width,
-  required bool mobile,
-}) {
+VideoGridBounds videoGridBounds({required double width, required bool mobile}) {
   const minCardWidth = 160.0;
   final maxByWidth = (width / minCardWidth).floor().clamp(1, 6);
   final min = mobile ? 1 : (maxByWidth < 2 ? 1 : 2);

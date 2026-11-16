@@ -66,7 +66,9 @@ class PlayerBufferingIndicator extends StatelessWidget {
                 child: CircularProgressIndicator(
                   strokeWidth: 2.5,
                   valueColor: AlwaysStoppedAnimation(RCrmColors.playerAccent),
-                  backgroundColor: RCrmColors.playerText.withValues(alpha: 0.14),
+                  backgroundColor: RCrmColors.playerText.withValues(
+                    alpha: 0.14,
+                  ),
                 ),
               ),
             ),
@@ -137,7 +139,9 @@ class PlayerPlaybackError extends StatelessWidget {
                     textAlign: TextAlign.center,
                     maxLines: 4,
                     overflow: TextOverflow.ellipsis,
-                    style: text.bodySmall?.copyWith(color: RCrmColors.playerTextSecondary),
+                    style: text.bodySmall?.copyWith(
+                      color: RCrmColors.playerTextSecondary,
+                    ),
                   ),
                   const SizedBox(height: 18),
                   Row(

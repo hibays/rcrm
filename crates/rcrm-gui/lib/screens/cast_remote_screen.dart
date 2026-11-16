@@ -813,9 +813,7 @@ class _State extends ConsumerState<CastRemoteScreen>
                     : Icons.cast,
                 size: 20,
                 color: connected
-                    ? (playing
-                          ? theme.colorScheme.primary
-                          : RCrmColors.ok)
+                    ? (playing ? theme.colorScheme.primary : RCrmColors.ok)
                     : theme.colorScheme.error,
               ),
               const SizedBox(width: 10),
@@ -852,7 +850,10 @@ class _State extends ConsumerState<CastRemoteScreen>
               else if (connected && !_ui.dragging)
                 Text(
                   '${formatMs(_ui.status.posMs)} / ${formatMs(_ui.status.durMs)}',
-                  style: TextStyle(fontSize: 12, color: RCrmColors.textSecondary),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: RCrmColors.textSecondary,
+                  ),
                 ),
             ],
           ),
@@ -1241,7 +1242,10 @@ class _State extends ConsumerState<CastRemoteScreen>
               children: [
                 Text(
                   formatMs(shownPos.round()),
-                  style: TextStyle(fontSize: 11, color: RCrmColors.textSecondary),
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: RCrmColors.textSecondary,
+                  ),
                 ),
                 Expanded(
                   child: SliderTheme(
@@ -1305,7 +1309,10 @@ class _State extends ConsumerState<CastRemoteScreen>
                 ),
                 Text(
                   formatMs(dur),
-                  style: TextStyle(fontSize: 11, color: RCrmColors.textSecondary),
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: RCrmColors.textSecondary,
+                  ),
                 ),
               ],
             ),

@@ -82,10 +82,8 @@ class PlayerEof {
   /// Forwards, or by less than the epsilon, this state comes back unchanged --
   /// including a forward seek past the end, which is what holding the right
   /// arrow key does and which must stay a forward seek.
-  PlayerEof seeked({
-    required Duration target,
-    required Duration current,
-  }) => finished && target < current - takeBackEpsilon ? idle : this;
+  PlayerEof seeked({required Duration target, required Duration current}) =>
+      finished && target < current - takeBackEpsilon ? idle : this;
 
   @override
   bool operator ==(Object other) =>

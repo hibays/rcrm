@@ -22,7 +22,10 @@
 import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
 
-typedef PinchChildBuilder = Widget Function(BuildContext context, bool pinching);
+typedef PinchChildBuilder = Widget Function(
+  BuildContext context,
+  bool pinching,
+);
 
 class TwoFingerPinch extends StatefulWidget {
   /// Two fingers have landed and the gesture starts. Callers capture their

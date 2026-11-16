@@ -20,8 +20,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart'
-    show ChangeNotifier, visibleForTesting;
+import 'package:flutter/foundation.dart' show ChangeNotifier, visibleForTesting;
 
 import '../utils/media_url.dart';
 import '../utils/poster_backend.dart';
@@ -277,7 +276,8 @@ class ThumbnailService {
           result = null;
         }
         try {
-          if (result != null && result.isNotEmpty) await _cache(videoUrl, result);
+          if (result != null && result.isNotEmpty)
+            await _cache(videoUrl, result);
         } catch (_) {
           // Filing the bytes is best-effort: the caller asked for a poster, not
           // for a cache entry, and an answer is still owed either way.
@@ -337,7 +337,9 @@ class ThumbnailService {
         // media_kit the same app can still take a screenshot, so use it; on a
         // desktop target the player needs that very library, so no poster is
         // the honest answer rather than a second doomed attempt.
-        posterLog('libmpv|unavailable|falling_back=${isMobile ? 'mpv' : 'none'}');
+        posterLog(
+          'libmpv|unavailable|falling_back=${isMobile ? 'mpv' : 'none'}',
+        );
         if (!isMobile) return null;
         return MpvPoster.generate(
           url,

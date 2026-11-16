@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:window_manager/window_manager.dart';
+
 import '../config/theme.dart';
 import '../providers/window_chrome_provider.dart';
 import '../services/window_drag.dart';
@@ -244,8 +245,7 @@ class _TbBtnState extends State<_TbBtn> {
     final bg = _pressed
         ? RCrmColors.textPrimary.withValues(alpha: 0.15)
         : _hovered
-        ? (widget.hoverBg ??
-            RCrmColors.textPrimary.withValues(alpha: 0.10))
+        ? (widget.hoverBg ?? RCrmColors.textPrimary.withValues(alpha: 0.10))
         : Colors.transparent;
 
     return MouseRegion(

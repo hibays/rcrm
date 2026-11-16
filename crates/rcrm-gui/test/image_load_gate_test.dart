@@ -140,7 +140,11 @@ void main() {
       // than left pending.
       expect(stacked.first.isCompleted, isTrue);
       expect(stacked.last.isCompleted, isFalse);
-      expect(last.isCompleted, isFalse, reason: 'the newest request was dropped');
+      expect(
+        last.isCompleted,
+        isFalse,
+        reason: 'the newest request was dropped',
+      );
       expect(gate.waitingCount, depth, reason: 'the stack is fixed length');
     });
 
@@ -192,7 +196,10 @@ void main() {
     /// Resolves [url]'s thumbnail. Every outcome is irrelevant here — only the
     /// ORDER of the requests is under test — so the error is swallowed.
     void ask(String url) {
-      final stream = DiskThumbImage(url, 64).resolve(const ImageConfiguration());
+      final stream = DiskThumbImage(
+        url,
+        64,
+      ).resolve(const ImageConfiguration());
       final listener = ImageStreamListener((_, _) {}, onError: (_, _) {});
       stream.addListener(listener);
       streams.add(stream);

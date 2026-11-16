@@ -19,6 +19,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
+
 import 'smart_popup_menu.dart';
 
 import '../config/theme.dart';
@@ -938,7 +939,11 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
     return IconButton(
       // `color` used to default to a compile-time colour; it is a runtime
       // token now, so the fallback moved into the body.
-      icon: Icon(icon, color: color ?? RCrmColors.playerTextFaint, size: size ?? m.icon),
+      icon: Icon(
+        icon,
+        color: color ?? RCrmColors.playerTextFaint,
+        size: size ?? m.icon,
+      ),
       onPressed: onPressed,
       tooltip: tooltip,
       padding: EdgeInsets.zero,
@@ -1117,11 +1122,7 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                   ),
                   if (widget.speed == s) ...[
                     const SizedBox(width: 8),
-                    Icon(
-                      Icons.check,
-                      size: 15,
-                      color: RCrmColors.playerAccent,
-                    ),
+                    Icon(Icons.check, size: 15, color: RCrmColors.playerAccent),
                   ],
                 ],
               ),
@@ -1251,7 +1252,9 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
           child: _modeGlyph(
             widget.mode,
             size: m.chipIcon,
-            color: altered ? RCrmColors.playerAccent : RCrmColors.playerTextSecondary,
+            color: altered
+                ? RCrmColors.playerAccent
+                : RCrmColors.playerTextSecondary,
           ),
         ),
       ),
@@ -1324,11 +1327,7 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
                   ),
                   if (widget.mode == mode) ...[
                     const SizedBox(width: 8),
-                    Icon(
-                      Icons.check,
-                      size: 15,
-                      color: RCrmColors.playerAccent,
-                    ),
+                    Icon(Icons.check, size: 15, color: RCrmColors.playerAccent),
                   ],
                 ],
               ),
@@ -1369,7 +1368,6 @@ class _PlayerControlBarState extends State<PlayerControlBar> {
     _widthCache[key] = tp.width;
     return tp.width;
   }
-
 }
 
 // ── Fullscreen top bar ──────────────────────────────────────────────
@@ -1436,7 +1434,11 @@ class PlayerTopBar extends StatelessWidget {
       child: Row(
         children: [
           IconButton(
-            icon: Icon(Icons.arrow_back, color: RCrmColors.playerText, size: m.icon),
+            icon: Icon(
+              Icons.arrow_back,
+              color: RCrmColors.playerText,
+              size: m.icon,
+            ),
             onPressed: onBack,
             tooltip: 'Back',
             padding: EdgeInsets.zero,
@@ -1446,7 +1448,11 @@ class PlayerTopBar extends StatelessWidget {
           ),
           if (onHome != null)
             IconButton(
-              icon: Icon(Icons.home, color: RCrmColors.playerText, size: m.icon),
+              icon: Icon(
+                Icons.home,
+                color: RCrmColors.playerText,
+                size: m.icon,
+              ),
               onPressed: onHome,
               tooltip: 'Home',
               padding: EdgeInsets.zero,
@@ -1469,7 +1475,11 @@ class PlayerTopBar extends StatelessWidget {
           ),
           if (onSettings != null)
             IconButton(
-              icon: Icon(Icons.settings, color: RCrmColors.playerText, size: m.icon),
+              icon: Icon(
+                Icons.settings,
+                color: RCrmColors.playerText,
+                size: m.icon,
+              ),
               onPressed: onSettings,
               tooltip: 'Playback settings',
               padding: EdgeInsets.zero,
@@ -1680,7 +1690,10 @@ class _PlayerGestureChipState extends State<PlayerGestureChip> {
                   const SizedBox(height: 4),
                   Text(
                     '$_last%',
-                    style: TextStyle(color: RCrmColors.playerText, fontSize: 13),
+                    style: TextStyle(
+                      color: RCrmColors.playerText,
+                      fontSize: 13,
+                    ),
                   ),
                 ],
               ),
