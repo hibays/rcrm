@@ -798,8 +798,8 @@ void main() {
   });
 
   group('the route still carries its hooks', () {
-    testWidgets('install() closes the poster gate before the page builds, '
-        'dispose() opens it', (tester) async {
+    testWidgets('install() closes the poster gate before the page builds, and '
+        'the END OF THE ENTRANCE opens it', (tester) async {
       final suspendedAtBuild = <bool>[];
       late NavigatorState nav;
       final route = PosterQuietRoute<void>(
@@ -815,10 +815,21 @@ void main() {
 
       nav = await _host(tester, TargetPlatform.android);
       nav.push(route);
-      await tester.pumpAndSettle();
+      await tester.pump(); // the entrance is running: the gate is shut
 
       expect(suspendedAtBuild, [true]);
       expect(ThumbnailService.posterSuspended, isTrue);
+
+      // The step is over — and the gate opens with it, WHILE the player is
+      // still up. This route's own Related list needs posters, and keeping the
+      // gate shut until the player closed is why related videos without a
+      // cached poster spun for the whole session.
+      await tester.pumpAndSettle();
+      expect(
+        ThumbnailService.posterSuspended,
+        isFalse,
+        reason: 'the entrance is over: the route\'s own posters may load',
+      );
 
       nav.pop();
       await tester.pumpAndSettle();
@@ -827,6 +838,50 @@ void main() {
         isFalse,
         reason: 'the route is gone for real: poster work may start again',
       );
+      await _drainPosterIdleTimer(tester);
+    });
+
+    testWidgets('a route popped while still entering still opens the gate', (
+      tester,
+    ) async {
+      // The status listener never sees `completed` here: `dispose()` is the
+      // only release, and it must be.
+      final nav = await _host(tester, TargetPlatform.android);
+      nav.push(PosterQuietRoute<void>(build: (_) => const Text('player')));
+      await tester.pump();
+      expect(ThumbnailService.posterSuspended, isTrue);
+
+      nav.pop();
+      await tester.pump();
+      await tester.pumpAndSettle();
+      expect(ThumbnailService.posterSuspended, isFalse);
+      await _drainPosterIdleTimer(tester);
+    });
+
+    testWidgets('a jump (pushReplacement) protects its OWN entrance, then opens', (
+      tester,
+    ) async {
+      // The hole this pins: the outgoing route's exit used to `resume()`
+      // unconditionally, so on a jump it opened the gate for the INCOMING route —
+      // the one that is still entering, which is the window the gate exists for.
+      // One release per route is what closes it.
+      final nav = await _host(tester, TargetPlatform.android);
+      nav.push(PosterQuietRoute<void>(build: (_) => const Text('first')));
+      await tester.pumpAndSettle();
+      expect(ThumbnailService.posterSuspended, isFalse);
+
+      nav.pushReplacement(
+        PosterQuietRoute<void>(build: (_) => const Text('player')),
+      );
+      await tester.pump();
+      expect(
+        ThumbnailService.posterSuspended,
+        isTrue,
+        reason: 'the incoming route is entering: the outgoing one is done',
+      );
+
+      await tester.pumpAndSettle();
+      expect(ThumbnailService.posterSuspended, isFalse);
       await _drainPosterIdleTimer(tester);
     });
 

@@ -14,6 +14,7 @@
 // preview wants a flat grey cell — so both are passed in, and `VideoCard` passes
 // the widgets it always drew.
 
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:material_ui/material_ui.dart';
@@ -21,6 +22,11 @@ import 'package:material_ui/material_ui.dart';
 import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../services/thumbnail_service.dart';
+
+/// How long this tile may show its spinner before it shows its placeholder. The
+/// job is NOT cancelled — a late poster still replaces it — this only stops "slow"
+/// from looking like "wedged".
+const Duration kPosterSpinnerBudget = Duration(seconds: 20);
 
 class VideoPoster extends StatefulWidget {
   final MediaItem item;
@@ -68,6 +74,9 @@ class _VideoPosterState extends State<VideoPoster> {
   /// spin errorBuilder → reload → errorBuilder forever.
   bool _retried = false;
 
+  /// Ends the spinner even when the answer never comes. See [kPosterSpinnerBudget].
+  Timer? _spinnerBudget;
+
   @override
   void initState() {
     super.initState();
@@ -84,6 +93,8 @@ class _VideoPosterState extends State<VideoPoster> {
 
   @override
   void dispose() {
+    _spinnerBudget?.cancel();
+    _spinnerBudget = null;
     ThumbnailService.posterRefresh.removeListener(_onPosterRefreshed);
     super.dispose();
   }
@@ -135,6 +146,13 @@ class _VideoPosterState extends State<VideoPoster> {
 
   Future<void> _load({bool refresh = false}) async {
     final gen = ++_gen;
+    _spinnerBudget?.cancel();
+    // Bounds the TILE's wait, not the job: a late poster still lands below.
+    _spinnerBudget = Timer(kPosterSpinnerBudget, () {
+      _spinnerBudget = null;
+      if (!mounted || _gen != gen) return;
+      setState(() => _loading = false);
+    });
     Uint8List? poster;
     try {
       poster = await _ts.generatePoster(
@@ -146,6 +164,9 @@ class _VideoPosterState extends State<VideoPoster> {
       );
     } catch (_) {
       poster = null;
+    } finally {
+      _spinnerBudget?.cancel();
+      _spinnerBudget = null;
     }
     if (!mounted || _gen != gen) return;
     setState(() {

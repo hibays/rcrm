@@ -26,8 +26,8 @@ MediaItem _video(String path, String name) => MediaItem(
 );
 
 void main() {
-  setUp(() => ThumbnailService.suppressPosterGeneration = true);
-  tearDown(() => ThumbnailService.suppressPosterGeneration = false);
+  setUp(() => ThumbnailService.debugPosterLoader = ThumbnailService.noPoster);
+  tearDown(() => ThumbnailService.debugPosterLoader = null);
   testWidgets(
     'stopping the server clears library caches and shows consistent empty UI',
     (tester) async {

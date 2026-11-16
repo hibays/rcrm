@@ -80,9 +80,9 @@ Future<void> _pump(WidgetTester tester, ProviderContainer c) async {
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
-    ThumbnailService.suppressPosterGeneration = true;
+    ThumbnailService.debugPosterLoader = ThumbnailService.noPoster;
   });
-  tearDown(() => ThumbnailService.suppressPosterGeneration = false);
+  tearDown(() => ThumbnailService.debugPosterLoader = null);
 
   testWidgets('Show in folder switches the grouping and opens the folder', (
     tester,

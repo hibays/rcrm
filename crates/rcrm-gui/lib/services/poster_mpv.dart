@@ -364,9 +364,8 @@ class MpvPoster {
       try {
         await player.stop();
       } catch (_) {}
-      // No timeout: timing out here could only answer this caller with null,
-      // and a parked job is never answered with null — `resume()` is the one
-      // way out, and the route that suspended the job always disposes.
+      // No timeout: a parked job is never answered with null. Safe because
+      // `waitForResume()` is sticky (it returns at once if the resume already ran).
       await parking.waitForResume();
       await player
           .open(Media(url, httpHeaders: headers), play: true)

@@ -174,9 +174,9 @@ Future<void> _tapText(WidgetTester tester, String text) async {
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
-    ThumbnailService.suppressPosterGeneration = true;
+    ThumbnailService.debugPosterLoader = ThumbnailService.noPoster;
   });
-  tearDown(() => ThumbnailService.suppressPosterGeneration = false);
+  tearDown(() => ThumbnailService.debugPosterLoader = null);
 
   group('the video tab\'s folder view', () {
     testWidgets('the back key closes an open folder', (tester) async {

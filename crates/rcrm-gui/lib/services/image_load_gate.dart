@@ -1,19 +1,14 @@
 // services/image_load_gate.dart
-// Concurrency gate for image decoding. At most [_max] decodes run at once
-// (platform-tuned). A cell acquires a token before resolving its image and
-// calls done(token) on first frame / error / dispose. Cells that scroll off
-// before running just drop their queued token (freeing nothing, blocking
-// no one), so visible cells are never starved and a freshly-opened grid
-// never saturates the CPU (which froze the whole UI).
-//
-// Queue has a maximum depth safety net: when _waiters exceeds [_maxQueue] the
-// oldest entry is evicted. Its _load() resumes on the completed token: if the
-// cell is unmounted it bails immediately; if still mounted (e.g. off-screen
-// within the grid cache extent) it decodes, but it was never in [_runningTokens]
-// so it does not occupy a real slot — the concurrency limit stays intact.
-// This prevents runaway queue accumulation from rapid scrolling.
+// The image decode gate: a fixed-length LIFO stack, not a FIFO queue, so the
+// newest request (the picture on screen now) is served next. Releasing a slot
+// hands it to the TOP; a full stack drops its BOTTOM (the oldest request); a
+// repeat request for a queued image calls [restack] instead of pushing a second
+// entry. Rationale and history: CHANGELOG 44, AGENTS.md.
 
 import 'dart:async';
+
+import 'package:flutter/foundation.dart' show visibleForTesting;
+
 import 'item_cache_limit.dart';
 
 class ImageLoadGate {
@@ -21,47 +16,58 @@ class ImageLoadGate {
   static final ImageLoadGate instance = ImageLoadGate._();
 
   static final int _max = ItemCacheLimit.imageDecodeConcurrency;
-  static final int _maxQueue = ItemCacheLimit.imageDecodeQueueMax;
-  final _runningTokens = <Completer<void>>{};
-  final _waiters = <Completer<void>>[];
+  static final int _maxWaiting = ItemCacheLimit.imageDecodeQueueMax;
 
-  /// Acquire a slot. Await [Completer.future]; pass the token to [done] later.
+  final _runningTokens = <Completer<void>>{};
+
+  /// Waiting tokens, oldest first: index 0 is the bottom (dropped first), the
+  /// end is the top (served next).
+  final _stack = <Completer<void>>[];
+
+  /// Runs at once while there is room, otherwise waits at the TOP of the stack.
+  /// Pushing onto a full stack drops the bottom entry (completed, never left
+  /// pending, so its caller is not stuck).
   Completer<void> acquire() {
+    assert(_maxWaiting > 0, 'a zero-depth stack would admit nothing');
     final c = Completer<void>();
     if (_runningTokens.length < _max) {
       _runningTokens.add(c);
       c.complete();
-    } else {
-      // Safety net: if queue too deep, evict oldest waiter.
-      if (_waiters.length >= _maxQueue) {
-        final evicted = _waiters.removeAt(0);
-        if (!evicted.isCompleted) evicted.complete();
-      }
-      _waiters.add(c);
+      return c;
     }
+    if (_stack.length >= _maxWaiting) {
+      final dropped = _stack.removeAt(0);
+      if (!dropped.isCompleted) dropped.complete();
+    }
+    _stack.add(c);
     return c;
   }
 
-  /// Release the token. If it was still queued (cell scrolled off before its
-  /// turn) it is simply dropped; if it was running, the slot is handed to the
-  /// next waiter.
+  /// Moves a WAITING token to the top: the image was asked for again. A running
+  /// or already-dropped token is not in the stack, so this is a no-op for it.
+  void restack(Completer<void> token) {
+    if (_stack.remove(token)) _stack.add(token);
+  }
+
+  /// Drops a token that never ran, or hands a running slot to the TOP.
   void done(Completer<void> token) {
-    // Was queued (or evicted), never actually ran.
-    if (_waiters.remove(token)) {
-      if (!token.isCompleted) token.complete(); // unblock the stuck _load()
+    if (_stack.remove(token)) {
+      if (!token.isCompleted) token.complete(); // unblock the stuck caller
       return;
     }
-    // Was genuinely running → release the slot to the next waiter.
     if (_runningTokens.remove(token)) {
-      if (_waiters.isNotEmpty) {
-        final next = _waiters.removeAt(0);
-        if (!next.isCompleted) next.complete();
+      if (_stack.isNotEmpty) {
+        final next = _stack.removeLast(); // LIFO: the top, not the bottom
         _runningTokens.add(next);
+        if (!next.isCompleted) next.complete();
       }
       return;
     }
-    // Token was neither running nor queued (e.g. evicted from queue, its
-    // _load() resumed and called done() via _teardown). No-op: the real
-    // slot was never occupied by this token.
   }
+
+  @visibleForTesting
+  int get runningCount => _runningTokens.length;
+
+  @visibleForTesting
+  int get waitingCount => _stack.length;
 }

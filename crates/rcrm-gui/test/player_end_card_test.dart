@@ -46,8 +46,8 @@ Widget _host(Widget child, {bool? disableAnimations}) => MaterialApp(
 );
 
 void main() {
-  setUp(() => ThumbnailService.suppressPosterGeneration = true);
-  tearDown(() => ThumbnailService.suppressPosterGeneration = false);
+  setUp(() => ThumbnailService.debugPosterLoader = ThumbnailService.noPoster);
+  tearDown(() => ThumbnailService.debugPosterLoader = null);
 
   testWidgets('offers replay, the next video and the whole list', (
     WidgetTester tester,

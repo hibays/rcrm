@@ -35,6 +35,10 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
   /// fetch/decode/encode instead of stampeding the server.
   static final Map<String, Future<Uint8List?>> _inflight = {};
 
+  /// Gate token of a generation still waiting for a slot, by disk key; read only
+  /// by [resolveStreamForKey].
+  static final Map<String, Completer<void>> _waitingTokens = {};
+
   /// Key for the on-disk thumbnail of [url] at [width]: path + width, nothing else.
   /// `ThumbCache.pathId` keeps only the URL path and `ThumbCache._key` hashes the
   /// whole id (FNV-1a → hex) into the file name, so nothing in here has to be
@@ -68,11 +72,15 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
     // cheap disk-hit decode path never reaches here — and no longer waits
     // on the gate at all (PooledImage skips it for DiskThumbImage).
     final token = ImageLoadGate.instance.acquire();
+    _waitingTokens[diskKey] = token; // before the first await, for restack
     Uint8List? thumb;
     try {
       await token.future;
       thumb = await _makeThumb(url, width);
     } finally {
+      if (identical(_waitingTokens[diskKey], token)) {
+        _waitingTokens.remove(diskKey);
+      }
       ImageLoadGate.instance.done(token);
     }
     if (thumb != null && thumb.isNotEmpty) {
@@ -204,6 +212,21 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Ask-again hook. It must live here, not in [_make]: while a generation waits
+  /// for a slot the image cache answers with the same PENDING completer and
+  /// `loadImage` is never called again. Re-asking raises the queued token.
+  @override
+  void resolveStreamForKey(
+    ImageConfiguration configuration,
+    ImageStream stream,
+    DiskThumbImage key,
+    ImageErrorListener handleError,
+  ) {
+    final token = _waitingTokens[_diskKey(key.url, key.width)];
+    if (token != null) ImageLoadGate.instance.restack(token);
+    super.resolveStreamForKey(configuration, stream, key, handleError);
   }
 
   @override

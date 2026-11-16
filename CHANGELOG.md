@@ -990,3 +990,46 @@ Update report:
 	9) **验证**：四种样本单位置首候选全部出图（720×960、1280×720、1920×1080 黑开头、2730×1440）；2730×1440 3 s 触发 redraw 后 273–278 ms 出图（4 线程时 437–464 ms），3.5 s 的海报与 ffmpeg 同位置 MAD 3.58、与 5 s 的 MAD 28.64（不是同一帧）；纯黑样本 6 个候选仍全部判空，阈值未变；删除 skip 后四种样本复测仍全部出图。门禁：`cargo fmt`、clippy（`libmpv-poster --all-targets -D warnings`）干净；`cargo test -p rcrm-flutter-bridge` 三种形态 40/34/25 例全绿，新增 `a_redraw_is_not_the_seeks_frame`；端到端用例改成单位置（正是出问题的首候选）。Dart 无改动：`flutter analyze` 干净、`flutter test` 876 例全绿。
 	10) **未做/未验证**：跨 job 的 mpv client 复用仍是显式不做（render context 的线程亲和 + 常驻 4 MiB demux 缓存，换文件本来也要 `loadfile`）；空结果的会话内负缓存仍是产品取舍；未在 Android/Linux/macOS 真机复验 REDRAW 标志（`frame_info` 取不到时自动回落到旧行为）。
 
+44. 2026.11.16.1.10.PM.Monday
+	*缩略图队列从 FIFO 改为「定长 LIFO 栈」：正在看的那张先出图，滚回去的图会重新回到栈顶*
+
+	1) **症状与根因**：进入几百张图的文件夹、由上往下划，缩略图按「文件夹从上往下」的顺序一张张出，屏上那几张反而最后才出。根因是 `ImageLoadGate` 的等待集是队列：格子进入预建环（`imageScrollCacheExtent`，桌面 800 px / 手机 100 px）时把请求**追加到队尾**，槽位释放时交给**队首**——于是最先划过去的图先出。`imageDecodeQueueMax` 的「溢出丢最老」方向本来是对的（最老的请求最可能已不在屏上），但 FIFO 决定的服务顺序正好相反
+	2) **新模型（定长栈）**：`push` = `acquire()`；**阻塞出栈** = 调用方 await 的那个 token 本身就是队列项，`done()` 才是出栈；栈满时丢**栈底**（最久没被重新请求、最可能已滚出屏幕的那张）；被丢的 token 一律 complete，绝不留永远 pending 的调用方（`bounded_fetch.dart` 从另一面记录过这个坑）。**重复入栈**：同一张图再次被请求时不新建请求，而是 `restack` 把已经在栈里的那条移到栈顶——重复在这里的真实含义是「这张图又是我现在想要的」，工作层去重仍归 `DiskThumbImage._inflight`
+	3) **第二次请求的钩子必须是 `resolveStreamForKey`，不能是 `_make`**：`ImageCache` 对同一个 key 会直接返回仍然 pending 的 completer，`loadImage` 不会再被调用（第一版把钩子放在 `_make`，实测滚回去毫无效果）；`resolve` 在 Flutter 3.50 是 `@nonVirtual`（重写报 `invalid_override_of_non_virtual_member`），框架文档给的扩展点就是 `resolveStreamForKey`
+	4) **视频海报队列同一规则**：`utils/poster_queue.dart` 新增 `takePosterJob`（取栈顶并标 `started`），`admitPosterJob` 仍是「追加=栈顶、淘汰 index 0=栈底」；`ThumbnailService._posterKick` 改用它。两块缩略图现在对「哪一端是新的」只有一种解释
+	5) **文档**：`docs/ARCHITECTURE.md` 的缩略图管线写明这条规则；`AGENTS.md` 增加 LIFO 条目（含 `restack` 为什么在 `resolveStreamForKey` 上）
+	6) **测试**：新增 `test/image_load_gate_test.dart`（9 例：栈顶优先、从顶到底排空、restack、放弃的请求不占槽、定长丢最老、并发上限、restack 运行中的不变；端到端一例真的起 loopback HTTP server：塞满 gate → 请求 a/b/c → 再请求一次 a → 释放一个槽 → 断言服务器被访问的顺序是 `a, c, b`）；`poster_queue_test` 新增 3 例；`poster_suspend_test` 的「槽位交给队首」改为交给栈顶
+	7) **门禁**：`flutter analyze lib test` **No issues found**；全量 `flutter test` **888 例全绿**（原 876 + 12 个新用例）。Rust 未改动
+	8) **未验证**：未在真机/真窗口上用几百张图的文件夹复测手感。已知的次序细节：栈顶是「最近一个进入预建环的格子」，大致在视口下沿 1–2 行，所以停下后屏上那几行会排在它之后出图；要做到「视口正中优先」需要另加可见性信息，本轮未做
+45. 2026.11.16.2.20.PM.Monday
+	*审查视频海报队列：一条真实的 resume 抛异常、一条停车唤醒竞态、一条"槽位永不释放"，外加卡片自己的转圈上限*
+
+	1) **`resume()` 二次 complete（真实缺陷，media_kit/iOS 路径）**：`_posterWake` 保留上次完成过的 completer（只有新 job 停车时 `_posterResumeSignal` 才换新的），于是第二次「开视频 → 退出」会 `complete()` 一个已完成的 Future → `Bad state: Future already completed`，从 `PosterQuietRoute.dispose()` 抛出，**在 `super.dispose()` 之前**、也在 `_posterKick()` 之前：路由状态不释放、队列没人重启，海报就停在转圈/占位符上。这条是写停车用例时被既有用例直接抓到的（它们本来就是"先 suspend 再 resume"的顺序）。二次审查后**不保留"只 complete 存活等待者"那个补丁**：那个一次性 completer 本身就是在重造一个广播事件，换成 `StreamController.broadcast` 后"同一个对象被完成两次"根本不成立，`_posterWake` / `_posterResumeSignal` 一并删除
+	2) **停车唤醒丢失（宽窗口竞态）**：`MpvPoster._park` 先 `park()`，再 `await player.stop()`（几十毫秒原生调用）才 `waitForResume()`；玩家路由完全可能在这个窗口里 dispose，`resume()` 时还没有等待者 → 什么也没唤醒。之后才惰性创建的等待者，等的是一个**已经给过**的信号：job 永久停车、占着并发槽，`_posterParked > 0` 让 `planPosterKick` 一张都不启动 → 整面墙转圈，只有再开一次视频（新的一对 suspend/resume）才解开。修：`waitForResume()` 先读挂起标志，"已恢复"时立即返回，读标志与建等待者在同一个同步步骤里（`_waitForPosterResume`）
+	3) **槽位永不释放的最后一条：审过，判定不可证可达，因此不加防御**：job 在 `finally` 释放槽位之前最后一个 await 是 `_cache()`（`ThumbCache.write` → `getApplicationCacheDirectory` + 文件系统）。我一度给它加了 5 s 上限，二次审查按"只为可达路径写代码"撤销：desktop 的 path_provider 是 Dart/FFI 同步调用，移动端是通道调用（只有引擎整体卡死才会挂），目标目录是本地应用缓存；实测（`overrideDir` 指向临时目录、96 KB 载荷）首次写含建目录 + 访问日志 11.6 ms、后续中位 1.36 ms、最大 7.4 ms——与 5 s 差 3 个数量级。真出现"平台通道/文件系统永挂"时应用已经坏了，而**用户可见的症状已由可达路径上的 `kPosterSpinnerBudget` 覆盖**（20 s 后画占位符，不再无限转圈），代价只是那一格槽位跟着坏掉。代码因此恢复成原来的 `await _cache(...)`，一行都没多
+	4) **卡片自己也要有上限**：`VideoPoster` 新增 `kPosterSpinnerBudget`（20 s）。队列本来就有意很深（手机 1 个解码器），"慢"是常态；但"永远转圈"与死锁在屏幕上无法区分。到点画占位符，**job 不取消**，迟到的海报仍替换占位符（用例钉住"迟到的 Image 真的被画出来"）
+	5) **审查结论（未改，记录）**：队列本身没有别的丢任务路径——淘汰必定 complete、`takePosterJob` 必定 run、`plan.running` 与 `run()` 的 finally 严格配对；libmpv 后端 60 s 上限、media_kit 每次 open/seek/screenshot 都有超时，唯一的无上限等待就是停车（已在 2 修）。仍然存在的产品取舍：队列满时被淘汰的请求答 null 且卡片不重试（LIFO 之后被淘汰的是最久未被重新请求、最可能已滚出屏幕的那张）；手机上"每张文件夹卡 4 张海报 × 几十个文件夹"仍会先把队列打满，所以大文件夹网格里先看到占位符是正常的，重新进入才会补
+	6) **诊断提示**：外壳用 `switch (_currentIndex)` 换 tab，不是 `IndexedStack`，所以 Videos → Home → Videos 会把每张卡**重新挂载**（重新请求）。"切一下 tab 就好了"说明那张卡在等一个永远没来的答复，而不是"切 tab 触发了什么恢复"
+	7) **测试**：新增 `test/video_poster_test.dart` 3 例（预算到点转占位符、迟到海报仍被画出、null 立即占位符）＋ `poster_suspend_test.dart` 新增 2 例（正常唤醒、恢复先于等待）。测试接缝：`ThumbnailService.debugPosterLoader`（换掉真实生成过程）与 `ThumbnailService.posterParking`（驱动停车握手）
+	8) **门禁**：`flutter analyze lib test` **No issues found**；全量 `flutter test` **893 例全绿**（原 888 + 5）。Rust 未改动
+46. 2026.11.16.2.35.PM.Monday
+	*修 Related 列表那几格永远转圈：播放器路由把海报队列「整段会话」都 suspend 了，连它自己的列表也饿着；门改成只管入场那一步*
+
+	1) **症状**：播放器窗口右侧 Related 列表里，没缓存过的几格永远转圈（截图里 7 格中 3 格），已缓存的正常显示
+	2) **根因**：`PosterQuietRoute.install()` → `ThumbnailService.suspend()`，`dispose()` 才 `resume()`——门在整个播放器会话期间都关着。而 Related 列表和结束卡片**就在这条路由里**，它们的请求只会入队、永远不会被 `planPosterKick` 启动：没缓存的相关视频就一直转，退出播放器后才生成（那时已经看不见），下次再进又因为队列淘汰没留下而重新转。门当初的理由只有一条：入场那一步里海报 job 会占着 media_kit 的全局锁，让播放器的 `open`/`play` 排在它后面——**是「那一步」，不是「整个会话」**
+	3) **修复**：门只关到这条路由**入场动画结束**为止。信号用 `didPush()` 返回的 `TickerFuture`（`whenCompleteOrCancel`），不用 `animation.addStatusListener`——实测 `animation` 在 install 前后是未挂父的 `ProxyAnimation`，会先报 `completed` 再报 `forward`，两种写法都会在入场还没开始时就开闸（本轮踩了两次）
+	4) **顺带补掉一个洞**：`suspend()` 是深度计数，而 `_go` 的 `pushReplacement` 会先 install 新路由、再 dispose 旧路由——旧路由 `dispose()` 里无条件的 `resume()` 会把**正在入场的新路由**的门打开。改成每条路由**只释放一次**（`_releaseGate`：入场结束释放；若中途被 pop，由 `dispose()` 释放），计数于是精确表示「还在入场的路由数」
+	5) **代价与取舍**：入场之后海报 job 会与播放并行（libmpv 后端本来就不共享锁；media_kit 后端只是逐条命令交错，各自都有超时）。这是「面板能填满」的价格，也把原来的 CPU 洁癖降级为次要目标
+	6) **测试**：`poster_quiet_route_test` 从「install 关、dispose 开」改成三条：入场中关 / 入场结束即开（路由仍在）/ 中途 pop 也能开；新增一条「jump（pushReplacement）保护的是**它自己**的入场」——旧实现在这条上会红。`poster_suspend_test` 与 `video_poster_test` 不受影响
+	7) **门禁**：`flutter analyze lib test` **No issues found**；全量 `flutter test` **895 例全绿**（原 893 + 2）。Rust 未改动
+	8) **说明**：截图里那个 `rcrm_gui.exe` 是当天 01:47 的构建，早于本轮全部改动；这条修复需要重新构建才能看到效果
+47. 2026.11.16.2.45.PM.Monday
+	*同类 bug 复扫 + "缩略图变慢"的性能评估 + 把图片队列的两条规则搬到海报队列（复用结论）*
+
+	1) **同类 bug 复扫（作用域超过理由的闸门 / 队列）**：`PreviewPlayer` 是 token 抢占式（新 claim 取代旧 claim，过期 release 是 no-op，不存在"卡住"）；`MobileImageDecoder` 20 s、`ThumbWebpWorker` 15 s、`LibMpvPoster` 60 s——所有"等原生回调"的等待都有上限；`CastRemote.suspend` 是断开 HTTP 传输、保留配对，不是闸门；`ImageLoadGate` 根本没有 suspend。结论：本轮修的海报门是唯一一条"作用域远超理由"的闸门，其余同类形状不存在
+	2) **"图片缩略图变慢"评估——不是新模型**：唯一构建产物是 `build\windows\x64\runner\Release\rcrm_gui.exe`，时间戳 **2026/11/16 01:47:52**，比今天全部改动早约 11 小时，所以当前跑的是旧代码。模型本身也不做额外工作：工作总量、缓存键、去重、`ThumbCache` 写入全部未变，新增的只是 O(队列深度≤40) 的记账
+	3) **调度模拟（服务 250 ms、并发 6、60 张以 60 张/秒涌入，停下看最后 12 张）**：全部生成完 LIFO **2550 ms** / FIFO **2550 ms**（完全相同，同一批活、同样 6 个槽）；屏上 12 张填满 LIFO **1550 ms** / FIFO 2550 ms；划过的前 12 张 LIFO 2550 ms / FIFO **550 ms**。即：新模型只改变"先给谁"，总吞吐一分不差；代价是「划过去的那段不再预热」，收益是「停下时屏上的先出」
+	4) **缓存复用没有被拖慢（两条证据）**：命中磁盘缩略图的格子**根本不进闸门**（`PooledImage._load` 对 `DiskThumbImage` 不取 token，`_load` 的命中路径在 `_make` 之前直接解码文件）；命中内存 `imageCache` 的格子走 `warm` 快路径，连 resolve 都省了。所以"缓存复用竞争"只可能发生在未命中的生成上，与 LIFO 顺序无关
+	5) **复用图片模型的结论（已落地一半）**：能复用且应该复用的是**规则**——LIFO + 重复请求上浮。海报侧原本缺"上浮"，本轮补上 `raisePosterJob`，`generatePoster` 的去重命中会把它移到栈顶（与 `ImageLoadGate.restack` 一字不差的语义）；新增 2 例测试（上浮、对不在队列的 URL 无操作）
+	6) **不能复用的部分（评估结论，不是偷懒）**：① **中途可打断**——海报 job 是一个活着的播放器，占着与播放共享的 media_kit 全局锁，必须能"停 → 等 → 重开"（`PosterParking`）；图片解码不可打断也不需要。② **答案语义**——海报请求方在等一份字节，淘汰必须回 null；图片 token 是匿名的，失败由 provider 的 error/retry 兜底。③ **入场闸门**——图片侧没有对应物。把这三样塞进一个通用栈只会把两份契约藏进泛型里，所以只共享规则，不共享容器
+	7) **门禁**：`flutter analyze lib test` **No issues found**；全量 `flutter test` **897 例全绿**（原 895 + 2）。Rust 未改动

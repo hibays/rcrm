@@ -488,12 +488,59 @@ VideoCard.initState()
       → return bytes
 ```
 
+Two hand-shakes around that queue decide whether a card ever gets its answer, and
+both have bitten:
+
+* **The parked job's wake is STICKY.** `MpvPoster._park` parks and then awaits a
+  native `player.stop()` before it asks to wait, so the player route can be
+  disposed inside that window. A waiter created after the last `resume()` would
+  wait for a signal already given: parked for ever, holding its slot, with
+  `anyParked` making `planPosterKick` start nothing at all. `waitForResume()`
+  therefore reads the suspension flag and creates its waiter in one synchronous
+  step, and returns at once when nothing is suspended.
+* **The gate is for the STEP, not for the session.** `PosterQuietRoute` closes
+  it before its page builds and releases it when that route's own entrance
+  finishes — `didPush()`'s `TickerFuture`, not an `animation` status listener,
+  because the route's `animation` is an unparented `ProxyAnimation` around
+  install time that reports `completed`/`forward` before the entrance has started
+  (measured). Keeping it shut until the route was disposed starved the route's
+  OWN UI: the Related list and the end card are part of it, so every uncached
+  related video spun until the player closed, and the same tiles came back on the
+  next open because they had never been generated. **One release per route**: the
+  gate is a depth count, and a jump's `pushReplacement` installs the incoming
+  route before disposing the outgoing one, so an unconditional `resume()` in
+  `dispose()` opened the gate for the route that was still entering.
+* **The wake is a broadcast event, not a one-shot future.** It used to be a
+  `Completer` completed once and then replaced, and a second `resume()` completed
+  the previous one again — `Bad state: Future already completed`, thrown out of
+  `PosterQuietRoute.dispose()` **before** `super.dispose()` and before the kick,
+  so the route's state leaked and the queue was never restarted. A
+  `StreamController.broadcast` has no object to complete twice, so the failure is
+  unrepresentable; an event with no listener is dropped, which is what a job that
+  has not asked yet wants.
+
+A repeat request for a poster that is still QUEUED raises it to the top
+(`raisePosterJob`, the poster half of the image gate's `restack`): under a stack
+the position is the priority, and a card that re-mounts must not wait where it
+was first pushed. A job that is already running is not queued, so that is a
+no-op for it.
+
+The poster TILE has its own budget on top (`VideoPoster`,
+`kPosterSpinnerBudget` = 20 s): the queue is deep on purpose, so a slow answer is
+normal, and "slow" must not be indistinguishable from "wedged". The budget ends
+the SPINNER and shows the placeholder; the job keeps running, and a late poster
+still replaces the placeholder when it lands. Note for diagnosis: the shell
+switches tabs with a `switch` on `_currentIndex` (not an `IndexedStack`), so
+Videos → Home → Videos REMOUNTS every card — a wall that "fixes itself after a tab
+switch" is a wall whose tiles were waiting on something that never answered.
+
 Image thumbnails (`DiskThumbImage`, when `ThumbCache.enabled`):
 
 ```
 grid cell → DiskThumbImage(url, width)
   → disk cache hit? decode the cached small WebP (no network, no gate)
-  → miss → ImageLoadGate token
+  → miss → ImageLoadGate token   ← a LIFO STACK, not a queue: the newest
+                                  request is served next (see below)
       → software-decoded format (AVIF/JXL/HEIC) on mobile:
           fetchNativeBytes(url)                    ← socket → NATIVE memory
           → ThumbWebpWorker.generateThumbFromImage ← worker isolate
@@ -509,6 +556,18 @@ grid cell → DiskThumbImage(url, width)
            the viewer and stay blank in the grid)
   → ThumbCache.write (small WebP only)
 ```
+
+The gate is a **fixed-length stack** (`ImageLoadGate`), not a FIFO queue. The
+grid pushes a request as each cell scrolls into the ring, so FIFO served a cold
+folder from the top of the folder downwards and the picture on screen came last.
+Releasing a slot now hands it to the TOP of the stack, and a full stack drops
+its BOTTOM — the request waiting longest, i.e. the one least likely still to be
+on screen. A repeat `resolve` for an image that is still queued calls
+`restack`, moving the existing entry to the top instead of pushing a second one
+(the work-level dedup in `DiskThumbImage._make` already shares one fetch), which
+is what makes scrolling back to a picture work. Pinned by
+`test/image_load_gate_test.dart`, including the order the server is actually
+asked in.
 
 ### Image Display
 
@@ -652,9 +711,11 @@ with the `libmpv-poster` feature.
 
 Both backends share `utils/poster_frame.dart`'s seek plan (a fraction of the real
 length first, 0.0 last), `poster_log.dart`'s diagnostics, and the queue in
-`utils/poster_queue.dart` (concurrency cap, in-flight dedup, suspension while a
-player route owns the screen). Zero disk writes: posters live in RAM, plus the
-opt-in `ThumbCache`.
+`utils/poster_queue.dart` (concurrency cap, in-flight dedup, and the suspension
+gate `PosterQuietRoute` holds through a player route's ENTRANCE — it opens when
+that step ends, because the route's own Related list needs posters; see
+"Two hand-shakes" above). Zero disk writes: posters live in RAM, plus the opt-in
+`ThumbCache`.
 
 > The libmpv path passes `tls-verify=no` for its own fetch, the same scoped
 > relaxation the old ffmpeg poster command made: the server's certificate is

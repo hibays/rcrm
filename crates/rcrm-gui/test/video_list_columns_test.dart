@@ -153,9 +153,9 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     // Poster placeholders carry spinners that never settle; the list's geometry
     // does not depend on them.
-    ThumbnailService.suppressPosterGeneration = true;
+    ThumbnailService.debugPosterLoader = ThumbnailService.noPoster;
   });
-  tearDown(() => ThumbnailService.suppressPosterGeneration = false);
+  tearDown(() => ThumbnailService.debugPosterLoader = null);
 
   testWidgets('auto lays one row per line on a phone-width window', (
     tester,

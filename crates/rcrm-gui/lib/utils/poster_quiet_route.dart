@@ -9,17 +9,17 @@
 // watching. Neither "wait a moment" nor "resume when the first frame is up" can
 // bound that: what the pool is doing is only knowable when the route arrives.
 //
-// So the suspension is tied to the route's own lifetime, which has no delay in
-// it:
+// So the suspension covers the route's ENTRANCE, which has no delay in it:
 //
 //   * `install()` runs synchronously at push time (`handlePush` →
 //     `route.install()`), before this route builds anything at all. The gate is
 //     therefore already closed when this route creates the playback player, and
 //     before any of the route's widgets exist — the certified order: suspend,
 //     create, push.
-//   * `dispose()` runs when the route is gone for real, so a pop and a
-//     `pushReplacement` both lift the suspension with no ping-pong between the
-//     outgoing and incoming screens (`ThumbnailService` counts the depth).
+//   * it LIFTS when that entrance's ticker ends (`didPush`): the gate is for the
+//     step, not the session — the Related list and end card are part of this
+//     route and need posters (`_releaseGate`).
+//   * `dispose()` releases it too, for a route popped while still entering.
 //
 // Deliberately not a `Timer`, and deliberately no pool teardown: a live poster
 // job holds the pool player across a `screenshot()` whose native side re-checks
@@ -177,6 +177,28 @@ class PosterQuietRoute<T> extends MaterialPageRoute<T> {
     // of an `open`/`seek`/`screenshot` when the playback player is created.
     ThumbnailService.suspend();
     super.install();
+  }
+
+  /// Releases this route's suspension: at the end of its entrance, or in
+  /// [dispose] if it is popped before that. The gate is for the STEP, not the
+  /// session — this route's own Related list needs posters — and releasing twice
+  /// would cancel the route above's protection, so it is guarded.
+  void _releaseGate() {
+    if (_gateReleased) return;
+    _gateReleased = true;
+    ThumbnailService.resume();
+  }
+
+  /// The entrance's own end releases the gate. NOT `animation.addStatusListener`:
+  /// around install time `animation` is an unparented `ProxyAnimation` that
+  /// reports `completed` (then a spurious `forward`) before the entrance has
+  /// started — measured. `whenCompleteOrCancel` also covers a pop mid-entrance,
+  /// which then leaves it to [dispose].
+  @override
+  TickerFuture didPush() {
+    final entrance = super.didPush();
+    entrance.whenCompleteOrCancel(_releaseGate);
+    return entrance;
   }
 
   @override
@@ -376,13 +398,15 @@ class PosterQuietRoute<T> extends MaterialPageRoute<T> {
     );
   }
 
+  /// ONE release per route: `suspend()` is a depth count, so releasing twice would
+  /// cancel the protection of the route above it (a jump installs the incoming
+  /// route before disposing the outgoing one).
+  bool _gateReleased = false;
+
   @override
   void dispose() {
-    // The route is gone: the poster pool may work again. Done here rather than
-    // on a timer so a pop returns to a screen whose posters resume immediately,
-    // and so two overlapping player routes (a `pushReplacement` under way) only
-    // lift the gate when the last of them has gone.
-    ThumbnailService.resume();
+    // Already released for most routes; this covers a route popped mid-entrance.
+    _releaseGate();
     super.dispose();
   }
 }

@@ -21,7 +21,8 @@ class ItemCacheLimit {
   /// backend recommended starting at 2-4 workers (docs/MPV_POSTER_EVAL.md §8).
   static final int videoPosterConcurrency = _isMobile ? 1 : 4;
 
-  /// Maximum queued poster requests. Oldest evicted when exceeded.
+  /// Maximum queued poster requests — the depth of the waiting stack. Oldest
+  /// (the bottom) evicted when exceeded, newest served first.
   ///
   /// Kept BELOW [videoPosterMemoryCacheMax] on both platforms (24 < 32,
   /// 128 < 512): an evicted request is answered with null and never retried, so
@@ -37,7 +38,8 @@ class ItemCacheLimit {
   /// How many image decodes run concurrently.
   static final int imageDecodeConcurrency = _isMobile ? 2 : 6;
 
-  /// Maximum queued decode waiters. Oldest evicted when exceeded.
+  /// Depth of the decode waiting stack (`ImageLoadGate`, LIFO). A full stack
+  /// drops its OLDEST entry — the picture least likely still to be on screen.
   static final int imageDecodeQueueMax = _isMobile ? 12 : 40;
 
   // ── Flutter global ImageCache (main.dart) ────────────────────

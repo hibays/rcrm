@@ -57,13 +57,13 @@ double _listOffset(WidgetTester tester) {
 
 void main() {
   setUp(() {
-    ThumbnailService.suppressPosterGeneration = true;
+    ThumbnailService.debugPosterLoader = ThumbnailService.noPoster;
     // The folder-thumbnail reuse assertions must hold WITHOUT the on-disk
     // ThumbCache: everything here is served from in-memory caches only.
     ThumbCache.enabled = false;
   });
   tearDown(() {
-    ThumbnailService.suppressPosterGeneration = false;
+    ThumbnailService.debugPosterLoader = null;
     ThumbCache.enabled = false;
   });
 

@@ -123,9 +123,9 @@ Future<void> _settlePrefs(WidgetTester tester) async {
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
-    ThumbnailService.suppressPosterGeneration = true;
+    ThumbnailService.debugPosterLoader = ThumbnailService.noPoster;
   });
-  tearDown(() => ThumbnailService.suppressPosterGeneration = false);
+  tearDown(() => ThumbnailService.debugPosterLoader = null);
 
   testWidgets('the sort arrow reverses the rendered order and its own state', (
     tester,

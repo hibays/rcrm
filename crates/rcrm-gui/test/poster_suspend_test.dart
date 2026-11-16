@@ -5,11 +5,10 @@
 // What this file CAN drive: `planPosterKick` (a pure function) and
 // `ThumbnailService.suspend/resume` (static state with no player in it). What it
 // CANNOT drive is the backend pool itself — `MpvPoster.generate` needs a real
-// media_kit `Player`, and the only other seam,
-// `ThumbnailService.suppressPosterGeneration`, returns before the queue is
-// touched. So the in-flight job below is a stand-in for it: same queue, same
-// completer, same "the answer is decided when the job finishes, not when it
-// parks" shape.
+// media_kit `Player`, and the only seam, `ThumbnailService.debugPosterLoader`,
+// answers before the queue is touched. So the in-flight job below is a stand-in
+// for it: same queue, same completer, same "the answer is decided when the job
+// finishes, not when it parks" shape.
 
 import 'dart:async';
 import 'dart:typed_data';
@@ -83,9 +82,7 @@ class _Pool {
       anyParked: parked > 0,
     );
     for (var i = 0; i < plan.start; i++) {
-      final j = queue.removeAt(0);
-      j.started = true;
-      ready.add(j);
+      ready.add(takePosterJob(queue));
     }
     running = plan.running;
   }
@@ -119,7 +116,7 @@ class _Pool {
 
 void main() {
   group('planPosterKick', () {
-    test('room and work: fills the free slots, in queue order', () {
+    test('room and work: fills the free slots, and only that many', () {
       final queue = [job('a'), job('b'), job('c')];
       final plan = planPosterKick(
         queue: queue,
@@ -283,7 +280,9 @@ void main() {
       );
 
       // Its own exit is the ordinary one, and that is what frees the slot for
-      // the queue it was holding up — oldest waiting first.
+      // the queue it was holding up — the TOP of the stack (the newest request)
+      // first, so the card the reader is on fills before the ones passed on the
+      // way there.
       final queuedBefore = pool.queue.map((j) => j.url).toList();
       running.release(ready, pool);
       expect(
@@ -291,7 +290,50 @@ void main() {
         1,
         reason: 'the slot passes to the next waiting job',
       );
-      expect(ready.map((j) => j.url).toList(), [queuedBefore.first]);
+      expect(ready.map((j) => j.url).toList(), [queuedBefore.last]);
+    });
+  });
+
+  group('the parked job wake signal', () {
+    // The gate the media_kit backend actually holds. `_Pool` above mirrors the
+    // QUEUE; this group drives `_ServiceParking`, which is the park/resume
+    // hand-shake the backend awaits.
+    final parking = ThumbnailService.posterParking;
+
+    tearDown(() {
+      while (ThumbnailService.posterSuspended) {
+        ThumbnailService.resume();
+      }
+    });
+
+    test('a parked job waits for the resume it is suspended behind', () async {
+      ThumbnailService.suspend();
+      parking.park();
+
+      var woke = false;
+      final wait = parking.waitForResume()..then((_) => woke = true);
+      await Future<void>.delayed(Duration.zero);
+      expect(woke, isFalse, reason: 'the gate is shut');
+
+      ThumbnailService.resume();
+      await wait;
+      expect(woke, isTrue);
+      parking.unpark();
+    });
+
+    test('a job that parks AFTER the route left does not wait for ever', () async {
+      // The race the sticky check closes, in the order that loses it:
+      // `_park` awaits a native `player.stop()` between `park()` and this call,
+      // and the player route can be disposed inside that await. The resume then
+      // happens BEFORE there is a waiter, so a job that lazily created one would
+      // be waiting for a signal already given — parked for ever, holding its
+      // slot, with every card on the wall spinning behind it.
+      ThumbnailService.suspend();
+      parking.park();
+      ThumbnailService.resume(); // the route leaves first
+
+      await parking.waitForResume().timeout(const Duration(seconds: 2));
+      parking.unpark();
     });
   });
 

@@ -10,12 +10,10 @@
 // cannot decode, a fetch the server refuses), and every visible card asks
 // again.
 //
-// The second rule is the suspension gate: while the player route is installed
-// the UI must not start poster work at all, and a job that is already running
-// parks at its next yield point instead of holding media_kit's static
-// `NativePlayer.lock` across playback's `open`. So the kick is a decision too —
-// how many waiting jobs may start, given what is running and what is parked —
-// and it is written down here alongside the admission rule.
+// The second rule is the gate: through a player route's ENTRANCE nothing starts,
+// and a running job parks instead of holding media_kit's static `NativePlayer.lock`
+// across playback's `open`. It opens when that step ends, so [suspended] means
+// "an entrance is running", not "a player is on screen".
 //
 // Both rules live here rather than inside the service because the decision is
 // what can be wrong (which entry, whether at all), and this way they are testable
@@ -40,7 +38,7 @@ import 'dart:typed_data';
 /// stops the queue from starting another player job, and the departure is what
 /// lets waiting work move again.
 abstract interface class PosterParking {
-  /// True while a player route owns the screen.
+  /// True while a player route's entrance is still running (the step is playing).
   bool get suspended;
 
   /// Register a job that is parking. It keeps its slot: the queue must not
@@ -50,7 +48,10 @@ abstract interface class PosterParking {
   /// The parked job is done parking. Publishes the count and kicks the queue.
   void unpark();
 
-  /// Resolves once [suspended] is false.
+  /// Resolves once [suspended] is false — AT ONCE when it already is: a job that
+  /// asks after the last resume must not wait for a signal already given (it
+  /// would stay parked, holding its slot, blocking every kick). Read the flag and
+  /// create the waiter in one synchronous step.
   Future<void> waitForResume();
 }
 
@@ -79,7 +80,8 @@ class PosterJob {
   PosterJob({required this.url, required this.completer, required this.run});
 }
 
-/// Adds [job] to [queue] (oldest first) and returns the entry evicted to keep the
+/// Adds [job] to [queue] (oldest first, so the list reads as a stack: index 0 is
+/// the BOTTOM, the end is the TOP) and returns the entry evicted to keep the
 /// queue within [max], if one had to be: the OLDEST entry that has not started,
 /// already removed from [queue], with its completer completed as null.
 ///
@@ -112,6 +114,25 @@ PosterJob? admitPosterJob(
   return evicted;
 }
 
+/// Takes the next job to run: the TOP of the stack (the newest request), marked
+/// [PosterJob.started]. The caller asks [planPosterKick] how many may start; this
+/// only decides WHICH one.
+PosterJob takePosterJob(List<PosterJob> queue) {
+  final job = queue.removeLast();
+  // Marked before it runs, so the admission rule can never pick a job that
+  // already owns a slot even if one were still in the list.
+  job.started = true;
+  return job;
+}
+
+/// Raises the queued job for [url] to the TOP: it was asked for again — the
+/// poster half of `ImageLoadGate.restack`. A running or absent URL is a no-op.
+void raisePosterJob(List<PosterJob> queue, String url) {
+  final i = queue.indexWhere((job) => job.url == url);
+  if (i < 0) return;
+  queue.add(queue.removeAt(i));
+}
+
 /// The kick's decision: how many waiting jobs may start now, and what the
 /// running count becomes once they have.
 class PosterKickPlan {
@@ -131,17 +152,19 @@ class PosterKickPlan {
 ///
 /// Two situations start nothing:
 ///
-/// * [suspended] — the player route owns the screen, so no poster work may
-///   begin; it would contend with playback for media_kit's static
-///   `NativePlayer.lock`. Waiting jobs stay queued with their completers alive.
+/// * [suspended] — a player route's entrance is still running, so no poster work
+///   may begin; it would contend with playback for media_kit's static
+///   `NativePlayer.lock` inside the transition the user is watching. Waiting jobs
+///   stay queued with their completers alive.
 /// * [anyParked] — a suspended job is parked holding its slot and may be
 ///   mid-`open` right now. It holds that same lock across the re-open, so a
 ///   newcomer would only queue behind it: the contention this gate exists to
 ///   remove. It waits instead, and the parked job's own departure kicks again.
 ///
-/// Otherwise it offers as many jobs as there is room for, in queue order. The
-/// count returned here is the whole answer — the runner must not "help" by
-/// starting one more, or the cap stops being a cap.
+/// Otherwise it offers as many jobs as there is room for. Which ones is
+/// [takePosterJob]'s decision (the TOP of the stack), and the count returned here
+/// is the whole answer — the runner must not "help" by starting one more, or the
+/// cap stops being a cap.
 ///
 /// Reads its arguments only; it neither mutates [queue] nor removes anything
 /// from it, so the caller owns every state change (`test/poster_suspend_test.dart`

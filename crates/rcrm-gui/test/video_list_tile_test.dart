@@ -27,8 +27,8 @@ MediaItem _video() => const MediaItem(
 );
 
 void main() {
-  setUp(() => ThumbnailService.suppressPosterGeneration = true);
-  tearDown(() => ThumbnailService.suppressPosterGeneration = false);
+  setUp(() => ThumbnailService.debugPosterLoader = ThumbnailService.noPoster);
+  tearDown(() => ThumbnailService.debugPosterLoader = null);
 
   Future<void> renderAt(WidgetTester tester, Size surface) async {
     await tester.binding.setSurfaceSize(surface);

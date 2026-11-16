@@ -117,9 +117,9 @@ List<String> _folderCards(WidgetTester tester) => tester
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
-    ThumbnailService.suppressPosterGeneration = true;
+    ThumbnailService.debugPosterLoader = ThumbnailService.noPoster;
   });
-  tearDown(() => ThumbnailService.suppressPosterGeneration = false);
+  tearDown(() => ThumbnailService.debugPosterLoader = null);
 
   group('MediaLibrary.buildAlbums', () {
     test('groups by folder, root included, sorted naturally', () {
