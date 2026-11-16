@@ -23,7 +23,7 @@ zeroize = { version = "1.8.2", features = ["simd"] }
 ctrlc = "3"
 
 [dev-dependencies]
-zip = "6"
+zip = "9"
 rand = "0.10"
 rustls = { version = "0.23", default-features = false, features = [
 	"aws_lc_rs",

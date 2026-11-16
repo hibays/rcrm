@@ -142,7 +142,7 @@ fn measure_projected_read(label: &str, calibration: i32, size: usize) {
 		.find(|p| {
 			p.file_name()
 				.and_then(|n| n.to_str())
-				.map(|n| rcrm::is_valid_encrypted_file_name(n))
+				.map(rcrm::is_valid_encrypted_file_name)
 				.unwrap_or(false)
 		})
 		.expect("encrypted file");

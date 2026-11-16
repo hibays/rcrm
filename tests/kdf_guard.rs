@@ -61,17 +61,15 @@ fn different_passwords_derive_different_keys() {
 /// the floor by accident is not.
 #[test]
 fn kdf_parameters_meet_the_security_floor() {
-	assert!(
-		KDF_M_COST >= (1 << 15),
-		"memory cost dropped to {} KiB (floor is 32768 KiB)",
-		KDF_M_COST
-	);
-	assert!(
-		KDF_T_COST >= 7,
-		"pass count dropped to {} (floor is 7)",
-		KDF_T_COST
-	);
-	assert!(KDF_P_COST >= 1, "parallelism dropped to {}", KDF_P_COST);
+	// Checked at compile time: a build that drops below the floor does not link.
+	const {
+		assert!(
+			KDF_M_COST >= (1 << 15),
+			"memory cost dropped below the 32768 KiB floor"
+		)
+	};
+	const { assert!(KDF_T_COST >= 7, "pass count dropped below the floor of 7") };
+	const { assert!(KDF_P_COST >= 1, "parallelism dropped below the floor of 1") };
 }
 
 /// The canary: a file encrypted by an older build must still decrypt.
