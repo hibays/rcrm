@@ -7,6 +7,8 @@
 
 import 'package:material_ui/material_ui.dart';
 
+import '../config/theme.dart';
+import '../utils/media_toolbar_layout.dart';
 import 'column_button.dart';
 import 'smart_popup_menu.dart';
 
@@ -29,6 +31,12 @@ const Map<String, Icon> kGroupingIcons = {
 /// See [kGroupingIcons].
 Icon groupingIcon(String grouping) =>
     kGroupingIcons[grouping] ?? kGroupingIcons['none']!;
+
+/// Every row in the Organize menu, as a real type. The switch in
+/// [MediaToolbar.build] is exhaustive over these three, so a new grouping
+/// cannot be added without giving it a persisted value. Mirrors the codebase's
+/// `MediaItemMenuAction` / `PlaybackMode` menus.
+enum OrganizeAction { ungrouped, folder, format }
 
 /// One row of the grouping menu: the check marking the arrangement in effect,
 /// the icon, and the label.
@@ -104,6 +112,18 @@ class MediaToolbar extends StatelessWidget {
   final String? currentGrouping;
   final ValueChanged<String>? onGroupingChanged;
 
+  /// Optional chip on the toolbar's LEFT, beside the sort and format chips,
+  /// showing/hiding the video tab's tag-filter row. Null hides it (screens
+  /// without tags).
+  ///
+  /// A chip beside its siblings rather than a row buried in a menu: it is a
+  /// first-class view control, and the bar below no longer spends 56dp of
+  /// permanent space. The chip's selected state is the persisted preference,
+  /// not whether the row happens to be visible right now — an active filter
+  /// forces the row visible so it stays clearable.
+  final bool? tagBarVisible;
+  final VoidCallback? onToggleTagBar;
+
   const MediaToolbar({
     super.key,
     required this.sortOptions,
@@ -122,12 +142,33 @@ class MediaToolbar extends StatelessWidget {
     this.onLayoutToggle,
     this.currentGrouping,
     this.onGroupingChanged,
+    this.tagBarVisible,
+    this.onToggleTagBar,
   });
 
   @override
   Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (barContext, constraints) {
+        // The bar follows the width it was GIVEN, not the window behind it:
+        // a wide window can still hand this toolbar a narrow column. What that
+        // width means is a pure rule in `utils/media_toolbar_layout.dart`,
+        // tested at its boundaries instead of only through the rendered chip.
+        final layout = mediaToolbarLayout(constraints.maxWidth);
+        return _buildToolbar(barContext, layout: layout);
+      },
+    );
+  }
+
+  Widget _buildToolbar(
+    BuildContext context, {
+    required MediaToolbarLayout layout,
+  }) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: EdgeInsets.symmetric(
+        horizontal: layout.horizontalPadding,
+        vertical: 6,
+      ),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
         border: Border(
@@ -147,10 +188,31 @@ class MediaToolbar extends StatelessWidget {
             _filterDropdown(context),
           ],
 
+          // Tag-filter row toggle (optional): a sibling of the sort and format
+          // chips on the LEFT, not a row buried in the Organize menu. The bar
+          // below is opt-in so it no longer spends a permanent 56dp strip.
+          if (onToggleTagBar != null) ...[
+            const SizedBox(width: 8),
+            _tagFilterChip(context, compact: layout.compactTagLabel),
+          ],
+
           const Spacer(),
 
-          // Column count toggle (cycles within [minColumns, maxColumns]) — no slider
-          if (onColumnsChanged != null && currentColumns != null)
+          // Column count toggle (cycles within [minColumns, maxColumns]) — no slider.
+          // A grid pinch reaches the same setting, so this is the second
+          // optional control to leave when the bar gets really tight.
+          //
+          // `maxColumns > minColumns` is not decoration: the caller passes the
+          // range this WIDTH can display, and a narrow desktop window displays
+          // exactly two whatever is stored. A cycle button whose range holds
+          // one value cannot change anything the user sees, and tapping it
+          // would still call back with that value — overwriting a stored 5 with
+          // the 2 the window happened to allow. A control that cannot act is not
+          // shown (Settings → Video Grid Columns is the door that survives).
+          if (layout.showColumnButton &&
+              onColumnsChanged != null &&
+              currentColumns != null &&
+              maxColumns > minColumns)
             ColumnButton(
               current: currentColumns!,
               min: minColumns,
@@ -161,15 +223,18 @@ class MediaToolbar extends StatelessWidget {
           // Sort direction. The icon reports the direction in effect, so it
           // agrees with the chip's arrow; the tooltip names what the tap does
           // (like the layout toggle below) and doubles as the semantics text.
-          IconButton(
-            icon: Icon(
-              isAscending ? Icons.arrow_upward : Icons.arrow_downward,
-              size: 18,
+          // First out at phone width: re-picking the active sort chip reverses
+          // too, so this 40dp button has a door the Tag chip does not.
+          if (layout.showSortArrow)
+            IconButton(
+              icon: Icon(
+                isAscending ? Icons.arrow_upward : Icons.arrow_downward,
+                size: 18,
+              ),
+              onPressed: onSortDirectionChanged,
+              tooltip: isAscending ? 'Sort descending' : 'Sort ascending',
+              visualDensity: VisualDensity.compact,
             ),
-            onPressed: onSortDirectionChanged,
-            tooltip: isAscending ? 'Sort descending' : 'Sort ascending',
-            visualDensity: VisualDensity.compact,
-          ),
 
           // Grouping (optional): the button's icon reports the arrangement in
           // effect, so every item wears the SAME icon its own mode puts on the
@@ -178,10 +243,24 @@ class MediaToolbar extends StatelessWidget {
           // icon to something the menu never offered. (The sort and filter menus
           // beside it carry no item icons, but their buttons do not change icon
           // with the selection either.)
-          if (currentGrouping != null && onGroupingChanged != null)
-            SmartPopupMenu<String>(
+          if (layout.showRightIcons &&
+              currentGrouping != null &&
+              onGroupingChanged != null)
+            SmartPopupMenu<OrganizeAction>(
               tooltip: 'Organize',
-              onSelected: onGroupingChanged,
+              onSelected: (action) {
+                // Each of the three rows maps to one classification. The enum
+                // makes this exhaustive: a fourth row cannot be added without
+                // saying what it does here.
+                switch (action) {
+                  case OrganizeAction.ungrouped:
+                    onGroupingChanged?.call('none');
+                  case OrganizeAction.folder:
+                    onGroupingChanged?.call('folder');
+                  case OrganizeAction.format:
+                    onGroupingChanged?.call('format');
+                }
+              },
               items: [
                 // Written out rather than looped over a label map, and each icon
                 // a literal `const Icon`: the release icon tree-shaker keeps a
@@ -191,39 +270,42 @@ class MediaToolbar extends StatelessWidget {
                 // while the hardcoded `Icons.folder` in the sort menu rendered.
                 // These three literals are what keeps all three glyphs in the
                 // font; the button below may then pick among them at runtime.
-                SmartPopupMenuItem(
-                  value: 'none',
-                  child: _groupingRow(
-                    context,
-                    selected: currentGrouping == 'none',
-                    icon: const Icon(Icons.apps, size: 16),
-                    label: 'Ungrouped',
+                if (currentGrouping != null && onGroupingChanged != null) ...[
+                  SmartPopupMenuItem(
+                    value: OrganizeAction.ungrouped,
+                    child: _groupingRow(
+                      context,
+                      selected: currentGrouping == 'none',
+                      icon: const Icon(Icons.apps, size: 16),
+                      label: 'Ungrouped',
+                    ),
                   ),
-                ),
-                SmartPopupMenuItem(
-                  value: 'folder',
-                  child: _groupingRow(
-                    context,
-                    selected: currentGrouping == 'folder',
-                    icon: const Icon(Icons.folder, size: 16),
-                    label: 'By folder',
+                  SmartPopupMenuItem(
+                    value: OrganizeAction.folder,
+                    child: _groupingRow(
+                      context,
+                      selected: currentGrouping == 'folder',
+                      icon: const Icon(Icons.folder, size: 16),
+                      label: 'By folder',
+                    ),
                   ),
-                ),
-                SmartPopupMenuItem(
-                  value: 'format',
-                  child: _groupingRow(
-                    context,
-                    selected: currentGrouping == 'format',
-                    icon: const Icon(Icons.category, size: 16),
-                    label: 'By format',
+                  SmartPopupMenuItem(
+                    value: OrganizeAction.format,
+                    child: _groupingRow(
+                      context,
+                      selected: currentGrouping == 'format',
+                      icon: const Icon(Icons.category, size: 16),
+                      label: 'By format',
+                    ),
                   ),
-                ),
+                ],
               ],
               child: groupingIcon(currentGrouping!),
             ),
 
-          // Grid/List layout toggle (optional)
-          if (isGrid != null && onLayoutToggle != null)
+          // Grid/List layout toggle (optional); Settings → Display is its
+          // other door, so it leaves before the left-side chips do.
+          if (layout.showRightIcons && isGrid != null && onLayoutToggle != null)
             IconButton(
               icon: Icon(isGrid! ? Icons.list : Icons.grid_view, size: 18),
               onPressed: onLayoutToggle,
@@ -232,6 +314,55 @@ class MediaToolbar extends StatelessWidget {
             ),
         ],
       ),
+    );
+  }
+
+  /// The tag-filter toggle, built as the SAME chip as its sort and format
+  /// siblings. The chip FACE never changes: OFF and ON both wear the neutral
+  /// surface, outline and label type of the two neighbouring chips. The state
+  /// lives entirely in the icon slot — OFF the tag glyph wears the same accent
+  /// the sibling avatars wear, and ON it steps back to a faint grey so the
+  /// primary-coloured check FilterChip paints OVER it is the only coloured
+  /// thing left — so a permanent view option never turns into a coloured patch.
+  /// On narrow windows the label is dropped with its padding; the avatar +
+  /// check still carry the state and the tooltip names the control.
+  Widget _tagFilterChip(BuildContext context, {required bool compact}) {
+    final selected = tagBarVisible ?? false;
+    final colors = Theme.of(context).colorScheme;
+    final neutral = colors.surfaceContainerLow;
+    return FilterChip(
+      // OFF inherits the chip's own icon colour — the accent `Icons.sort` and
+      // `Icons.filter_list` beside it already wear — so the third chip reads as
+      // one of the row instead of a permanently dimmed control. ON steps back
+      // to a quiet grey, leaving the check as the only colour in this slot.
+      avatar: Icon(
+        Icons.tag,
+        size: 16,
+        color: selected ? RCrmColors.textFaint : null,
+      ),
+      label: compact ? const SizedBox.shrink() : const Text('Tags'),
+      labelPadding: compact ? EdgeInsets.zero : null,
+      selected: selected,
+      onSelected: (_) => onToggleTagBar?.call(),
+      // FilterChip's DEFAULT `color` resolves selected to M3
+      // secondaryContainer (cyan) and OUTRANKS `selectedColor`, flashing cyan
+      // through the fade. Pin BOTH ends to the same neutral the sibling chips
+      // wear: the selected state must not repaint the chip's face at all.
+      color: WidgetStateProperty.all<Color?>(neutral),
+      selectedColor: neutral,
+      // The check paints over the avatar in `checkmarkColor`; the glyph has
+      // already stepped back to grey by then, so the accent reads as state,
+      // not as a fill.
+      checkmarkColor: colors.primary,
+      side: BorderSide(color: colors.outlineVariant),
+      // FilterChip's DEFAULT selected labelStyle is M3 `onSecondaryContainer`
+      // — a DARK ink — which is unreadable on this neutral surface in Night.
+      // OFF inherits the sibling chips' muted label; ON switches to the page's
+      // primary ink so the word stays legible in both appearances.
+      labelStyle: selected ? TextStyle(color: colors.onSurface) : null,
+      showCheckmark: true,
+      visualDensity: VisualDensity.compact,
+      tooltip: selected ? 'Hide tag filters' : 'Show tag filters',
     );
   }
 

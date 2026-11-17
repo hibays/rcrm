@@ -119,4 +119,65 @@ void main() {
     expect(selected, '0.75x');
     expect(find.byType(SmartPopupMenuItem<String>), findsNothing);
   });
+
+  testWidgets('a choice reaches its owner on the click, not after the panel '
+      'has animated away', (tester) async {
+    var calls = 0;
+    String? selected;
+    await _pump(
+      tester,
+      onSelected: (v) {
+        calls++;
+        selected = v;
+      },
+    );
+    await _open(tester);
+
+    await tester.tap(find.text('0.75x'));
+    // ONE frame, no settle: the panel is still on screen (its exit animation
+    // has not finished), and the page must already know what was chosen —
+    // routing the value through `showAttach`'s future made every filter land
+    // after the menu collapsed, which reads as a third of a second of nothing.
+    await tester.pump();
+    expect(
+      find.byType(SmartPopupMenuItem<String>),
+      findsNWidgets(3),
+      reason: 'the panel is still animating out on this frame',
+    );
+    expect(selected, '0.75x');
+    expect(calls, 1, reason: 'the awaited result must not deliver it again');
+
+    await tester.pumpAndSettle();
+    expect(calls, 1);
+    expect(find.byType(SmartPopupMenuItem<String>), findsNothing);
+  });
+
+  testWidgets('a second tap on the same row, before the panel is gone, does '
+      'not deliver the choice twice', (tester) async {
+    var calls = 0;
+    await _pump(tester, onSelected: (_) => calls++);
+    await _open(tester);
+
+    await tester.tap(find.text('0.75x'));
+    await tester.pump();
+    // The row is still tappable on this frame (see the test above), so an
+    // impatient second tap lands on it. One choice, one delivery: the owner
+    // may not be idempotent — the sort menu's re-pick FLIPS the direction, so
+    // a double delivery would flip and flip back.
+    await tester.tap(find.text('0.75x'), warnIfMissed: false);
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(calls, 1);
+  });
+
+  testWidgets('closing without a choice selects nothing', (tester) async {
+    var calls = 0;
+    await _pump(tester, onSelected: (_) => calls++);
+    await _open(tester);
+    // A tap on the mask dismisses without a value.
+    await tester.tapAt(const Offset(20, 20));
+    await tester.pumpAndSettle();
+    expect(calls, 0);
+    expect(find.byType(SmartPopupMenuItem<String>), findsNothing);
+  });
 }

@@ -2,6 +2,11 @@
 // Compact column-count control: tap cycles within [min,max] (wraps), and
 // hovering + mouse wheel steps by one (up = more, down = fewer). Replaces the
 // old Size slider; shared by the video toolbar and the image album view.
+//
+// [min] and [max] are what the CURRENT width can display, not a constant range,
+// so they can collapse to a single value on a narrow window. In that case the
+// control neither acts (see `_cycle`) nor is built by the toolbar: a button
+// showing the only number available is a control that cannot act.
 
 import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
@@ -20,8 +25,18 @@ class ColumnButton extends StatelessWidget {
     this.max = 6,
   });
 
-  void _cycle() => onChanged(current >= max ? min : current + 1);
+  /// Wrap to [min] at the top. A range that holds ONE value has nothing to
+  /// cycle, so a tap must not emit anything: the caller's range is what the
+  /// current width can DISPLAY, and writing it back would replace the user's
+  /// stored choice (6 columns) with the number the window happened to allow
+  /// (2) without changing a single pixel on screen.
+  void _cycle() {
+    if (max <= min) return;
+    onChanged(current >= max ? min : current + 1);
+  }
+
   void _step(int d) {
+    if (max <= min) return;
     final n = (current + d).clamp(min, max);
     if (n != current) onChanged(n);
   }

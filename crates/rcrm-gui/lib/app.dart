@@ -10,6 +10,7 @@ import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'config/theme.dart';
+import 'models/media_item.dart';
 import 'models/server_config.dart';
 import 'providers/server_provider.dart';
 import 'providers/settings_provider.dart';
@@ -18,8 +19,10 @@ import 'screens/cast_scan_screen.dart';
 import 'screens/cloud_setup_screen.dart';
 import 'screens/home_screen.dart';
 import 'screens/library_setup_screen.dart';
+import 'screens/search_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/tv_detector.dart';
+import 'utils/keywords.dart';
 import 'widgets/double_back_exit.dart';
 import 'widgets/desktop_title_bar.dart';
 
@@ -139,6 +142,16 @@ class _RcrmAppState extends ConsumerState<RcrmApp> {
             '/cloud-setup': (context) => const CloudSetupScreen(),
             '/home': (context) => const HomeScreen(),
             '/settings': (context) => const SettingsScreen(),
+            // The one destination for a tag: the player's title chips, the
+            // Home channel rows and search suggestions all come through here.
+            // It is a SEARCH page on purpose — a tag is a query with a name.
+            '/tag-search': (context) {
+              final arg = ModalRoute.of(context)?.settings.arguments;
+              return SearchScreen(
+                tabFilter: MediaType.video,
+                initialTag: arg is KeywordTag ? arg : null,
+              );
+            },
             '/cast-scan': (context) => const CastScanScreen(),
             '/cast-receiver': (context) =>
                 const CastReceiverScreen(showBack: true),

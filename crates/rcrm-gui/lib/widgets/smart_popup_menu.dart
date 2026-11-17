@@ -66,7 +66,17 @@ class SmartPopupMenuItem<T> extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      onTap: enabled ? () => SmartDialog.dismiss(result: value) : null,
+      onTap: enabled
+          ? () {
+              // The page reacts NOW; the panel animates out behind it. Routing
+              // the choice through `showAttach`'s future meant it arrived only
+              // after the exit animation, which reads as "the menu has to be
+              // gone before the filter applies".
+              final pick = _MenuPickScope.maybeOf(context);
+              SmartDialog.dismiss(result: value);
+              pick?.call(value);
+            }
+          : null,
       child: ConstrainedBox(
         constraints: BoxConstraints(minHeight: minHeight),
         child: Padding(
@@ -80,6 +90,25 @@ class SmartPopupMenuItem<T> extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Carries the "deliver this choice now" callback down to [SmartPopupMenuItem].
+///
+/// A menu item has no idea whether its owner wants the value immediately (a
+/// filter that should apply on the click) or only as the menu's result (the
+/// point-anchored [showSmartMenu], whose caller awaits it), so the decision
+/// belongs to the panel that built the rows.
+class _MenuPickScope extends InheritedWidget {
+  final ValueChanged<Object?> onPick;
+
+  const _MenuPickScope({required this.onPick, required super.child});
+
+  static ValueChanged<Object?>? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_MenuPickScope>()?.onPick;
+
+  @override
+  bool updateShouldNotify(_MenuPickScope oldWidget) =>
+      onPick != oldWidget.onPick;
 }
 
 class SmartPopupMenu<T> extends StatelessWidget {
@@ -151,6 +180,7 @@ class SmartPopupMenu<T> extends StatelessWidget {
 
   Future<void> _open(BuildContext context) async {
     onOpened?.call();
+    var delivered = false;
     final result = await SmartDialog.showAttach<T>(
       // The trigger's own context is the anchor.
       targetContext: context,
@@ -168,9 +198,24 @@ class SmartPopupMenu<T> extends StatelessWidget {
         elevation: elevation,
         borderRadius: borderRadius ?? _nativeMenuRadius,
         constraints: constraints,
+        // A row tap delivers its value itself, one frame after the click.
+        // `delivered` is also the one-shot LATCH, not just a note that the
+        // future is redundant: the panel stays on screen and hit-testable
+        // through its exit animation (measured: the rows are still there a
+        // frame after the tap), so a second tap on the same row would deliver
+        // the same choice twice. That is not harmless — re-picking the active
+        // sort field flips the direction (see `_SortNotifier.set`), so two
+        // deliveries would flip and flip back while writing both.
+        onPick: (value) {
+          if (delivered) return;
+          delivered = true;
+          onSelected?.call(value as T);
+        },
       ),
     );
-    if (result != null) onSelected?.call(result);
+    // Only the paths that produce a result WITHOUT a row tap get here (and any
+    // future one); the guard keeps a choice from being delivered twice.
+    if (result != null && !delivered) onSelected?.call(result);
   }
 }
 
@@ -226,17 +271,27 @@ class _SmartMenuPanel<T> extends StatelessWidget {
   final BorderRadius borderRadius;
   final BoxConstraints? constraints;
 
+  /// Called with the chosen row's value the instant it is tapped. Null for the
+  /// point-anchored menu, whose caller consumes the dialog's result instead.
+  final ValueChanged<Object?>? onPick;
+
   const _SmartMenuPanel({
     required this.items,
     required this.backgroundColor,
     required this.elevation,
     required this.borderRadius,
     required this.constraints,
+    this.onPick,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final rows = Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [...items],
+    );
     final panel = Material(
       // A menu is a card, and Material 3's own menu paints it with the surface
       // tint DISABLED. Say so explicitly: the player's surface is a fixed Ash,
@@ -255,11 +310,9 @@ class _SmartMenuPanel<T> extends StatelessWidget {
       textStyle: theme.textTheme.labelLarge,
       child: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(vertical: 8),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [...items],
-        ),
+        child: onPick == null
+            ? rows
+            : _MenuPickScope(onPick: onPick!, child: rows),
       ),
     );
     // IntrinsicWidth is what keeps a menu a menu: the anchored surface would

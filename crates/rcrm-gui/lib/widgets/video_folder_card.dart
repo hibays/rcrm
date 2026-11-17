@@ -28,11 +28,27 @@ class VideoFolderCard extends StatelessWidget {
   final Album folder;
   final VoidCallback? onTap;
 
-  const VideoFolderCard({super.key, required this.folder, this.onTap});
+  /// The folder's videos the CURRENT filter leaves, when one is in force.
+  ///
+  /// The card and the header it opens must count the same things: a card that
+  /// says "12 videos" over a folder that opens with four is the filter's lie,
+  /// not the library's. So the count AND the 2×2 covers come from this list
+  /// when it is given — showing posters of files the list below cannot contain
+  /// is the same lie in pictures.
+  final List<MediaItem>? visibleItems;
+
+  const VideoFolderCard({
+    super.key,
+    required this.folder,
+    this.onTap,
+    this.visibleItems,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final covers = folder.items.take(4).toList();
+    final items = visibleItems ?? folder.items;
+    final count = visibleItems?.length ?? folder.itemCount;
+    final covers = items.take(4).toList();
     return GestureDetector(
       onTap: onTap,
       child: Card(
@@ -56,9 +72,7 @@ class VideoFolderCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    folder.itemCount == 1
-                        ? '1 video'
-                        : '${folder.itemCount} videos',
+                    count == 1 ? '1 video' : '$count videos',
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                 ],

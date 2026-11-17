@@ -317,31 +317,6 @@ final sortedVideosProvider = Provider<List<MediaItem>>((ref) {
   return list;
 });
 
-List<MediaItem> _shuffleWithSeed(List<MediaItem> items, int seed) {
-  if (items.length < 2) return items;
-  final list = List<MediaItem>.of(items);
-  final rng = Random(seed);
-  for (var i = list.length - 1; i > 0; i--) {
-    final j = rng.nextInt(i + 1);
-    final tmp = list[i];
-    list[i] = list[j];
-    list[j] = tmp;
-  }
-  return list;
-}
-
-/// Recommended videos: Fisher-Yates shuffle seeded by day number, take 10.
-/// Rotates daily so the set stays fresh during browsing.
-final recommendedProvider = Provider.autoDispose.family<List<MediaItem>, int>((
-  ref,
-  daySeed,
-) {
-  final videos = ref.watch(videosMapProvider).values.toList();
-  if (videos.isEmpty) return const [];
-  final shuffled = _shuffleWithSeed(videos, daySeed);
-  return shuffled.take(10).toList();
-});
-
 final videoExtensionsProvider = Provider<Set<String>>((ref) {
   return ref
       .watch(videosMapProvider)

@@ -125,6 +125,7 @@ Future<void> showMediaItemMenu({
   VoidCallback? onReveal,
   int index = 1,
   int total = 1,
+  List<String>? keywords,
 }) async {
   final entries = mediaItemMenuEntries(
     isVideo: isVideo,
@@ -160,7 +161,13 @@ Future<void> showMediaItemMenu({
     case MediaItemMenuAction.reveal:
       onReveal?.call();
     case MediaItemMenuAction.details:
-      _showDetails(item, isVideo: isVideo, index: index, total: total);
+      _showDetails(
+        item,
+        isVideo: isVideo,
+        index: index,
+        total: total,
+        keywords: keywords,
+      );
     case MediaItemMenuAction.copyName:
       unawaited(_copy(item.name, 'Name'));
     case MediaItemMenuAction.copyPath:
@@ -176,6 +183,7 @@ void _showDetails(
   required bool isVideo,
   required int index,
   required int total,
+  List<String>? keywords,
 }) {
   final metadata = MediaMetadataService.forUrl(
     item.url,
@@ -190,7 +198,11 @@ void _showDetails(
       builder: (_) => SizedBox(
         width: double.infinity,
         child: isVideo
-            ? VideoInfoSheet(item: item, metadata: metadata)
+            ? VideoInfoSheet(
+                item: item,
+                metadata: metadata,
+                keywords: keywords ?? const [],
+              )
             : ImageInfoSheet(
                 item: item,
                 index: index,

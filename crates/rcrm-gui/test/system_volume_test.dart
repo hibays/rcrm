@@ -647,7 +647,7 @@ void main() {
 
   group('the row', () {
     Future<ProviderContainer> pumpSettings(WidgetTester tester) async {
-      await tester.binding.setSurfaceSize(const Size(1000, 1600));
+      await tester.binding.setSurfaceSize(const Size(1000, 2000));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       final c = ProviderContainer();
       addTearDown(c.dispose);

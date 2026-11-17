@@ -236,6 +236,13 @@ void main() {
       answerWith((_) async => null);
       final c = await pumpSettings(tester);
 
+      // Display grew by the Keyword Relevance row, so Privacy is below the fold
+      // of the default test surface; a lazy ListView has not built it yet.
+      await tester.scrollUntilVisible(
+        find.text('Allow Screenshots'),
+        300,
+        scrollable: find.byType(Scrollable).first,
+      );
       expect(find.text('Privacy'), findsOneWidget);
       final tile = tester.widget<SwitchListTile>(
         find.widgetWithText(SwitchListTile, 'Allow Screenshots'),

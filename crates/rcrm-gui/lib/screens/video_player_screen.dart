@@ -23,11 +23,13 @@ import '../services/player_factory.dart';
 import '../services/screen_orientation.dart';
 import '../services/screen_wakelock.dart';
 import '../services/system_volume.dart';
+import '../providers/keyword_provider.dart';
 import '../providers/library_provider.dart';
 import '../providers/settings_provider.dart';
 import '../providers/video_jump_stack.dart';
 import '../providers/window_chrome_provider.dart';
 import '../widgets/video_card.dart';
+import '../widgets/keyword_chip.dart';
 import '../widgets/media_player_keys.dart';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -40,6 +42,7 @@ import '../widgets/player_settings_panel.dart';
 import '../widgets/episode_picker_panel.dart';
 import '../utils/format.dart';
 import '../utils/keep_screen_on.dart';
+import '../utils/keywords.dart';
 import '../utils/pan_lock.dart';
 import '../utils/playback_open_guard.dart';
 import '../utils/player_eof.dart';
@@ -592,6 +595,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       ref.read(videosListProvider),
       ref.read(jumpExcludedPathsProvider),
       ref.read(scanStateProvider).scanGen,
+      ref.read(keywordIndexProvider),
+      ref.read(uiSettingsProvider).keywordRelevance,
     );
     if (related.isEmpty) return null;
     if (mode == PlaybackMode.shuffle) {
@@ -1652,18 +1657,29 @@ class _State extends ConsumerState<VideoPlayerScreen> {
 
   // ── Navigation ─────────────────────────────────────────
 
-  /// The Related list for this screen, cached by its three inputs: the item,
-  /// the scan generation and the jump stack's excluded paths. The shuffle
-  /// itself is `relatedFor` (`utils/related_videos.dart`) — a pure function,
-  /// because the player cannot be mounted in a test.
+  /// The Related list for this screen, cached by its inputs: the item, the
+  /// scan generation, the jump stack's excluded paths and the keyword
+  /// relevance. The shuffle itself is `relatedFor`
+  /// (`utils/related_videos.dart`) — a pure function, because the player
+  /// cannot be mounted in a test.
   List<MediaItem> _relatedFor(
     List<MediaItem> allVideos,
     Set<String> excluded,
     int scanGen,
+    KeywordIndex keywords,
+    int relevance,
   ) {
-    final key = '$scanGen\u0000${_item.url}\u0000${excluded.join('\u0000')}';
+    final key =
+        '$scanGen\u0000$relevance\u0000${allVideos.length}\u0000'
+        '${_item.url}\u0000${excluded.join('\u0000')}';
     if (_relCache != null && _relCacheKey == key) return _relCache!;
-    final list = relatedFor(_item, allVideos, excludePaths: excluded);
+    final list = relatedFor(
+      _item,
+      allVideos,
+      excludePaths: excluded,
+      keywords: keywords,
+      relevance: relevance,
+    );
     _relCache = list;
     _relCacheKey = key;
     return list;
@@ -1677,6 +1693,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       ref.read(videosListProvider),
       ref.read(jumpExcludedPathsProvider),
       ref.read(scanStateProvider).scanGen,
+      ref.read(keywordIndexProvider),
+      ref.read(uiSettingsProvider).keywordRelevance,
     );
     if (r.isEmpty) return;
     _playInPlace(r.first, back: false);
@@ -1986,7 +2004,17 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     // history `Back` leaves the player by itself, so both would repeat it.
     final excluded = ref.watch(jumpExcludedPathsProvider);
     final hasHistory = ref.watch(videoJumpStackProvider).isNotEmpty;
-    final related = _relatedFor(allVideos, excluded, scanGen);
+    final keywordIndex = ref.watch(keywordIndexProvider);
+    final keywordRelevance = ref.watch(
+      uiSettingsProvider.select((s) => s.keywordRelevance),
+    );
+    final related = _relatedFor(
+      allVideos,
+      excluded,
+      scanGen,
+      keywordIndex,
+      keywordRelevance,
+    );
     final size = MediaQuery.of(c).size;
     final isLandscape = size.width > size.height;
     final wide = _isMobile
@@ -2146,7 +2174,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
         SliverToBoxAdapter(
           child: _pip ? SizedBox(width: _pipW, height: _pipH) : video,
         ),
-        SliverToBoxAdapter(child: _meta()),
+        SliverToBoxAdapter(child: _meta(keywordIndex)),
         if (related.isNotEmpty) ...[
           SliverToBoxAdapter(
             child: Padding(
@@ -2192,7 +2220,7 @@ class _State extends ConsumerState<VideoPlayerScreen> {
                   child: Column(
                     children: [
                       _pip ? SizedBox(width: _pipW, height: _pipH) : video,
-                      _meta(),
+                      _meta(keywordIndex),
                     ],
                   ),
                 ),
@@ -2901,6 +2929,8 @@ class _State extends ConsumerState<VideoPlayerScreen> {
       ref.read(videosListProvider),
       ref.read(jumpExcludedPathsProvider),
       ref.read(scanStateProvider).scanGen,
+      ref.read(keywordIndexProvider),
+      ref.read(uiSettingsProvider).keywordRelevance,
     );
     final offer = _upNext;
     return Positioned.fill(
@@ -3002,49 +3032,78 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     );
   }
 
-  Widget _meta() => Container(
-    padding: const EdgeInsets.all(16),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          _item.name,
-          style: TextStyle(
-            color: RCrmColors.textPrimary,
-            fontSize: 20,
-            fontWeight: FontWeight.w600,
+  /// A tag under the title is a door to that tag's results. Playback pauses
+  /// first: the search page is not a picture-in-picture surface, and leaving a
+  /// video's audio playing under a text screen would be a ghost.
+  void _openTag(KeywordTag tag) {
+    p?.pause();
+    Navigator.of(context).pushNamed('/tag-search', arguments: tag);
+  }
+
+  Widget _meta(KeywordIndex keywordIndex) {
+    final tags = keywordIndex.setFor(_item.path).tags;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _item.name,
+            style: TextStyle(
+              color: RCrmColors.textPrimary,
+              fontSize: 20,
+              fontWeight: FontWeight.w600,
+            ),
           ),
-        ),
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            if (_item.durationSeconds != null) ...[
+          // Under the title, before the technical row: these are what the file
+          // IS, and YouTube's own order puts the hashtags above the numbers.
+          if (tags.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            // A file has SEVERAL tags; this wraps rather than scrolling them
+            // off the edge, so the title block shows the whole set at once.
+            Wrap(
+              spacing: 6,
+              runSpacing: 2,
+              children: [
+                for (final tag in tags.take(8))
+                  KeywordChip(tag: tag, onTap: () => _openTag(tag)),
+              ],
+            ),
+          ],
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              if (_item.durationSeconds != null) ...[
+                Text(
+                  _item.formattedDuration,
+                  style: TextStyle(
+                    color: RCrmColors.textSecondary,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text('•', style: TextStyle(color: RCrmColors.textSecondary)),
+              ],
+              const SizedBox(width: 8),
               Text(
-                _item.formattedDuration,
+                _item.formattedSize,
                 style: TextStyle(color: RCrmColors.textSecondary, fontSize: 13),
               ),
               const SizedBox(width: 8),
               Text('•', style: TextStyle(color: RCrmColors.textSecondary)),
+              const SizedBox(width: 8),
+              Text(
+                _item.extension.toUpperCase(),
+                style: TextStyle(color: RCrmColors.textSecondary, fontSize: 13),
+              ),
             ],
-            const SizedBox(width: 8),
-            Text(
-              _item.formattedSize,
-              style: TextStyle(color: RCrmColors.textSecondary, fontSize: 13),
-            ),
-            const SizedBox(width: 8),
-            Text('•', style: TextStyle(color: RCrmColors.textSecondary)),
-            const SizedBox(width: 8),
-            Text(
-              _item.extension.toUpperCase(),
-              style: TextStyle(color: RCrmColors.textSecondary, fontSize: 13),
-            ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        Divider(color: RCrmColors.hairline),
-      ],
-    ),
-  );
+          ),
+          const SizedBox(height: 12),
+          Divider(color: RCrmColors.hairline),
+        ],
+      ),
+    );
+  }
 
   Widget _related(List items) {
     final col = Column(

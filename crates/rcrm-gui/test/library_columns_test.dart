@@ -138,6 +138,32 @@ void main() {
     });
   });
 
+  group('videoGridChoiceBounds', () {
+    test('is the range a wide window shows — that is what the preference means', () {
+      // The settings row that SETS the count offers this range; a window clamps
+      // what it SHOWS. Pinning the two together stops them drifting: a number
+      // picked on a wide screen must be a number the grid can actually render.
+      for (final mobile in [true, false]) {
+        expect(
+          videoGridChoiceBounds(mobile: mobile),
+          videoGridBounds(width: 4000, mobile: mobile),
+          reason: 'mobile=$mobile',
+        );
+      }
+    });
+
+    test('a phone may choose one column; a desktop window may not', () {
+      // One column is what a phone's pinch can already commit, so the row has
+      // to be able to select it back. A desktop window keeps two as its floor
+      // (one column of 160dp cards is a list pretending to be a grid), so
+      // offering 1 there would advertise a count it never shows.
+      expect(videoGridChoiceBounds(mobile: true).min, 1);
+      expect(videoGridChoiceBounds(mobile: false).min, 2);
+      expect(videoGridChoiceBounds(mobile: true).max, 6);
+      expect(videoGridChoiceBounds(mobile: false).max, 6);
+    });
+  });
+
   group('imageGridMaxColumns', () {
     test('at least two, at most eight, never under 100dp a cell', () {
       expect(imageGridMaxColumns(375), 3);

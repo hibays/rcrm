@@ -26,7 +26,7 @@ void main() {
   /// a default-sized test surface.
   Future<ProviderContainer> pumpSettings(
     WidgetTester tester, {
-    Size size = const Size(1000, 1200),
+    Size size = const Size(1000, 1600),
     ProviderContainer? container,
   }) async {
     await tester.binding.setSurfaceSize(size);
@@ -49,7 +49,8 @@ void main() {
     final c = await pumpSettings(tester);
 
     expect(find.text('Jump History'), findsOneWidget);
-    final slider = tester.widget<Slider>(find.byType(Slider));
+    final finder = find.byKey(const ValueKey('jump-history-slider'));
+    final slider = tester.widget<Slider>(finder);
     expect(slider.min, kVideoJumpHistoryMin.toDouble());
     expect(slider.max, kVideoJumpHistoryMax.toDouble());
     expect(slider.value, kVideoJumpHistoryDefault.toDouble());
@@ -79,9 +80,10 @@ void main() {
 
     // The Display section grows; a drag needs its target on screen (a finder
     // can find a lazily-built row, a pointer cannot hit one below the fold).
-    await tester.ensureVisible(find.byType(Slider));
+    final finder = find.byKey(const ValueKey('jump-history-slider'));
+    await tester.ensureVisible(finder);
     await tester.pumpAndSettle();
-    await tester.drag(find.byType(Slider), const Offset(60, 0));
+    await tester.drag(finder, const Offset(60, 0));
     await tester.pump();
 
     final limit = c.read(uiSettingsProvider).videoJumpHistoryLimit;
@@ -107,7 +109,12 @@ void main() {
     await pumpSettings(tester, container: c);
 
     expect(c.read(uiSettingsProvider).videoJumpHistoryLimit, 42);
-    expect(tester.widget<Slider>(find.byType(Slider)).value, 42);
+    expect(
+      tester
+          .widget<Slider>(find.byKey(const ValueKey('jump-history-slider')))
+          .value,
+      42,
+    );
     expect(find.text('42'), findsOneWidget);
   });
 
@@ -119,7 +126,7 @@ void main() {
     await pumpSettings(tester, size: const Size(360, 2600));
 
     expect(find.text('Jump History'), findsOneWidget);
-    expect(find.byType(Slider), findsOneWidget);
+    expect(find.byKey(const ValueKey('jump-history-slider')), findsOneWidget);
     expect(find.text('$kVideoJumpHistoryDefault'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });

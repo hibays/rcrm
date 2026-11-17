@@ -21,6 +21,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:rcrm_gui/config/theme.dart';
 import 'package:rcrm_gui/models/media_item.dart';
+import 'package:rcrm_gui/providers/keyword_provider.dart';
 import 'package:rcrm_gui/providers/library_provider.dart';
 import 'package:rcrm_gui/providers/settings_provider.dart';
 import 'package:rcrm_gui/screens/video_screen.dart';
@@ -28,6 +29,7 @@ import 'package:rcrm_gui/services/media_library.dart';
 import 'package:rcrm_gui/services/settings_service.dart';
 import 'package:rcrm_gui/services/thumbnail_service.dart';
 import 'package:rcrm_gui/services/webdav_client.dart';
+import 'package:rcrm_gui/widgets/media_toolbar.dart';
 import 'package:rcrm_gui/widgets/smart_popup_menu.dart';
 import 'package:rcrm_gui/widgets/video_card.dart';
 import 'package:rcrm_gui/widgets/video_folder_card.dart';
@@ -248,6 +250,46 @@ void main() {
       ], reason: 'after Esc');
     });
 
+    testWidgets('a folder card counts what the tag filter leaves, like the '
+        'header it opens', (tester) async {
+      // Three files in ONE folder, two of them sharing a word: the tag survives
+      // inside the folder, so the card has a smaller number to report than the
+      // folder holds.
+      final c = _container([
+        _video('beach one.mp4', folder: 'Alpha'),
+        _video('beach two.mp4', folder: 'Alpha'),
+        _video('indoor three.mp4', folder: 'Alpha'),
+      ], classification: 'folder');
+      await _pump(tester, c);
+
+      expect(find.text('3 videos'), findsOneWidget, reason: 'the folder card');
+
+      // A filter arriving from a Home channel / tag search, without touching
+      // the tab's own toggle.
+      c.read(videoTagFilterProvider.notifier).toggle('beach');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      // The header counts what the filter leaves, so the card must too: a card
+      // saying "3 videos" over a folder that opens with two is the filter's
+      // lie, and it also used to show posters of the excluded file.
+      expect(find.text('3 videos'), findsNothing);
+      expect(find.text('2 videos'), findsOneWidget);
+
+      await tester.tap(
+        find.descendant(
+          of: find.byType(VideoFolderCard),
+          matching: find.text('Alpha'),
+        ),
+      );
+      await tester.pump();
+      expect(_videoCards(tester), [
+        'Alpha/beach one.mp4',
+        'Alpha/beach two.mp4',
+      ]);
+      expect(find.text('2 videos'), findsOneWidget, reason: 'the header agrees');
+    });
+
     testWidgets('the toolbar\'s organize menu commits and persists the '
         'grouping', (tester) async {
       await _pump(tester, _container([_alpha, _bravo]));
@@ -261,7 +303,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.text('By folder'), findsOneWidget);
       await tester.tap(
-        find.widgetWithText(SmartPopupMenuItem<String>, 'By folder'),
+        find.widgetWithText(SmartPopupMenuItem<OrganizeAction>, 'By folder'),
       );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
@@ -293,7 +335,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       await tester.tap(
-        find.widgetWithText(SmartPopupMenuItem<String>, 'Ungrouped'),
+        find.widgetWithText(SmartPopupMenuItem<OrganizeAction>, 'Ungrouped'),
       );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));

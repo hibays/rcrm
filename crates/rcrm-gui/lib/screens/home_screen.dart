@@ -12,8 +12,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/media_item.dart';
 import '../models/album.dart';
 import '../config/theme.dart';
+import '../providers/keyword_provider.dart';
 import '../providers/library_provider.dart';
 import '../providers/server_provider.dart';
+import '../utils/keywords.dart';
 import '../widgets/doctor_panel.dart';
 import '../widgets/album_preview.dart';
 import '../widgets/media_item_menu.dart';
@@ -135,6 +137,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         DateTime.now().millisecondsSinceEpoch ~/ Duration.millisecondsPerDay;
     final scanState = ref.watch(scanStateProvider);
     final recommended = ref.watch(recommendedProvider(daySeed));
+    final channels = ref.watch(keywordChannelsProvider);
     final allRecent = ref.watch(recentVideosProvider);
     // Exclude already-shown recommended items to avoid visual overlap.
     final recentVideos = recommended.isNotEmpty
@@ -273,6 +276,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   recommended,
                   recentVideos,
                   albums,
+                  channels,
                 );
             }
           },
@@ -304,6 +308,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     List<MediaItem> recommended,
     List<MediaItem> recentVideos,
     List<Album> albums,
+    List<KeywordChannel> channels,
   ) {
     if (scanState.isLoading && !scanState.hasCompletedOnce) {
       return const Center(child: CircularProgressIndicator());
@@ -315,15 +320,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return FingerPreviewState.isMobile
         ? Listener(
             onPointerDown: (e) => _fp.onPointerDown(e, setState),
-            child: _scrollContent(recommended, recentVideos, albums, scanState),
+            child: _scrollContent(
+              recommended,
+              recentVideos,
+              albums,
+              channels,
+              scanState,
+            ),
           )
-        : _scrollContent(recommended, recentVideos, albums, scanState);
+        : _scrollContent(
+            recommended,
+            recentVideos,
+            albums,
+            channels,
+            scanState,
+          );
   }
 
   Widget _scrollContent(
     List<MediaItem> recommended,
     List<MediaItem> recentVideos,
     List<Album> albums,
+    List<KeywordChannel> channels,
     ScanState scanState,
   ) {
     // Mobile landscape has very limited vertical space (~400 px);
@@ -374,6 +392,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           at: at,
                           isVideo: true,
                           onOpen: () => _openVideo(recommended[index]),
+                          keywords: ref
+                              .read(keywordIndexProvider)
+                              .setFor(recommended[index].path)
+                              .labels,
                         ),
                       ),
                     ),
@@ -382,6 +404,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ),
             ),
             SizedBox(height: 24 * rowScale),
+          ],
+
+          // ── Keyword channels ─────────────────
+          // The tags the library repeats most. Each row is a section named by
+          // its tag; View all lands on the video tab with that filter selected,
+          // which is the same list the row shows.
+          for (final channel in channels) ...[
+            SizedBox(height: 24 * rowScale),
+            _channelSection(channel, rowScale),
           ],
 
           // ── Recent videos quick access ───────
@@ -418,6 +449,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           at: at,
                           isVideo: true,
                           onOpen: () => _openVideo(item),
+                          keywords: ref
+                              .read(keywordIndexProvider)
+                              .setFor(item.path)
+                              .labels,
                         ),
                       ),
                     ),
@@ -468,6 +503,68 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
+  /// One keyword channel: a tag-named section whose View all applies that tag
+  /// to the video tab. The row and the filtered tab show the same videos, so
+  /// the button is a destination, not a different selection.
+  Widget _channelSection(KeywordChannel channel, double rowScale) {
+    final surface = _fp.surface('homeChannel:${channel.tag.key}');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _sectionHeader(
+          context,
+          channel.tag.label,
+          Icons.tag,
+          onViewAll: () => _openChannel(channel.tag),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 180 * rowScale,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            itemExtent: 292 * rowScale,
+            itemCount: channel.items.length,
+            itemBuilder: (context, index) {
+              final item = channel.items[index];
+              return Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: SizedBox(
+                  width: 280 * rowScale,
+                  child: VideoCard(
+                    key: FingerPreviewState.isMobile
+                        ? surface.keyFor(item.path)
+                        : ValueKey('channel:${channel.tag.key}:${item.url}'),
+                    item: item,
+                    preview: surface.isActive(item.path),
+                    onTap: () => _openVideo(item),
+                    onMenuRequested: (at) => showMediaItemMenu(
+                      context: context,
+                      item: item,
+                      at: at,
+                      isVideo: true,
+                      onOpen: () => _openVideo(item),
+                      keywords: ref
+                          .read(keywordIndexProvider)
+                          .setFor(item.path)
+                          .labels,
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// A channel's View all: open that tag's result page. It is the same page the
+  /// player's tag chips open and the same screen a search lands on, so a tag
+  /// means one thing everywhere in the app.
+  void _openChannel(KeywordTag tag) {
+    Navigator.pushNamed(context, '/tag-search', arguments: tag);
+  }
+
   Widget _sectionHeader(
     BuildContext context,
     String title,
@@ -481,12 +578,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           // Section marker in the orange theme color.
           Icon(icon, size: 22, color: RCrmColors.primary),
           const SizedBox(width: 10),
-          Text(
-            title,
-            style: Theme.of(context).textTheme.headlineSmall
-                ?.copyWith(fontWeight: FontWeight.w600),
+          // A tag can be a long word; the section title gives way rather than
+          // pushing View all off the row.
+          Expanded(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.headlineSmall
+                  ?.copyWith(fontWeight: FontWeight.w600),
+            ),
           ),
-          const Spacer(),
           if (onViewAll != null)
             TextButton(onPressed: onViewAll, child: const Text('View all')),
         ],

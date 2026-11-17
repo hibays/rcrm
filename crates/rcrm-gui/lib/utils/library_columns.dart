@@ -133,17 +133,34 @@ class VideoGridBounds {
   int get hashCode => Object.hash(min, max);
 }
 
+/// The counts a user may STORE, whatever window they are in.
+///
+/// [videoGridBounds] answers what a width can SHOW and clamps a stored choice to
+/// that; this answers what may be CHOSEN. The two differ on purpose: the choice
+/// is a preference, so it has to survive shrinking a window, and every count the
+/// grid can ever enter has to stay selectable — a phone's pinch commits one
+/// column, and a row without a 1 would leave that value in effect with nothing
+/// highlighted.
+///
+/// Same floors as [videoGridBounds]: a phone may go to one column; a desktop
+/// keeps two, because one column of 160dp cards on a 1920px screen is a list
+/// pretending to be a grid.
+VideoGridBounds videoGridChoiceBounds({required bool mobile}) =>
+    VideoGridBounds(mobile ? 1 : 2, 6);
+
 /// One card is at least 160dp wide, so a window shows as many columns as fit in
 /// that budget, never fewer than one and never more than six.
 ///
 /// A phone may go down to a single column (its cards are the viewport, which is
 /// what one-handed browsing wants); a desktop window keeps at least two, because
 /// one column of 160dp-wide cards on a 1920px screen is a list pretending to be
-/// a grid.
+/// a grid. A desktop window narrower than two cards still gets its one column —
+/// there is nothing to choose there, only something to show.
 VideoGridBounds videoGridBounds({required double width, required bool mobile}) {
   const minCardWidth = 160.0;
-  final maxByWidth = (width / minCardWidth).floor().clamp(1, 6);
-  final min = mobile ? 1 : (maxByWidth < 2 ? 1 : 2);
+  final choices = videoGridChoiceBounds(mobile: mobile);
+  final maxByWidth = (width / minCardWidth).floor().clamp(1, choices.max);
+  final min = maxByWidth < choices.min ? 1 : choices.min;
   return VideoGridBounds(min, maxByWidth);
 }
 

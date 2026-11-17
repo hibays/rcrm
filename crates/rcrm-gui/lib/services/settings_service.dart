@@ -25,6 +25,16 @@ const int kVideoJumpHistoryMin = 1;
 const int kVideoJumpHistoryMax = 50;
 const int kVideoJumpHistoryDefault = 10;
 
+/// Bounds and default of the automatic-keyword relevance.
+///
+/// 0 asks the Related list and the Home picks to ignore shared tags entirely —
+/// folder neighbours only, the pre-keyword behaviour. 100 lets a shared tag
+/// outrank folder adjacency. The default leans towards tags without throwing
+/// the folder order away.
+const int kKeywordRelevanceMin = 0;
+const int kKeywordRelevanceMax = 100;
+const int kKeywordRelevanceDefault = 60;
+
 /// The default of the mobile volume binding (`use_system_volume`).
 ///
 /// A pure function of the platform family rather than a read of `Platform`, so
@@ -97,6 +107,9 @@ class SettingsService {
       'player_orientation'; // PlayerOrientation.key
   static const _keyCastAutoNext = 'cast_auto_next'; // bool
   static const _keyVideoJumpHistory = 'video_jump_history_limit'; // int, 1..50
+  static const _keyKeywordRelevance = 'keyword_relevance'; // int, 0..100
+  static const _keyVideoTagBarVisible =
+      'video_tag_bar_visible'; // bool, video tab's keyword filter row
   static const _keyAllowScreenshots = 'allow_screenshots'; // bool, mobile only
   static const _keyUseSystemVolume = 'use_system_volume'; // bool, mobile only
   static const _keyPlayerKeepScreenOn =
@@ -515,5 +528,39 @@ class SettingsService {
       _keyVideoJumpHistory,
       limit.clamp(kVideoJumpHistoryMin, kVideoJumpHistoryMax),
     );
+  }
+
+  // ── Automatic keyword relevance ──────────────────────────
+  // How strongly tags detected in file names rank the player's Related list
+  // and the Home tab's picks. Read back clamped, so a hand-edited value cannot
+  // leave the range the settings slider is built on.
+  Future<int> getKeywordRelevance() async {
+    final p = await prefs;
+    return (p.getInt(_keyKeywordRelevance) ?? kKeywordRelevanceDefault).clamp(
+      kKeywordRelevanceMin,
+      kKeywordRelevanceMax,
+    );
+  }
+
+  Future<void> setKeywordRelevance(int value) async {
+    final p = await prefs;
+    await p.setInt(
+      _keyKeywordRelevance,
+      value.clamp(kKeywordRelevanceMin, kKeywordRelevanceMax),
+    );
+  }
+
+  // ── Video tab's tag filter bar ────────────────────────────
+  // Opt-in: the keyword row is a whole 56dp strip under the toolbar, so it
+  // stays hidden until the user asks for it from the Organize menu. A filter
+  // already in force still shows it (see video_screen) so it can be cleared.
+  Future<bool> getVideoTagBarVisible() async {
+    final p = await prefs;
+    return p.getBool(_keyVideoTagBarVisible) ?? false;
+  }
+
+  Future<void> setVideoTagBarVisible(bool visible) async {
+    final p = await prefs;
+    await p.setBool(_keyVideoTagBarVisible, visible);
   }
 }

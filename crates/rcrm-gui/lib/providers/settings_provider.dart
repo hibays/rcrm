@@ -98,6 +98,17 @@ class SettingsState {
   /// `Back` returns to and the Related list excludes
   /// (`providers/video_jump_stack.dart`). Persisted; the stack itself is not.
   final int videoJumpHistoryLimit;
+
+  /// How strongly the automatic keywords rank the player's Related list and the
+  /// Home tab's picks. 0 = folder neighbours only; 100 = shared tags can
+  /// outrank the folder. See `utils/keywords.dart`.
+  final int keywordRelevance;
+
+  /// Whether the video tab shows its keyword filter row under the toolbar.
+  /// Off by default: a strip that is always there spends 56dp whether or not
+  /// the user filters. Toggled from the toolbar's Organize menu; a filter in
+  /// force shows the row regardless so it stays clearable.
+  final bool videoTagBarVisible;
   const SettingsState({
     this.imageLayout = 'masonry',
     this.imageColumns = 3,
@@ -119,6 +130,8 @@ class SettingsState {
     this.castAutoNext = true,
     this.pipSize = 'normal',
     this.videoJumpHistoryLimit = kVideoJumpHistoryDefault,
+    this.keywordRelevance = kKeywordRelevanceDefault,
+    this.videoTagBarVisible = false,
     this.allowScreenshots = false,
     this.useSystemVolume = true,
   });
@@ -144,6 +157,8 @@ class SettingsState {
     bool? castAutoNext,
     String? pipSize,
     int? videoJumpHistoryLimit,
+    int? keywordRelevance,
+    bool? videoTagBarVisible,
     bool? allowScreenshots,
     bool? useSystemVolume,
   }) {
@@ -169,6 +184,8 @@ class SettingsState {
       pipSize: pipSize ?? this.pipSize,
       videoJumpHistoryLimit:
           videoJumpHistoryLimit ?? this.videoJumpHistoryLimit,
+      keywordRelevance: keywordRelevance ?? this.keywordRelevance,
+      videoTagBarVisible: videoTagBarVisible ?? this.videoTagBarVisible,
       allowScreenshots: allowScreenshots ?? this.allowScreenshots,
       useSystemVolume: useSystemVolume ?? this.useSystemVolume,
     );
@@ -218,6 +235,8 @@ class SettingsNotifier extends Notifier<SettingsState> {
     final playerKeepScreenOn = await _service.getPlayerKeepScreenOn();
     final castAutoNext = await _service.getCastAutoNext();
     final videoJumpHistoryLimit = await _service.getVideoJumpHistoryLimit();
+    final keywordRelevance = await _service.getKeywordRelevance();
+    final videoTagBarVisible = await _service.getVideoTagBarVisible();
     final allowScreenshots = await _service.getAllowScreenshots();
     final useSystemVolume = await _service.getUseSystemVolume();
     // The one reading taken at APP start, for the volume binding: a player
@@ -273,6 +292,8 @@ class SettingsNotifier extends Notifier<SettingsState> {
       castAutoNext: castAutoNext,
       pipSize: pipSize,
       videoJumpHistoryLimit: videoJumpHistoryLimit,
+      keywordRelevance: keywordRelevance,
+      videoTagBarVisible: videoTagBarVisible,
       allowScreenshots: allowScreenshots,
       useSystemVolume: useSystemVolume,
     );
@@ -397,6 +418,23 @@ class SettingsNotifier extends Notifier<SettingsState> {
   Future<void> setPlaybackMode(String mode) async {
     state = state.copyWith(playbackMode: mode);
     await _service.setPlaybackMode(mode);
+  }
+
+  /// Automatic keyword relevance — Settings → Display.
+  ///
+  /// A pure ranking weight: the Related list and the Home picks read it on
+  /// their next build, so no re-scan and no player restart is needed.
+  Future<void> setKeywordRelevance(int value) async {
+    final v = value.clamp(kKeywordRelevanceMin, kKeywordRelevanceMax);
+    state = state.copyWith(keywordRelevance: v);
+    await _service.setKeywordRelevance(v);
+  }
+
+  /// Video tab's keyword filter row — the Organize menu's toggle. Persisted
+  /// like the grouping beside it; takes effect on the next build.
+  Future<void> setVideoTagBarVisible(bool visible) async {
+    state = state.copyWith(videoTagBarVisible: visible);
+    await _service.setVideoTagBarVisible(visible);
   }
 
   /// The fullscreen orientation strategy — the player's settings panel, mobile

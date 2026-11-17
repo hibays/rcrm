@@ -26,7 +26,17 @@ class VideoInfoSheet extends StatelessWidget {
   /// Track/container metadata, parsed on demand. Null = not requested.
   final Future<MediaMetadata>? metadata;
 
-  const VideoInfoSheet({super.key, required this.item, this.metadata});
+  /// The automatic keywords this file was tagged with, strongest first. Empty
+  /// when the name yielded nothing readable — the section is then absent, not
+  /// an empty shelf labelled "Keywords".
+  final List<String> keywords;
+
+  const VideoInfoSheet({
+    super.key,
+    required this.item,
+    this.metadata,
+    this.keywords = const [],
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -140,7 +150,71 @@ class VideoInfoSheet extends StatelessWidget {
               label: 'Modified',
               value: formatStamp(item.modified!.toLocal()),
             ),
+          if (keywords.isNotEmpty) ...[
+            const InfoRule(),
+            _keywords(keywords.take(8).toList()),
+          ],
           if (extraRows.isNotEmpty) ...[const InfoRule(), ...extraRows],
+        ],
+      ),
+    );
+  }
+
+  /// The tags the file name produced, in the same label/ink shape as an
+  /// [InfoRow] but with a wrap where the row would put one value. A chip is a
+  /// tag, not a button in this sheet: the filter lives on the video tab.
+  Widget _keywords(List<String> tags) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Icon(Icons.tag, size: 19, color: RCrmColors.textSecondary),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Keywords',
+                  style: TextStyle(
+                    color: RCrmColors.textPrimary,
+                    fontSize: 14,
+                    height: 1.3,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final tag in tags)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: RCrmColors.char,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          tag,
+                          style: TextStyle(
+                            color: RCrmColors.textSecondary,
+                            fontSize: 12,
+                            height: 1.2,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );

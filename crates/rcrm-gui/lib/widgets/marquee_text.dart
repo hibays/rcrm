@@ -213,21 +213,38 @@ class _MarqueeTextState extends State<MarqueeText>
                 child: child,
               );
             },
+            // The row is WIDER than the card on purpose, so it must not be
+            // laid out under the card's width: a Row constrained to 220 and
+            // holding 490 of text reports a RenderFlex overflow every frame.
+            // A never-scrolling horizontal viewport gives the row its
+            // intrinsic width, without the infinite-height trap of an
+            // OverflowBox inside an unbounded Column.
+            //
+            // clipBehavior MUST be none. The viewport is INSIDE the Transform
+            // that moves the row; if it clips, it cuts the second copy off at
+            // its own right edge, and the loop ends with a gap instead of
+            // joining head-to-tail (measured 2026-11-17). The outer ClipRect
+            // above is the one clip that stays still while the row travels.
             child: Align(
               alignment: crossAlign,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    widget.text,
-                    key: _firstTextKey,
-                    style: widget.style,
-                    softWrap: false,
-                  ),
-                  SizedBox(width: widget.blankSpace),
-                  Text(widget.text, style: widget.style, softWrap: false),
-                ],
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                physics: const NeverScrollableScrollPhysics(),
+                clipBehavior: Clip.none,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.text,
+                      key: _firstTextKey,
+                      style: widget.style,
+                      softWrap: false,
+                    ),
+                    SizedBox(width: widget.blankSpace),
+                    Text(widget.text, style: widget.style, softWrap: false),
+                  ],
+                ),
               ),
             ),
           ),

@@ -10,14 +10,17 @@ import 'package:file_picker/file_picker.dart';
 
 import '../models/server_config.dart';
 import '../config/theme.dart';
+import '../providers/library_provider.dart';
 import '../providers/server_provider.dart';
 import '../providers/settings_provider.dart';
+import '../services/item_cache_limit.dart' show isMobile;
 import '../services/net.dart';
 import '../services/screen_capture.dart';
 import '../services/settings_service.dart';
 import '../services/storage_access.dart';
 import '../services/system_volume.dart';
 import '../services/thumb_cache.dart';
+import '../utils/library_columns.dart';
 import '../utils/thumb_cache_policy.dart';
 import '../widgets/thumb_cache_dialog.dart';
 
@@ -267,6 +270,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
   Widget build(BuildContext ctx) {
     final ui = ref.watch(uiSettingsProvider);
+    final gridColumns = ref.watch(videoGridColumnsProvider);
+    // The range the grid can ever take, independent of this window: the row
+    // below offers these, and the window clamps what it shows.
+    final gridChoices = videoGridChoiceBounds(mobile: isMobile);
     final ss = ref.watch(serverProvider);
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
@@ -607,6 +614,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     .setImageClassification(v.first);
               },
             ),
+            const Divider(height: 1),
+            // The video tab's Organize menu is the usual door, but a narrow
+            // toolbar drops it to make room for the Tags chip. This row keeps
+            // all three arrangements reachable at every window width.
+            _seg<String>(
+              key: const Key('video-grouping-seg'),
+              title: 'Video Grouping',
+              selected: {ui.videoClassification},
+              segments: const [
+                ButtonSegment(value: 'folder', label: Text('Folder')),
+                ButtonSegment(value: 'format', label: Text('Format')),
+                ButtonSegment(value: 'none', label: Text('Ungrouped')),
+              ],
+              onChanged: (v) {
+                ref
+                    .read(uiSettingsProvider.notifier)
+                    .setVideoClassification(v.first);
+              },
+            ),
           ]),
           const SizedBox(height: 8),
           _group([
@@ -657,6 +683,34 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     .setVideoListColumns(v.first);
               },
             ),
+            const Divider(height: 1),
+            // The toolbar's column button leaves on very narrow windows, and a
+            // mouse has no pinch. This row is the same setting's other door.
+            _seg<int>(
+              key: const Key('video-grid-columns-seg'),
+              title: 'Video Grid Columns',
+              subtitle: 'Wide windows show this many; narrow ones show fewer',
+              // The segments come from the one owner of the range
+              // (`videoGridChoiceBounds`), not from five literals: the numbers
+              // here ARE the numbers `videoGridBounds` can return at some width.
+              // A hand-written 2..6 left a phone's one-column pinch stored with
+              // no segment to highlight, and put the range in a second place
+              // that could drift from the toolbar's.
+              //
+              // The SELECTED value is the stored choice, not what this window
+              // resolves it to — the same contract as Video List Columns above:
+              // narrowing a window must not rewrite the preference, so the row
+              // keeps naming the number the grid will use once it is wide
+              // enough. `resolve` only guards a stored value from outside.
+              selected: {gridChoices.resolve(gridColumns)},
+              segments: [
+                for (var c = gridChoices.min; c <= gridChoices.max; c++)
+                  ButtonSegment(value: c, label: Text('$c')),
+              ],
+              onChanged: (v) {
+                ref.read(videoGridColumnsProvider.notifier).set(v.first);
+              },
+            ),
           ]),
           const SizedBox(height: 8),
           _group([
@@ -694,10 +748,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               value: ui.videoJumpHistoryLimit,
               min: kVideoJumpHistoryMin,
               max: kVideoJumpHistoryMax,
+              sliderKey: const ValueKey('jump-history-slider'),
               onChanged: (v) {
                 ref
                     .read(uiSettingsProvider.notifier)
                     .setVideoJumpHistoryLimit(v);
+              },
+            ),
+            const Divider(height: 1),
+            // The one control for the automatic keywords. It changes the
+            // RANKING, not the tags themselves: at 0 the Related list and Home
+            // keep the folder order they had before keywords existed, at 100 a
+            // shared tag can pull a video ahead of a folder neighbour.
+            _limitSlider(
+              title: 'Keyword Relevance',
+              subtitle:
+                  'How strongly shared keywords rank Related videos and Home '
+                  'picks. 0 follows folders only; 100 follows tags first',
+              value: ui.keywordRelevance,
+              min: kKeywordRelevanceMin,
+              max: kKeywordRelevanceMax,
+              sliderKey: const ValueKey('keyword-relevance-slider'),
+              onChanged: (v) {
+                ref.read(uiSettingsProvider.notifier).setKeywordRelevance(v);
               },
             ),
             // A volume row exists only where the app may set the device's media
@@ -892,6 +965,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Widget _seg<T>({
+    Key? key,
     required String title,
     String? subtitle,
     required Set<T> selected,
@@ -899,6 +973,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     required void Function(Set<T>) onChanged,
   }) {
     return LayoutBuilder(
+      key: key,
       builder: (ctx, c) {
         if (c.maxWidth < 520) {
           return Padding(
@@ -1061,6 +1136,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     required int min,
     required int max,
     required ValueChanged<int> onChanged,
+    Key? sliderKey,
   }) {
     final valueLabel = Text(
       '$value',
@@ -1074,6 +1150,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         thumbColor: RCrmColors.primary,
       ),
       child: Slider(
+        key: sliderKey,
         value: value.toDouble(),
         min: min.toDouble(),
         max: max.toDouble(),

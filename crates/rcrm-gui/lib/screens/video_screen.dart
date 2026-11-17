@@ -19,10 +19,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/album.dart';
 import '../models/media_item.dart';
+import '../providers/keyword_provider.dart';
 import '../providers/library_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/item_cache_limit.dart';
+import '../utils/keywords.dart';
 import '../utils/library_columns.dart';
+import '../widgets/keyword_filter_bar.dart';
 import '../widgets/media_toolbar.dart';
 import '../widgets/media_item_menu.dart';
 import '../widgets/two_finger_pinch.dart';
@@ -213,6 +216,7 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
       isVideo: true,
       onOpen: () => _openVideo(item),
       onReveal: () => _revealInFolder(item),
+      keywords: ref.read(keywordIndexProvider).setFor(item.path).labels,
     );
   }
 
@@ -225,6 +229,38 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
       for (final v in sorted)
         if (paths.contains(v.path)) v,
     ];
+  }
+
+  /// The chips the bar shows: the strongest repeated tags, capped so the row
+  /// stays a filter and not a second toolbar. A filter selected from a Home
+  /// channel may not be in that cap (or may have just fallen out of it); it is
+  /// put back so the chip that is filtering the list is always visible.
+  List<KeywordTag> _barTags(
+    KeywordIndex index,
+    Set<String> selected,
+    List<MediaItem> baseVideos,
+  ) {
+    // A chip must be a filter that can act IN THE LIST THE USER IS LOOKING AT:
+    // with an MP4 format filter on, a tag that exists only on MKV files would
+    // open an empty grid. The extension-filtered list is the honest universe.
+    final present = <String>{};
+    for (final video in baseVideos) {
+      for (final tag in index.setFor(video.path).tags) {
+        present.add(tag.key);
+      }
+    }
+    final tags = <KeywordTag>[
+      for (final tag in index.topTags)
+        if (present.contains(tag.key)) tag,
+    ].take(18).toList();
+    // Selected tags that fell out of the top cap stay visible, so the chips
+    // that are narrowing the list are never hidden behind a scroll.
+    for (final key in selected) {
+      if (!tags.any((tag) => tag.key == key)) {
+        tags.insert(0, KeywordTag(key, index.labelFor(key)));
+      }
+    }
+    return tags;
   }
 
   void _openVideo(MediaItem item) {
@@ -244,8 +280,12 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final videos = ref.watch(sortedVideosProvider);
+    final videos = ref.watch(taggedVideosProvider);
+    final baseVideos = ref.watch(sortedVideosProvider);
     final folders = ref.watch(videoFoldersProvider);
+    final keywordIndex = ref.watch(keywordIndexProvider);
+    final tagFilter = ref.watch(videoTagFilterProvider);
+    final scanState = ref.watch(scanStateProvider);
     final columns = ref.watch(videoGridColumnsProvider);
     final sort = ref.watch(videoSortProvider);
     final asc = ref.watch(videoSortAscProvider);
@@ -277,6 +317,34 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
       textScale: MediaQuery.textScalerOf(context).scale(1),
     );
     final open = _openFolder(folders);
+    final tagCount = tagFilter.length;
+    final tagLabel = tagCount == 1
+        ? keywordIndex.labelFor(tagFilter.first)
+        : tagCount == 0
+        ? ''
+        : '$tagCount tags';
+    final barTags = _barTags(keywordIndex, tagFilter, baseVideos);
+    // The chip is an explicit request, so it wins over the "folders are
+    // already channels" / "no repeated tags yet" quiet rules — otherwise a
+    // checked chip would sit there with nothing to hide. A filter arriving
+    // from elsewhere still forces the row open so it stays clearable.
+    final showTagBar = uiSettings.videoTagBarVisible || tagFilter.isNotEmpty;
+
+    // A re-scan can retire a tag the user was filtering by. Dropping it after
+    // the frame keeps the list from sitting empty with a chip that promises
+    // videos the index no longer has; the other selected tags stay.
+    final staleTags = tagFilter
+        .where((key) => keywordIndex.countFor(key) == 0)
+        .toSet();
+    if (staleTags.isNotEmpty &&
+        scanState.hasCompletedOnce &&
+        !scanState.isLoading) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ref.read(videoTagFilterProvider.notifier).removeAll(staleTags);
+        }
+      });
+    }
 
     // A "Show in folder" asked for while the tab was grouped another way is
     // fulfilled on the build AFTER the grouping write — that write is what
@@ -368,7 +436,20 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
                       .read(uiSettingsProvider.notifier)
                       .setVideoClassification(g);
                 },
+                tagBarVisible: uiSettings.videoTagBarVisible,
+                onToggleTagBar: () => ref
+                    .read(uiSettingsProvider.notifier)
+                    .setVideoTagBarVisible(!uiSettings.videoTagBarVisible),
               ),
+              if (showTagBar)
+                KeywordFilterBar(
+                  tags: barTags,
+                  selected: tagFilter,
+                  onToggle: (key) =>
+                      ref.read(videoTagFilterProvider.notifier).toggle(key),
+                  onClear: () =>
+                      ref.read(videoTagFilterProvider.notifier).clear(),
+                ),
               Expanded(
                 child: TwoFingerPinch(
                   onStart: _startPinch,
@@ -382,6 +463,18 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
                     effectiveColumns,
                     listColumns,
                     listRowHeight,
+                    tagFilter: tagFilter,
+                    tagLabel: tagLabel,
+                    formatFilter: filter,
+                    // One button, every filter the screen applies: the empty
+                    // state's promise is a non-empty list, so it cannot stop at
+                    // the tags while the format chip still excludes everything.
+                    onClearFilters: () {
+                      ref.read(videoTagFilterProvider.notifier).clear();
+                      if (filter.isNotEmpty) {
+                        ref.read(videoFilterProvider.notifier).set('');
+                      }
+                    },
                     // The grid/list must not scroll under the fingers sizing it.
                     physics: pinching
                         ? const NeverScrollableScrollPhysics()
@@ -419,15 +512,37 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
     int columns,
     int listColumns,
     double listRowHeight, {
+    required Set<String> tagFilter,
+    required String tagLabel,
+    required String formatFilter,
+    required VoidCallback onClearFilters,
     ScrollPhysics? physics,
   }) {
+    final filtered = tagFilter.isNotEmpty;
+    // A tag filter is not the only thing that can empty this list: the toolbar's
+    // format chip narrows the SAME list (`sortedVideosProvider`), so "no videos
+    // tagged X" could be said over a folder that holds four of them, all MKV,
+    // while the filter asks for MP4. Name the format when it is in force and
+    // make the one action clear both — an empty state whose button cannot
+    // produce a row is a dead end.
+    final format = formatFilter.toUpperCase();
+    final emptyTitle = filtered
+        ? (tagFilter.length == 1
+              ? 'No ${format.isEmpty ? '' : '$format '}videos tagged “$tagLabel”'
+              : 'No ${format.isEmpty ? '' : '$format '}videos with all '
+                    '${tagFilter.length} selected tags')
+        : null;
+    const emptyHint = 'Remove a tag or clear the filter.';
+    final emptyAction = filtered ? 'Clear filter' : null;
+
     if (open != null) {
+      final items = _videosIn(open, videos);
       return Column(
         children: [
-          _folderHeader(open),
+          _folderHeader(open, items.length),
           Expanded(
             child: _VideoGrid(
-              videos: _videosIn(open, videos),
+              videos: items,
               columns: columns,
               listColumns: listColumns,
               listRowHeight: listRowHeight,
@@ -435,6 +550,10 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
               physics: physics,
               onOpen: _openVideo,
               onMenuRequested: _showItemMenu,
+              emptyTitle: emptyTitle,
+              emptyHint: filtered ? emptyHint : null,
+              emptyActionLabel: emptyAction,
+              onEmptyAction: filtered ? onClearFilters : null,
             ),
           ),
         ],
@@ -453,19 +572,58 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
         physics: physics,
         onOpen: _openVideo,
         onMenuRequested: _showItemMenu,
+        emptyTitle: emptyTitle,
+        emptyHint: filtered ? emptyHint : null,
+        emptyActionLabel: emptyAction,
+        onEmptyAction: filtered ? onClearFilters : null,
+      );
+    }
+    // A folder view with a keyword filter shows only the folders that still
+    // have a matching video. An empty folder card that opens into nothing is a
+    // promise the filter has already broken. The path set keeps this O(items),
+    // not O(folders × items), which matters on a library of thousands of
+    // folders.
+    final taggedPaths = filtered
+        ? {for (final video in videos) video.path}
+        : const <String>{};
+    // Membership and CONTENT come out of the same pass, because a card and the
+    // header it opens must agree: the header already counts what the filter
+    // leaves, so a card still wearing the folder's total (and four posters of
+    // excluded files) would contradict it one tap later.
+    final visibleByFolder = <String, List<MediaItem>>{};
+    final visibleFolders = <Album>[];
+    for (final folder in folders) {
+      final kept = filtered
+          ? [
+              for (final v in folder.items)
+                if (taggedPaths.contains(v.path)) v,
+            ]
+          : folder.items;
+      if (kept.isEmpty) continue;
+      visibleFolders.add(folder);
+      if (filtered) visibleByFolder[folder.path] = kept;
+    }
+    if (visibleFolders.isEmpty) {
+      return _EmptyState(
+        filtered: true,
+        title: emptyTitle ?? 'No videos found',
+        hint: emptyHint,
+        actionLabel: emptyAction,
+        onAction: onClearFilters,
       );
     }
     return _FolderGrid(
-      folders: folders,
+      folders: visibleFolders,
       columns: columns,
       physics: physics,
+      visibleByFolder: filtered ? visibleByFolder : null,
       onOpen: (folder) => _setOpenPath(folder.path),
     );
   }
 
   /// The open folder's name, how many videos are in it, and the way back — the
   /// same header the photo tab puts over an open album.
-  Widget _folderHeader(Album folder) {
+  Widget _folderHeader(Album folder, int count) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(4, 4, 12, 0),
       child: Row(
@@ -486,7 +644,9 @@ class _VideoScreenState extends ConsumerState<VideoScreen> {
             ),
           ),
           Text(
-            folder.itemCount == 1 ? '1 video' : '${folder.itemCount} videos',
+            // What the filter leaves, not what the folder holds: a header that
+            // says "12 videos" over four rows is a lie the filter caused.
+            count == 1 ? '1 video' : '$count videos',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
@@ -503,11 +663,17 @@ class _FolderGrid extends StatelessWidget {
   final int columns;
   final ScrollPhysics? physics;
   final void Function(Album) onOpen;
+
+  /// Folder path → the videos the filter leaves in it. Null when nothing is
+  /// filtered, so a card's count and covers come from the album itself.
+  final Map<String, List<MediaItem>>? visibleByFolder;
+
   const _FolderGrid({
     required this.folders,
     required this.columns,
     required this.onOpen,
     this.physics,
+    this.visibleByFolder,
   });
 
   @override
@@ -529,6 +695,7 @@ class _FolderGrid extends StatelessWidget {
           addRepaintBoundaries: true,
           itemBuilder: (_, i) => VideoFolderCard(
             folder: folders[i],
+            visibleItems: visibleByFolder?[folders[i].path],
             onTap: () => onOpen(folders[i]),
           ),
         );
@@ -550,6 +717,13 @@ class _VideoGrid extends StatefulWidget {
   final ScrollPhysics? physics;
   final void Function(MediaItem) onOpen;
   final void Function(MediaItem item, Offset globalPosition)? onMenuRequested;
+
+  /// A keyword-filtered empty list is not an empty library: the copy says so and
+  /// offers the way back. Null keeps the original "No videos found" state.
+  final String? emptyTitle;
+  final String? emptyHint;
+  final String? emptyActionLabel;
+  final VoidCallback? onEmptyAction;
   const _VideoGrid({
     required this.videos,
     required this.columns,
@@ -559,6 +733,10 @@ class _VideoGrid extends StatefulWidget {
     required this.onOpen,
     this.physics,
     this.onMenuRequested,
+    this.emptyTitle,
+    this.emptyHint,
+    this.emptyActionLabel,
+    this.onEmptyAction,
   });
   @override
   State<_VideoGrid> createState() => _VideoGridState();
@@ -576,24 +754,15 @@ class _VideoGridState extends State<_VideoGrid> {
   Widget build(BuildContext c) {
     final videos = widget.videos;
     if (videos.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.videocam_off,
-              size: 64,
-              color: Theme.of(c).colorScheme.primary.withValues(alpha: 0.5),
-            ),
-            const SizedBox(height: 16),
-            Text('No videos found', style: Theme.of(c).textTheme.titleLarge),
-            const SizedBox(height: 8),
-            Text(
-              'Add folders with video files in Settings',
-              style: Theme.of(c).textTheme.bodyMedium,
-            ),
-          ],
-        ),
+      final filtered = widget.emptyTitle != null;
+      return _EmptyState(
+        filtered: filtered,
+        title: widget.emptyTitle ?? 'No videos found',
+        hint:
+            widget.emptyHint ??
+            (filtered ? null : 'Add folders with video files in Settings'),
+        actionLabel: widget.emptyActionLabel,
+        onAction: widget.onEmptyAction,
       );
     }
 
@@ -676,6 +845,72 @@ class _VideoGridState extends State<_VideoGrid> {
           onMenuRequested: menu == null ? null : (at) => menu(v, at),
         );
       },
+    );
+  }
+}
+
+/// The one empty state the video tab shows. It is reachable with the library
+/// full (a keyword filter with no matches) and with it empty, so the icon and
+/// the sentence are what say which case this is.
+class _EmptyState extends StatelessWidget {
+  /// True for "the filter found nothing", false for "the library is empty".
+  /// The icon is chosen HERE with both glyphs written out as IconData
+  /// constants at the use site: the release icon tree-shaker keeps a glyph only
+  /// when it reaches the Icon constructor that way, and a variable icon:
+  /// parameter would ship an empty box.
+  final bool filtered;
+  final String title;
+  final String? hint;
+  final String? actionLabel;
+  final VoidCallback? onAction;
+
+  const _EmptyState({
+    required this.filtered,
+    required this.title,
+    this.hint,
+    this.actionLabel,
+    this.onAction,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              filtered ? Icons.filter_alt_off : Icons.videocam_off,
+              size: 64,
+              color: Theme.of(context).colorScheme.primary
+                  .withValues(alpha: 0.5),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            if (hint != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                hint!,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ],
+            if (actionLabel != null && onAction != null) ...[
+              const SizedBox(height: 16),
+              TextButton.icon(
+                onPressed: onAction,
+                icon: const Icon(Icons.close, size: 16),
+                label: Text(actionLabel!),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
