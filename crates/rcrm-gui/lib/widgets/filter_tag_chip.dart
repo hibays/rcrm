@@ -80,3 +80,31 @@ class FilterTagChip extends StatelessWidget {
     );
   }
 }
+
+/// The toolbar Tags chip's ON avatar: a faded `#` under the accent check.
+///
+/// M3's built-in check paints a near-black scrim over the avatar, which buried
+/// Day's deepened accent. Draw it here instead.
+class TagToggleCheck extends StatelessWidget {
+  const TagToggleCheck({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        Icon(
+          Icons.tag,
+          size: 13,
+          color: colors.onSurface.withValues(alpha: 0.2),
+        ),
+        // Off-centre so the check clears the faded glyph.
+        Transform.translate(
+          offset: const Offset(0.5, -0.5),
+          child: Icon(Icons.check, size: 15, color: colors.primary),
+        ),
+      ],
+    );
+  }
+}

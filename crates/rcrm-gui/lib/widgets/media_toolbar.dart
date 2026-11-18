@@ -7,9 +7,9 @@
 
 import 'package:material_ui/material_ui.dart';
 
-import '../config/theme.dart';
 import '../utils/media_toolbar_layout.dart';
 import 'column_button.dart';
+import 'filter_tag_chip.dart';
 import 'smart_popup_menu.dart';
 
 /// The icon for each grouping, for the toolbar's button — the one place that has
@@ -317,52 +317,35 @@ class MediaToolbar extends StatelessWidget {
     );
   }
 
-  /// The tag-filter toggle, built as the SAME chip as its sort and format
-  /// siblings. The chip FACE never changes: OFF and ON both wear the neutral
-  /// surface, outline and label type of the two neighbouring chips. The state
-  /// lives entirely in the icon slot — OFF the tag glyph wears the same accent
-  /// the sibling avatars wear, and ON it steps back to a faint grey so the
-  /// primary-coloured check FilterChip paints OVER it is the only coloured
-  /// thing left — so a permanent view option never turns into a coloured patch.
-  /// On narrow windows the label is dropped with its padding; the avatar +
-  /// check still carry the state and the tooltip names the control.
+  /// The tag-filter toggle. Face, border and label match its chip siblings;
+  /// state lives only in the avatar slot ([TagToggleCheck] when on).
   Widget _tagFilterChip(BuildContext context, {required bool compact}) {
     final selected = tagBarVisible ?? false;
-    final colors = Theme.of(context).colorScheme;
-    final neutral = colors.surfaceContainerLow;
-    return FilterChip(
-      // OFF inherits the chip's own icon colour — the accent `Icons.sort` and
-      // `Icons.filter_list` beside it already wear — so the third chip reads as
-      // one of the row instead of a permanently dimmed control. ON steps back
-      // to a quiet grey, leaving the check as the only colour in this slot.
-      avatar: Icon(
-        Icons.tag,
-        size: 16,
-        color: selected ? RCrmColors.textFaint : null,
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    // Plain Chip siblings render on canvasColor, not surfaceContainer*.
+    final neutral = theme.canvasColor;
+    // Compact width drops the label; keep the name for screen readers.
+    return Semantics(
+      label: selected ? 'Hide tag filters' : 'Show tag filters',
+      child: FilterChip(
+        // OFF inherits the sibling chips' accent icon colour.
+        avatar: selected ? TagToggleCheck() : const Icon(Icons.tag, size: 16),
+        label: compact ? const SizedBox.shrink() : const Text('Tags'),
+        labelPadding: compact ? EdgeInsets.zero : null,
+        selected: selected,
+        onSelected: (_) => onToggleTagBar?.call(),
+        // Pin both states: M3's default flashes cyan mid-fade.
+        color: WidgetStateProperty.all<Color?>(neutral),
+        selectedColor: neutral,
+        side: BorderSide(color: colors.outlineVariant),
+        // M3's selected label ink is too dark on this face in Night.
+        labelStyle: selected ? TextStyle(color: colors.onSurface) : null,
+        // Built-in check would paint a near-black scrim over the avatar.
+        showCheckmark: false,
+        visualDensity: VisualDensity.compact,
+        tooltip: selected ? 'Hide tag filters' : 'Show tag filters',
       ),
-      label: compact ? const SizedBox.shrink() : const Text('Tags'),
-      labelPadding: compact ? EdgeInsets.zero : null,
-      selected: selected,
-      onSelected: (_) => onToggleTagBar?.call(),
-      // FilterChip's DEFAULT `color` resolves selected to M3
-      // secondaryContainer (cyan) and OUTRANKS `selectedColor`, flashing cyan
-      // through the fade. Pin BOTH ends to the same neutral the sibling chips
-      // wear: the selected state must not repaint the chip's face at all.
-      color: WidgetStateProperty.all<Color?>(neutral),
-      selectedColor: neutral,
-      // The check paints over the avatar in `checkmarkColor`; the glyph has
-      // already stepped back to grey by then, so the accent reads as state,
-      // not as a fill.
-      checkmarkColor: colors.primary,
-      side: BorderSide(color: colors.outlineVariant),
-      // FilterChip's DEFAULT selected labelStyle is M3 `onSecondaryContainer`
-      // — a DARK ink — which is unreadable on this neutral surface in Night.
-      // OFF inherits the sibling chips' muted label; ON switches to the page's
-      // primary ink so the word stays legible in both appearances.
-      labelStyle: selected ? TextStyle(color: colors.onSurface) : null,
-      showCheckmark: true,
-      visualDensity: VisualDensity.compact,
-      tooltip: selected ? 'Hide tag filters' : 'Show tag filters',
     );
   }
 

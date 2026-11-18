@@ -17,6 +17,7 @@ import 'package:rcrm_gui/screens/video_screen.dart';
 import 'package:rcrm_gui/services/settings_service.dart';
 import 'package:rcrm_gui/services/thumbnail_service.dart';
 import 'package:rcrm_gui/widgets/column_button.dart';
+import 'package:rcrm_gui/widgets/filter_tag_chip.dart';
 import 'package:rcrm_gui/widgets/keyword_filter_bar.dart';
 import 'package:rcrm_gui/widgets/video_card.dart';
 
@@ -141,21 +142,16 @@ void main() {
     expect(chip, findsOneWidget);
     final chipBox = tester.widget<FilterChip>(chip);
     expect(chipBox.selected, isFalse);
-    // The chip's FACE is identical in both states: no ON wash, no coloured
-    // patch. FilterChip's DEFAULT `color` (M3 secondaryContainer = cyan when
-    // selected, which outranks selectedColor) is pinned to the same neutral
-    // its two sibling chips wear. State lives in the icon slot only.
+    // Face is identical in both states; state lives in the avatar slot.
     final scheme = Theme.of(tester.element(chip)).colorScheme;
     expect(chipBox.color, isNotNull);
     final off = chipBox.color!.resolve(<WidgetState>{});
     final on = chipBox.color!.resolve({WidgetState.selected});
-    expect(off, scheme.surfaceContainerLow);
+    // Plain Chip siblings render on canvasColor.
+    expect(off, Theme.of(tester.element(chip)).canvasColor);
     expect(on, off);
     expect(chipBox.selectedColor, off);
-    // The tag glyph is a SIBLING before it is a state: OFF it inherits the
-    // chip's own icon colour, which is exactly what the sort and format avatars
-    // beside it resolve to, so the third chip does not read as permanently
-    // dimmed. The state only takes the accent back once the check lands.
+    // OFF inherits the sibling chips' icon colour.
     expect(chipBox.avatar, isA<Icon>());
     expect(
       (chipBox.avatar as Icon).color,
@@ -170,11 +166,9 @@ void main() {
     final sortInk = IconTheme.of(tester.element(find.byIcon(Icons.sort))).color;
     expect(tagInk, sortInk, reason: 'same colour as the other chips');
     expect(tagInk, scheme.primary);
-    expect(chipBox.showCheckmark, isTrue);
-    expect(chipBox.checkmarkColor, scheme.primary);
-    // OFF inherits the sibling chips' default label; ON must override it with
-    // the page's primary ink — M3's default selected label is a DARK ink that
-    // is unreadable on this chip's neutral surface in the Night appearance.
+    // Built-in check is off (it paints a near-black scrim over the avatar).
+    expect(chipBox.showCheckmark, isFalse);
+    // M3's selected label ink is too dark in Night.
     expect(chipBox.labelStyle, isNull);
 
     await tester.tap(chip);
@@ -188,22 +182,30 @@ void main() {
 
     expect(find.byType(KeywordFilterBar), findsOneWidget);
     expect(c.read(uiSettingsProvider).videoTagBarVisible, isTrue);
-    // ON hands the accent over to the check: the glyph itself steps back to
-    // faint grey (FilterChip paints the primary check OVER it), the chip face
-    // and the label box stay put.
+    // ON: faded `#` under the accent check; face unchanged.
     final onChip = tester.widget<FilterChip>(chip);
     expect(onChip.label, isA<Text>());
     expect((onChip.label as Text).data, 'Tags');
-    expect(onChip.avatar, isA<Icon>());
-    expect((onChip.avatar as Icon).color, RCrmColors.textFaint);
-    expect(
-      (onChip.avatar as Icon).color,
-      isNot(sortInk),
-      reason: 'the checked glyph must not keep competing with its own check',
+    expect(onChip.avatar, isA<TagToggleCheck>());
+    expect(onChip.showCheckmark, isFalse);
+    final badgeCheck = tester.widget<Icon>(
+      find.descendant(
+        of: find.byType(TagToggleCheck),
+        matching: find.byIcon(Icons.check),
+      ),
     );
+    expect(badgeCheck.color, scheme.primary);
+    final fadedTag = tester.widget<Icon>(
+      find.descendant(
+        of: find.byType(TagToggleCheck),
+        matching: find.byIcon(Icons.tag),
+      ),
+    );
+    expect(fadedTag.color, scheme.onSurface.withValues(alpha: 0.2));
+    expect(fadedTag.size, 13);
+    expect(badgeCheck.size, greaterThan(fadedTag.size!));
     expect(onChip.labelStyle?.color, scheme.onSurface);
-    // Ink on the (unchanged) neutral face still passes AA (≥4.5:1 for body
-    // text).
+    // Ink on the face still passes AA (4.5:1).
     final onSurface = onChip.color!.resolve({WidgetState.selected})!;
     final lInk = scheme.onSurface.computeLuminance();
     final lBg = onSurface.computeLuminance();
@@ -343,15 +345,11 @@ void main() {
       'clears it too', (tester) async {
     // The tag lives on MKV files only, so asking for MP4 empties the list
     // WITHOUT the tags being the whole story.
-    final c = await _pump(
-      tester,
-      [
-        _video('beach one.mkv', folder: 'Amateur'),
-        _video('beach two.mkv', folder: 'Amateur'),
-        _video('indoor three.mp4', folder: 'Amateur'),
-      ],
-      showTagBar: true,
-    );
+    final c = await _pump(tester, [
+      _video('beach one.mkv', folder: 'Amateur'),
+      _video('beach two.mkv', folder: 'Amateur'),
+      _video('indoor three.mp4', folder: 'Amateur'),
+    ], showTagBar: true);
 
     await tester.tap(find.text('Beach'));
     await tester.pump();
