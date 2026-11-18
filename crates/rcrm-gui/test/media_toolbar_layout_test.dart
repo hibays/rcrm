@@ -68,7 +68,10 @@ void main() {
 
     test('layouts compare by value', () {
       expect(mediaToolbarLayout(800), mediaToolbarLayout(900));
-      expect(mediaToolbarLayout(800).hashCode, mediaToolbarLayout(900).hashCode);
+      expect(
+        mediaToolbarLayout(800).hashCode,
+        mediaToolbarLayout(900).hashCode,
+      );
     });
   });
 }

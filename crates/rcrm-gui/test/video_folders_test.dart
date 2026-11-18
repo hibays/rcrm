@@ -287,7 +287,11 @@ void main() {
         'Alpha/beach one.mp4',
         'Alpha/beach two.mp4',
       ]);
-      expect(find.text('2 videos'), findsOneWidget, reason: 'the header agrees');
+      expect(
+        find.text('2 videos'),
+        findsOneWidget,
+        reason: 'the header agrees',
+      );
     });
 
     testWidgets('the toolbar\'s organize menu commits and persists the '

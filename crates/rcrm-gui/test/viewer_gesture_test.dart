@@ -163,8 +163,8 @@ void main() {
     // Engage the pull vertically first (8px of downward travel is enough),
     // then drift far enough sideways that the pager would have flipped. The
     // vertical travel is deliberately small: 20px up front plus 8 × 5px = 60px
-    // of pull, under the 93.6px dismissal threshold at this surface height
-    // (600 × 0.156), so the viewer survives to be inspected — the subject here
+    // of pull, far under the 480px dismissal threshold at this surface height
+    // (600 × 0.8), so the viewer survives to be inspected — the subject here
     // is the axis lock, not the threshold.
     final gesture = await tester.startGesture(center);
     await gesture.moveBy(const Offset(0, 20));
@@ -299,8 +299,8 @@ void main() {
     final center = tester.getCenter(find.byType(ImageViewerScreen));
 
     // 40px across, 64px down: the pull dominates, so the axis lock must hand
-    // it the gesture. 64px stays under the 93.6px dismissal threshold at this
-    // surface height (600 × 0.156), so the viewer is still there to be
+    // it the gesture. 64px stays under the 480px dismissal threshold at this
+    // surface height (600 × 0.8), so the viewer is still there to be
     // inspected.
     final gesture = await tester.startGesture(center);
     for (var i = 0; i < 8; i++) {
@@ -362,12 +362,11 @@ void main() {
     await _openViewer(tester);
     final center = tester.getCenter(find.byType(ImageViewerScreen));
 
-    // 12 × 20px = 240px of downward travel: well past the dismissal threshold
-    // at this surface height, both the 93.6px it is now (600 × 0.156) and the
-    // 72px it was before. The intent this test has always had is unchanged —
-    // past the threshold, letting go closes the viewer.
+    // 25 × 20px = 500px of downward travel: past the 480px dismissal threshold
+    // at this surface height (600 × 0.8). The intent this test has always had
+    // is unchanged — past the threshold, letting go closes the viewer.
     final gesture = await tester.startGesture(center);
-    for (var i = 0; i < 12; i++) {
+    for (var i = 0; i < 25; i++) {
       await gesture.moveBy(const Offset(0, 20));
       await tester.pump(const Duration(milliseconds: 16));
     }
@@ -377,15 +376,12 @@ void main() {
     expect(find.byType(ImageViewerScreen), findsNothing);
   });
 
-  testWidgets('a pull past the OLD threshold no longer dismisses', (
-    tester,
-  ) async {
+  testWidgets('a pull short of the threshold never dismisses', (tester) async {
     await _openViewer(tester);
     final center = tester.getCenter(find.byType(ImageViewerScreen));
 
-    // 4 × 20px = 80px of downward travel. Under the old threshold (72px at
-    // this surface height) this dismissed — the red case this change exists
-    // for — while the raised threshold (93.6px) is not reached, so the viewer
+    // 4 × 20px = 80px of downward travel. This used to be past the old 72px
+    // threshold, but is far short of the 480px one (600 × 0.8), so the viewer
     // must spring back. Velocity is 0 here (the harness's events carry no
     // timestamps), so the flick path cannot close it either: the distance
     // threshold is the only thing this test can be measuring.
@@ -400,7 +396,7 @@ void main() {
     expect(
       find.byType(ImageViewerScreen),
       findsOneWidget,
-      reason: '80px is short of the raised threshold, so the viewer stays',
+      reason: '80px is short of the 480px threshold, so the viewer stays',
     );
     expect(find.text('1 / 3'), findsOneWidget);
   });
@@ -409,11 +405,11 @@ void main() {
     await _openViewer(tester);
     final center = tester.getCenter(find.byType(ImageViewerScreen));
 
-    // 6 × 20px = 120px: a real, unhurried pull, ~28% past the raised threshold
-    // (93.6px). This is the guard against the other failure mode — a threshold
-    // made so heavy that dismissing on purpose stops working.
+    // 25 × 20px = 500px: a real, unhurried pull just past the 480px threshold
+    // (600 × 0.8). This is the guard against the other failure mode — a
+    // threshold made so heavy that dismissing on purpose stops working.
     final gesture = await tester.startGesture(center);
-    for (var i = 0; i < 6; i++) {
+    for (var i = 0; i < 25; i++) {
       await gesture.moveBy(const Offset(0, 20));
       await tester.pump(const Duration(milliseconds: 16));
     }
@@ -423,7 +419,7 @@ void main() {
     expect(
       find.byType(ImageViewerScreen),
       findsNothing,
-      reason: 'a deliberate 120px pull must still close the viewer',
+      reason: 'a deliberate 500px pull must still close the viewer',
     );
   });
 
@@ -435,9 +431,9 @@ void main() {
     expect(paintedDy(tester), 0, reason: 'the photo starts at rest');
 
     // Six 5px steps: the finger travels 30px, of which the axis lock spends
-    // the first 5px deciding, so the pull itself measures 25px — about a
-    // quarter of the 93.6px threshold, and under the 72px one it replaced. A
-    // nudge at the top edge must snap back whatever the threshold is.
+    // the first 5px deciding, so the pull itself measures 25px — a tiny fraction
+    // of the 480px threshold (600 × 0.8). A nudge at the top edge must snap
+    // back whatever the threshold is.
     final gesture = await tester.startGesture(center);
     for (var i = 0; i < 6; i++) {
       await gesture.moveBy(const Offset(0, 5));
@@ -560,10 +556,10 @@ void main() {
     final right = await tester.startGesture(center + const Offset(40, 0));
     await tester.pump(const Duration(milliseconds: 16));
 
-    // Only the right finger travels: 12 x 20px = 240px, well past the 93.6px
+    // Only the right finger travels: 25 × 20px = 500px, past the 480px
     // dismissal threshold at this surface height. This is the exact gesture
     // that dismissed the viewer before the state tree existed.
-    for (var i = 0; i < 12; i++) {
+    for (var i = 0; i < 25; i++) {
       await right.moveBy(const Offset(0, 20));
       await tester.pump(const Duration(milliseconds: 16));
     }
@@ -736,7 +732,7 @@ void main() {
     final atRest = tester.getTopLeft(badge);
     final center = tester.getCenter(find.byType(ImageViewerScreen));
 
-    // 80px of pull: enough to move the photo, under the 93.6px dismissal
+    // 80px of pull: enough to move the photo, under the 480px dismissal
     // threshold at this surface height, so the viewer survives to be read.
     final gesture = await tester.startGesture(center);
     await gesture.moveBy(const Offset(0, 20));
@@ -832,11 +828,11 @@ void main() {
       await _openViewer(tester);
       final center = tester.getCenter(find.byType(ImageViewerScreen));
 
-      // 6 × 20px = 120px: the deliberate pull that dismisses (see the tests
+      // 25 × 20px = 500px: the deliberate pull that dismisses (see the tests
       // above). Engaging the pull is what hides the chrome, so this is also
       // the path that goes immersive on the way out.
       final gesture = await tester.startGesture(center);
-      for (var i = 0; i < 6; i++) {
+      for (var i = 0; i < 25; i++) {
         await gesture.moveBy(const Offset(0, 20));
         await tester.pump(const Duration(milliseconds: 16));
       }
