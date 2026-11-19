@@ -1018,7 +1018,15 @@ class _State extends ConsumerState<VideoPlayerScreen> {
     // Leaving the player for good drops the session's jump history. A jump
     // (`_navigating`) must not: the screen replacing this one is the stack's
     // reader, and its own `Back` needs what is left in it.
-    if (!_navigating) _jumpStack?.clear();
+    //
+    // Deferred past the frame: an unmount runs while the tree is being finalized,
+    // and writing a provider there throws "Tried to modify a provider while the
+    // widget tree was building" (the same pattern the album/folder flags use).
+    // The notifier is a captured reference, so it is valid after this State goes.
+    final jumpStack = _jumpStack;
+    if (!_navigating && jumpStack != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => jumpStack.clear());
+    }
     // The exits that come through `_handleBack`/`_goHome` have already done this
     // — at the start of the exit, so it does not land after the transition as a
     // second motion. This is the fallback for every other way a player route can

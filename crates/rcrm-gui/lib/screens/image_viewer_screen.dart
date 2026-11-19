@@ -966,7 +966,6 @@ class _ViewerPageState extends State<_ViewerPage>
     _liveVC = null;
     LiveMediaServer.instance.release(_liveMediaUri);
     _liveMediaUri = null;
-    _liveReadySub?.cancel();
     _liveDurSub?.cancel();
     _dismissCtrl.removeStatusListener(_dismissStatusListener);
     if (_dismissListener != null) {
@@ -1034,8 +1033,6 @@ class _ViewerPageState extends State<_ViewerPage>
   double get _t => dismissProgress(_dist, _viewportHeight);
 
   Timer? _liveDoneTimer;
-  bool _liveReady = false;
-  StreamSubscription<dynamic>? _liveReadySub;
   StreamSubscription<dynamic>? _liveDurSub;
   // Bumped on every play request and on every stop. An in-flight `_playLive`
   // captures it before its network round-trip and abandons the result if the
@@ -1069,15 +1066,7 @@ class _ViewerPageState extends State<_ViewerPage>
     p.open(media);
     if (!_soundEnabled) p.setVolume(0);
     p.play();
-    _liveReady = false;
     setState(() => _mode = _ViewerMode.live);
-    _liveReadySub = p.stream.width.listen((w) {
-      if (w is int && w > 0 && mounted && _mode == _ViewerMode.live) {
-        setState(() => _liveReady = true);
-        _liveReadySub?.cancel();
-        _liveReadySub = null;
-      }
-    });
     _waitForDuration(p);
   }
 
@@ -1112,11 +1101,8 @@ class _ViewerPageState extends State<_ViewerPage>
     _liveGen++; // invalidate any in-flight `_playLive` so its late result is dropped
     _liveDoneTimer?.cancel();
     _liveDoneTimer = null;
-    _liveReadySub?.cancel();
-    _liveReadySub = null;
     _liveDurSub?.cancel();
     _liveDurSub = null;
-    _liveReady = false;
     _livePlayer?.dispose();
     _livePlayer = null;
     _liveVC = null;
@@ -1501,31 +1487,53 @@ class _ViewerPageState extends State<_ViewerPage>
   }
 
   Widget _buildImage() {
+    // The still is mounted ONCE for the viewer's whole life at a fixed index,
+    // so starting a live photo never remounts it (that reload was the flash at
+    // the moment of the long-press).
+    //
+    // The live Video is layered ON TOP with `fill: Colors.transparent`. The
+    // black first-frame is media_kit's own opaque `fill`; transparent means the
+    // photo below shows through until mpv paints a frame — no gate, no fade, no
+    // unreliable first-frame signal (media_kit has none on Dart, confirmed from
+    // its source). The live photo's still IS its first frame, so the swap is
+    // seamless.
     return Stack(
       fit: StackFit.expand,
       children: [
-        // Bottom: fast 400px thumbnail (grid LRU cache). Same memory/disk
-        // path as the wall (PooledImage): static after the first frame —
-        // animation is played by the full-res layer above it.
-        PooledImage(
-          url: widget.item.url,
-          fit: BoxFit.contain,
-          decodeWidth: 400,
-          placeholder: const SizedBox.shrink(),
-          errorWidget: const SizedBox.shrink(),
-        ),
-        // Middle: full-resolution image (multi-frame codecs animate).
-        _fullResLayer(),
-        // Top: live photo video overlay (only when first frame is ready).
-        if (_mode == _ViewerMode.live && _liveReady)
+        // Fixed index 0: persistent still.
+        _stillFrame(),
+        // Fixed index 1: transparent video overlay while playing.
+        if (_mode == _ViewerMode.live && _liveVC != null)
           Video(
             controller: _liveVC!,
             fit: BoxFit.contain,
             controls: NoVideoControls,
-          ),
+            fill: Colors.transparent,
+          )
+        else
+          const SizedBox.shrink(),
       ],
     );
   }
+
+  /// The static picture shown before / instead of live playback: the quick 400px
+  /// thumbnail under the full-res layer (which animates multi-frame codecs).
+  Widget _stillFrame() => Stack(
+    fit: StackFit.expand,
+    children: [
+      // Fast 400px thumbnail (grid LRU cache). Static after the first frame —
+      // animation is played by the full-res layer above it.
+      PooledImage(
+        url: widget.item.url,
+        fit: BoxFit.contain,
+        decodeWidth: 400,
+        placeholder: const SizedBox.shrink(),
+        errorWidget: const SizedBox.shrink(),
+      ),
+      // Full-resolution image (multi-frame codecs animate).
+      _fullResLayer(),
+    ],
+  );
 
   Widget _fullResLayer() {
     if (!_showFullRes) return const SizedBox.shrink();

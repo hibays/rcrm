@@ -13,9 +13,11 @@ import 'package:media_kit_video/media_kit_video.dart';
 
 import '../config/theme.dart';
 import '../models/media_item.dart';
+import '../utils/frame_ready_gate.dart';
 import '../widgets/marquee_text.dart';
 import '../services/preview_player.dart';
 import 'media_item_menu.dart';
+import 'preview_surface.dart';
 import 'video_poster.dart';
 
 class VideoCard extends StatefulWidget {
@@ -86,6 +88,18 @@ class _VideoCardState extends State<VideoCard> {
   VideoController? _previewController;
   StreamSubscription? _playSub;
 
+  /// Whether the freshly-opened preview has a decoded frame. Drives the video's
+  /// fade-in over the persistent poster. The gate opens on the NEW video's
+  /// positive width event (not an FFI property read of the current frame —
+  /// that could be the previous video's, flashing it on hover).
+  bool _frameReady = false;
+  StreamSubscription<int?>? _widthSub;
+  late final FrameReadyGate _frameGate = FrameReadyGate(() {
+    if (!mounted || _disposing) return;
+    if (!PreviewPlayer.instance.owns(_claimToken ?? -1)) return;
+    setState(() => _frameReady = true);
+  });
+
   @override
   void dispose() {
     _ht?.cancel();
@@ -150,6 +164,16 @@ class _VideoCardState extends State<VideoCard> {
     _claimToken = claim.token;
     _previewController = claim.controller;
     final player = claim.player;
+
+    // Wait for the NEW video's positive width before revealing the video.
+    // open() resets width=null first, so a positive event can only come from
+    // the new file — no stale-frame flash. The 220ms fade covers the small gap
+    // between width (decoder config) and the first composited frame.
+    _frameReady = false;
+    _frameGate.arm();
+    _widthSub?.cancel();
+    _widthSub = player.stream.width.listen((w) => _frameGate.onWidth(w));
+
     // Seek long videos to 1/3 once playback starts (guarded by ownership).
     _playSub?.cancel();
     _playSub = player.stream.playing.listen((p) {
@@ -169,6 +193,10 @@ class _VideoCardState extends State<VideoCard> {
   void _stopPreview() {
     _playSub?.cancel();
     _playSub = null;
+    _widthSub?.cancel();
+    _widthSub = null;
+    _frameGate.cancel();
+    _frameReady = false;
     if (_claimToken != null) PreviewPlayer.instance.release(_claimToken!);
     _claimToken = null;
     _previewController = null;
@@ -203,7 +231,12 @@ class _VideoCardState extends State<VideoCard> {
           // 1px short, so no thumbnail pixel ever paints the bottom row —
           // nothing left to leak through the anti-aliased clip boundary.
           Positioned(top: 0, left: 0, right: 0, bottom: 1, child: _thumb()),
-          if (showDur) _dur(),
+          if (showDur)
+            _dur(
+              bottom: _showingPreview
+                  ? (widget.compact ? 0 : 36) + kPreviewStripHeight + 4
+                  : null,
+            ),
           _info(),
         ],
       ),
@@ -238,79 +271,71 @@ class _VideoCardState extends State<VideoCard> {
   }
 
   Widget _thumb() {
-    if (_showingPreview) {
-      // Desktop: top 2/3 overlay captures taps for navigation;
-      // bottom 1/3 lets native Video controls through.
-      // Mobile: full-card overlay (no native controls on touch).
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          // A preview clip is a few seconds under a finger or a cursor, and
-          // the engine's wakelock is a PROCESS-WIDE count: a preview that ends
-          // calls `WakelockPlus.disable()` once the count reaches zero, which
-          // would clear the player's own hold (services/screen_wakelock.dart).
-          // The card never needs the screen held awake.
-          Video(
-            controller: _previewController!,
-            fit: BoxFit.cover,
-            wakelock: false,
-          ),
-          Positioned.fill(
-            child: FractionallySizedBox(
-              alignment: Alignment.topCenter,
-              heightFactor: _isMobile ? 1.0 : 2 / 3,
-              child: GestureDetector(
-                behavior: HitTestBehavior.translucent,
-                onTap: widget.onTap,
-                onLongPressStart: widget.onMenuRequested == null
-                    ? null
-                    : (d) => requestItemMenu(
-                        widget.onMenuRequested,
-                        d.globalPosition,
-                        haptic: true,
-                      ),
-                onSecondaryTapDown: widget.onMenuRequested == null
-                    ? null
-                    : (d) => requestItemMenu(
-                        widget.onMenuRequested,
-                        d.globalPosition,
-                      ),
-              ),
-            ),
-          ),
-        ],
-      );
-    }
-    // Not previewing: the poster, with the two states this card has always
-    // drawn — a spinner while it is being generated, and the extension
-    // placeholder when there is none.
-    return VideoPoster(
-      item: widget.item,
-      onPosterChanged: (has) {
-        if (mounted && _hasPoster != has) {
-          setState(() => _hasPoster = has);
-        }
-      },
-      loading: Container(
-        color: widget.mediaSurface ? RCrmColors.playerSurface : RCrmColors.coal,
-        child: Center(
-          child: SizedBox(
-            width: 20,
-            height: 20,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: widget.mediaSurface
-                  ? RCrmColors.playerTextFaint
-                  : RCrmColors.textFaint,
-            ),
-          ),
-        ),
-      ),
-      fallback: _ph(),
+    // ONE stack, fixed indices, so nothing remounts when a preview starts/stops.
+    // The poster is the persistent BOTTOM layer; the Video sits above it and
+    // fades in only once a frame is ready. Until then the viewer sees the poster
+    // (the same image as the video's first frame) - never the card background.
+    // fill:transparent removes media_kit's own opaque black, so letterboxing
+    // also shows the poster. PreviewSurface is a pure view; the frame gate here
+    // feeds it the frameReady boolean.
+    return PreviewSurface(
+      frameReady: _frameReady,
+      active: _showingPreview,
+      poster: _poster(),
+      video: _showingPreview
+          ? Video(
+              // A preview clip is a few seconds under a finger or a cursor, and
+              // the engine's wakelock is a PROCESS-WIDE count: a preview that
+              // ends calls WakelockPlus.disable() at zero, clearing the player's
+              // own hold. No preview needs the screen held awake.
+              controller: _previewController!,
+              fit: BoxFit.cover,
+              wakelock: false,
+              // media_kit's default controls need ~150dp and overflow an 81dp
+              // card, and their churn desyncs the Windows AXTree. The preview
+              // keeps the one useful affordance via PreviewControls.
+              controls: NoVideoControls,
+              // No opaque black rectangle before the first frame.
+              fill: Colors.transparent,
+            )
+          : const SizedBox.shrink(),
+      player: _showingPreview ? _previewController!.player : null,
+      stripBottom: widget.compact ? 0 : 36,
+      onTap: widget.onTap,
+      onMenu: widget.onMenuRequested,
     );
   }
 
-  Widget _dur() {
+  /// The poster, with the two states this card has always drawn — a spinner
+  /// while it is being generated, and the extension placeholder when there is
+  /// none. Mounted exactly once per card (see _thumb) so its decoded thumbnail
+  /// survives the preview transition instead of being reloaded on every hover.
+  Widget _poster() => VideoPoster(
+    item: widget.item,
+    onPosterChanged: (has) {
+      if (mounted && _hasPoster != has) {
+        setState(() => _hasPoster = has);
+      }
+    },
+    loading: Container(
+      color: widget.mediaSurface ? RCrmColors.playerSurface : RCrmColors.coal,
+      child: Center(
+        child: SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            color: widget.mediaSurface
+                ? RCrmColors.playerTextFaint
+                : RCrmColors.textFaint,
+          ),
+        ),
+      ),
+    ),
+    fallback: _ph(),
+  );
+
+  Widget _dur({double? bottom}) {
     final onMedia = _hasPoster;
     // The chip sits on the poster: over a real picture it is black with
     // white ink, and over the placeholder it takes the card's own surface so
@@ -327,7 +352,7 @@ class _VideoCardState extends State<VideoCard> {
       // Clear of the info strip when there is one. A compact card has no
       // strip, and the end card asks for the chip there — bottom 36 would
       // float it in the middle of the poster.
-      bottom: widget.compact ? 4 : 36,
+      bottom: bottom ?? (widget.compact ? 4 : 36),
       right: 4,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),

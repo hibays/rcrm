@@ -13,6 +13,21 @@ import 'package:rcrm_gui/services/settings_service.dart';
 
 import 'services/item_cache_limit.dart';
 
+/// Windows only: hand the accessibility bridge an empty semantics tree.
+///
+/// The bridge is built lazily on the first WM_GETOBJECT probe — running from an
+/// IDE that loads the Java Access Bridge is enough, no screen reader required.
+/// Once built it mirrors every semantics change into a ui::AXTree, and a
+/// framework bug (flutter/flutter#182444) can produce an update that references
+/// nodes it never sent (or removes one mid-serialization). The tree then stays
+/// corrupted for the life of the process and spews AXTree errors on every later
+/// update — in release builds it can even terminate the process. The app offers
+/// no screen-reader-specific accommodations (docs/PRODUCT.md), so on Windows we
+/// keep the tree at its root node: nothing to add, remove, or desync. Every
+/// other platform keeps its full, unmodified semantics.
+Widget _desktopSemantics(Widget child) =>
+    Platform.isWindows ? ExcludeSemantics(child: child) : child;
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   if (!Platform.isAndroid && !Platform.isIOS) {
@@ -40,15 +55,19 @@ void main() async {
     // instead of flashing the default.
     SettingsService.prime(prefs);
     runApp(
-      ProviderScope(
-        child: RcrmApp(savedConfig: prefs.getString('server_config')),
+      _desktopSemantics(
+        ProviderScope(
+          child: RcrmApp(savedConfig: prefs.getString('server_config')),
+        ),
       ),
     );
   } catch (e) {
     debugPrint('Startup error: $e');
     runApp(
-      const MaterialApp(
-        home: Scaffold(body: Center(child: Text('Startup error'))),
+      _desktopSemantics(
+        const MaterialApp(
+          home: Scaffold(body: Center(child: Text('Startup error'))),
+        ),
       ),
     );
   }
