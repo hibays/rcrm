@@ -55,7 +55,7 @@ class SettingsService {
   /// correcting it a frame later is a visible flash on every launch for
   /// anyone who chose Day/Night or a non-default accent. [load] later confirms
   /// the same values, so the seeded state never visibly changes.
-  static ({String mode, String accent})? primedAppearance;
+  static ({String mode, String accent, int? customColor})? primedAppearance;
 
   /// Called once by main() with the instance it already resolved.
   static void prime(SharedPreferences prefs) {
@@ -67,6 +67,7 @@ class SettingsService {
         _ => 'system',
       },
       accent: accent ?? 'marquee',
+      customColor: prefs.getInt(_keyAppearanceCustomColor),
     );
   }
 
@@ -97,6 +98,7 @@ class SettingsService {
   static const _keyThumbCacheLimit = 'thumb_cache_limit_mb';
   static const _keyAppearanceMode = 'appearance_mode';
   static const _keyAppearanceAccent = 'appearance_accent';
+  static const _keyAppearanceCustomColor = 'appearance_custom_color';
   static const _keyPipEnabled = 'pip_enabled';
   static const _keyPipSize = 'pip_size'; // 'normal' or 'small'
   static const _keyPlaybackMode =
@@ -335,6 +337,19 @@ class SettingsService {
   Future<void> setAppearanceAccent(String key) async {
     final p = await prefs;
     await p.setString(_keyAppearanceAccent, key);
+  }
+
+  /// The ARGB the user picked for the Custom accent, or null before the first
+  /// pick. Kept separate from [getAppearanceAccent] so switching back to a
+  /// preset does not forget the picked colour.
+  Future<int?> getAppearanceCustomColor() async {
+    final p = await prefs;
+    return p.getInt(_keyAppearanceCustomColor);
+  }
+
+  Future<void> setAppearanceCustomColor(int argb) async {
+    final p = await prefs;
+    await p.setInt(_keyAppearanceCustomColor, argb);
   }
 
   // ── Thumbnail cache ──────────────────────────────

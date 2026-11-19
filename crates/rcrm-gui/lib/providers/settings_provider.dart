@@ -36,6 +36,11 @@ class SettingsState {
   /// the consumer, so a stale preference cannot become a whole new accent.
   final String appearanceAccent;
 
+  /// The ARGB picked in Appearance → Accent → Custom. Null until the first
+  /// pick, in which case Custom falls back to Marquee's orange. Kept separate
+  /// from [appearanceAccent] so switching to a preset does not forget it.
+  final int? appearanceCustomColor;
+
   /// See `SettingsService.getThumbCacheLimitMb`: `0` platform default, `>0` that
   /// many MB — the size the manual clean-up trims to. Mirrored into
   /// `ThumbCache.limitMb`.
@@ -118,6 +123,7 @@ class SettingsState {
     this.thumbCacheEnabled = true,
     this.appearanceMode = 'system',
     this.appearanceAccent = 'marquee',
+    this.appearanceCustomColor,
     this.thumbCacheLimitMb = 0,
     this.videoLayout = 'grid',
     this.videoListColumns = 'auto',
@@ -145,6 +151,7 @@ class SettingsState {
     bool? thumbCacheEnabled,
     String? appearanceMode,
     String? appearanceAccent,
+    int? appearanceCustomColor,
     int? thumbCacheLimitMb,
     String? videoLayout,
     String? videoListColumns,
@@ -171,6 +178,8 @@ class SettingsState {
       thumbCacheEnabled: thumbCacheEnabled ?? this.thumbCacheEnabled,
       appearanceMode: appearanceMode ?? this.appearanceMode,
       appearanceAccent: appearanceAccent ?? this.appearanceAccent,
+      appearanceCustomColor:
+          appearanceCustomColor ?? this.appearanceCustomColor,
       thumbCacheLimitMb: thumbCacheLimitMb ?? this.thumbCacheLimitMb,
       videoLayout: videoLayout ?? this.videoLayout,
       videoListColumns: videoListColumns ?? this.videoListColumns,
@@ -206,6 +215,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
     return const SettingsState().copyWith(
       appearanceMode: primed?.mode ?? 'system',
       appearanceAccent: primed?.accent ?? 'marquee',
+      appearanceCustomColor: primed?.customColor,
     );
   }
 
@@ -222,6 +232,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
     ThumbCache.enabled = thumbCacheEnabled;
     final appearanceMode = await _service.getAppearanceMode();
     final appearanceAccent = await _service.getAppearanceAccent();
+    final appearanceCustomColor = await _service.getAppearanceCustomColor();
     final thumbCacheLimitMb = await _service.getThumbCacheLimitMb();
     ThumbCache.limitMb = thumbCacheLimitMb;
     final videoLayout = await _service.getVideoLayout();
@@ -280,6 +291,7 @@ class SettingsNotifier extends Notifier<SettingsState> {
       thumbCacheEnabled: thumbCacheEnabled,
       appearanceMode: appearanceMode,
       appearanceAccent: appearanceAccent,
+      appearanceCustomColor: appearanceCustomColor,
       thumbCacheLimitMb: thumbCacheLimitMb,
       videoLayout: videoLayout,
       videoListColumns: videoListColumns,
@@ -391,6 +403,18 @@ class SettingsNotifier extends Notifier<SettingsState> {
   Future<void> setAppearanceAccent(String key) async {
     state = state.copyWith(appearanceAccent: key);
     await _service.setAppearanceAccent(key);
+  }
+
+  /// The one action the colour picker commits: remember the ARGB AND select
+  /// the Custom accent, so the shell rebuilds with the picked shade on the same
+  /// frame. Both values persist; switching to a preset later keeps the ARGB.
+  Future<void> setAppearanceCustomColor(int argb) async {
+    state = state.copyWith(
+      appearanceAccent: 'custom',
+      appearanceCustomColor: argb,
+    );
+    await _service.setAppearanceCustomColor(argb);
+    await _service.setAppearanceAccent('custom');
   }
 
   Future<void> setThumbCacheEnabled(bool enabled) async {

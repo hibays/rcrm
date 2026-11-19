@@ -31,6 +31,7 @@ void main() {
     // The palette is a process-wide snapshot; leave it as a fresh Night app
     // would find it so other tests in this file cannot inherit a Day ramp.
     RCrmColors.setSystemColors();
+    RCrmColors.setCustomColor(null);
     RCrmColors.apply(accent: RCrmAccent.marquee, brightness: Brightness.dark);
   });
 
@@ -68,11 +69,92 @@ void main() {
     },
   );
 
-  test('six presets, distinct stable keys (incl. Material You)', () {
-    expect(RCrmAccent.values, hasLength(6));
-    expect(RCrmAccent.values.map((a) => a.key).toSet(), hasLength(6));
-    expect(RCrmAccent.values.map((a) => a.dark).toSet(), hasLength(6));
-    expect(RCrmAccent.values.map((a) => a.light).toSet(), hasLength(6));
+  test('six presets + Custom, distinct stable keys (incl. Material You)', () {
+    final presets = RCrmAccent.values.where((a) => a != RCrmAccent.custom);
+    expect(presets, hasLength(6));
+    expect(presets.map((a) => a.key).toSet(), hasLength(6));
+    expect(presets.map((a) => a.dark).toSet(), hasLength(6));
+    expect(presets.map((a) => a.light).toSet(), hasLength(6));
+    expect(RCrmAccent.values, hasLength(7));
+    expect(RCrmAccent.fromKey('custom'), RCrmAccent.custom);
+  });
+
+  test('the picked colour round-trips and survives switching to a preset', () async {
+    final s = SettingsService();
+    expect(await s.getAppearanceCustomColor(), isNull);
+    await s.setAppearanceCustomColor(0xFF3366FF);
+    expect(await s.getAppearanceCustomColor(), 0xFF3366FF);
+    // Accent and colour are two doors, not one: a preset switch keeps the pick.
+    await s.setAppearanceAccent('neon');
+    expect(await s.getAppearanceAccent(), 'neon');
+    expect(await s.getAppearanceCustomColor(), 0xFF3366FF);
+  });
+
+  test('a picked colour is contrast-checked on both canvases', () {
+    // The picker allows anything, including white, black and pale washes. None
+    // of them may make an action or an icon unreadable on either appearance.
+    for (final picked in <Color>[
+      const Color(0xFFFFFFFF),
+      const Color(0xFF000000),
+      const Color(0xFFFFF9C4), // pale yellow
+      const Color(0xFF101D5A), // near-black blue
+      const Color(0xFF3366FF),
+      const Color(0xFF00D9C0),
+    ]) {
+      RCrmColors.setCustomColor(picked);
+      final night = RCrmTheme.customDark(picked);
+      final day = RCrmTheme.customLight(picked);
+      expect(night.a, 1.0, reason: 'a theme colour is always opaque');
+      expect(day.a, 1.0, reason: 'a theme colour is always opaque');
+      expect(
+        _contrast(night, RCrmColors.darkPitch),
+        greaterThanOrEqualTo(4.5),
+        reason: 'Night shade of ${picked.toARGB32()} must read on pitch',
+      );
+      expect(
+        _contrast(day, RCrmColors.lightPitch),
+        greaterThanOrEqualTo(4.5),
+        reason: 'Day shade of ${picked.toARGB32()} must read on cream',
+      );
+      // The card step is the extreme of each neutral ramp: if the accent reads
+      // there, it reads on the canvas and ash between them too.
+      expect(
+        _contrast(night, RCrmColors.darkChar),
+        greaterThanOrEqualTo(4.5),
+        reason: 'Night shade of ${picked.toARGB32()} must read on a card too',
+      );
+      expect(
+        _contrast(day, RCrmColors.lightChar),
+        greaterThanOrEqualTo(4.5),
+        reason: 'Day shade of ${picked.toARGB32()} must read on a card too',
+      );
+      // ThemeData and the runtime snapshot derive from the one same function.
+      expect(
+        RCrmTheme.build(
+          accent: RCrmAccent.custom,
+          brightness: Brightness.dark,
+        ).colorScheme.primary,
+        night,
+      );
+      expect(
+        RCrmTheme.build(
+          accent: RCrmAccent.custom,
+          brightness: Brightness.light,
+        ).colorScheme.primary,
+        day,
+      );
+      // onPrimary is measured for a picked hue, never assumed.
+      expect(
+        RCrmTheme.onPrimaryFor(RCrmAccent.custom, Brightness.dark, night),
+        night.computeLuminance() > 0.5
+            ? const Color(0xFF101010)
+            : const Color(0xFFFFFFFF),
+      );
+      // Player chrome always carries the bright Night variant.
+      RCrmColors.apply(accent: RCrmAccent.custom, brightness: Brightness.light);
+      expect(RCrmColors.playerAccent, night);
+    }
+    RCrmColors.setCustomColor(null);
   });
 
   test('Material You uses the OS colour, and hides itself when there is none', () {
@@ -116,6 +198,9 @@ void main() {
     'Day and Night build different canvases; the accent deepens on cream',
     () {
       for (final accent in RCrmAccent.values) {
+        // Custom's shades are derived, not fixed constants — see the dedicated
+        // contrast test above.
+        if (accent == RCrmAccent.custom) continue;
         final night = RCrmTheme.build(
           accent: accent,
           brightness: Brightness.dark,

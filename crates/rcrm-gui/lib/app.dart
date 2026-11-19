@@ -80,9 +80,12 @@ class _RcrmAppState extends ConsumerState<RcrmApp> {
     // rebuild this shell (and re-create both ThemeData objects) every time an
     // image column or a cache switch changed.
     final appearance = ref.watch(
-      uiSettingsProvider.select((s) => (s.appearanceMode, s.appearanceAccent)),
+      uiSettingsProvider.select(
+        (s) => (s.appearanceMode, s.appearanceAccent, s.appearanceCustomColor),
+      ),
     );
     final accent = RCrmAccent.fromKey(appearance.$2);
+    final customAccentColor = appearance.$3;
     final themeMode = switch (appearance.$1) {
       'day' => ThemeMode.light,
       'night' => ThemeMode.dark,
@@ -98,6 +101,13 @@ class _RcrmAppState extends ConsumerState<RcrmApp> {
         RCrmColors.setSystemColors(
           light: lightDynamic?.primary,
           dark: darkDynamic?.primary,
+        );
+        // Set before either ThemeData is built: the picker's colour feeds the
+        // Custom accent's derived shades, and the runtime snapshot below must
+        // describe the exact same colour. Before the first pick this is null
+        // and Custom falls back to Marquee's orange.
+        RCrmColors.setCustomColor(
+          customAccentColor == null ? null : Color(customAccentColor),
         );
         return MaterialApp(
           title: 'RCrm Media Library',

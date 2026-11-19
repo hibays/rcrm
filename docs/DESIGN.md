@@ -150,7 +150,7 @@ Marquee Orange is used on ≤10% of any given screen. When orange appears, it me
 
 Both ramps are the **same five tonal steps in the same order**; only the ramp inverts. Depth is still tone, never shadows. "Silver is silver, not ash" applies to Day too — a washed-out gray that merely passes AA is banned, and Day's secondary ink keeps ≥4.8:1 even on the lightest placeholder.
 
-### Six accents: five brand presets + Material You
+### Seven accents: five brand presets + Material You + Custom
 
 | Preset | Night accent | Day accent (deepened) | Night nav variant |
 |---|---|---|---|
@@ -160,14 +160,17 @@ Both ramps are the **same five tonal steps in the same order**; only the ramp in
 | Footlight | `#B57BFF` | `#5F30A8` | `#C99BFF` |
 | Neon | `#00D9C0` | `#006A61` | `#33E8D6` |
 | Device (Android 12+) | wallpaper `darkDynamic.primary` | wallpaper `lightDynamic.primary` | same as primary |
+| Custom | picked colour, lifted to ≥4.5:1 on pitch **and** char | picked colour, deepened to ≥4.5:1 on cream **and** char | Night shade, 18% toward white |
 
 Measured with `Color.computeLuminance()` (WCAG): the five Night accents run 5.9–11.1:1 on pitch; the Day accents 4.8–7.6:1 on cream and ≥4.7:1 on the card surface. A saturated accent that cannot be read on cream is **not** used as text there — Day deepens it, and `onPrimary` flips from near-black to white. **The rarity rule is unchanged**: ≤10% of any screen, in either appearance, whichever accent is active.
 
 **Material You** (`dynamic_color`) is a sixth swatch named **Device**, built from the Android 12+ wallpaper primary rather than a constant. Its `onPrimary` is measured from the colour's luminance, not assumed, because a wallpaper hue has no known lightness. It is offered **only** when the platform supplies both dynamic schemes; on desktop, iOS and older Android the swatch is hidden entirely — a control that cannot act is not shown. The preset colours remain the reference even when Device is active.
 
+**Custom** is a seventh swatch that opens a colour picker (`flutter_colorpicker`, HSV panel + hex field). A picked colour is never painted raw — doing so would let a pastel or an almost-black pick break the contrast contract above, so the shade is nudged toward white until it clears 4.5:1 on both the dark canvas and its card step, and toward black until it clears 4.5:1 on cream and its card step — the card is the extreme of each ramp, so the neutral steps between are covered too. `onPrimary` is measured from its luminance; the bottom-nav variant is the Night shade lightened 18%; the player keeps that bright Night variant. The dialog previews both derived shades before committing. The ARGB persists separately from the accent key — switching back to a preset does not forget the pick — and **confirming is the only commit**: cancelling or dismissing changes nothing. Because the picker is a third-party widget built against `package:flutter/material.dart`, the dialog shims a transparent Flutter `Material`, its localizations and a portrait-sized box around it; its label dropdown is disabled because the SmartDialog overlay has no Navigator ancestor.
+
 ### Where the choice lives
 
-Settings → **Appearance**, above Display (it changes the whole app, so it outranks per-view options). One three-way segmented row (System / Day / Night) and one row of five or six swatches. Each swatch carries its **name**, and the active one also gets a check plus a border in the current accent — colour is never the only carrier of state. The change applies on the same frame: no restart, no confirmation, no second door to the same setting. Both values persist as whitelisted strings; an unknown value falls back to System / Marquee.
+Settings → **Appearance**, above Display (it changes the whole app, so it outranks per-view options). One three-way segmented row (System / Day / Night) and one row of the five presets, the Device swatch where available, and the Custom picker swatch. Each swatch carries its **name**, and the active one also gets a check plus a border in the current accent — colour is never the only carrier of state. The change applies on the same frame: no restart, no confirmation, no second door to the same setting. The mode and accent persist as whitelisted strings (an unknown value falls back to System / Marquee); the Custom ARGB persists as its own integer, so a preset switch does not erase it.
 
 **Narrow screens:** a segmented row fills the available width and drops the selected-state check icon, whose width used to squeeze "System" into a two-line wrap (or an ellipsis) at 320dp. Labels pin `maxLines: 1`. The selected **fill** is already the state signal, so the icon is redundant. Check icons stay on the accent swatches, where they do not compete with a word.
 

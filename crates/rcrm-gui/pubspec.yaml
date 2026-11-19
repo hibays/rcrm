@@ -62,6 +62,9 @@ dependencies:
   dynamic_color: ^2.1.0
   flutter_smart_dialog: ^5.3.1
   material_ui: ^1.10.0
+  # Appearance → Accent → Custom. A pure-Dart HSV/HSL picker; no native code,
+  # so it is safe on the Linux plugin exception path (docs/BUILDING.md).
+  flutter_colorpicker: ^1.1.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

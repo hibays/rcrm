@@ -22,6 +22,7 @@ import '../services/system_volume.dart';
 import '../services/thumb_cache.dart';
 import '../utils/library_columns.dart';
 import '../utils/thumb_cache_policy.dart';
+import '../widgets/accent_color_picker.dart';
 import '../widgets/thumb_cache_dialog.dart';
 
 // A getter, not a `final`: the palette is a runtime snapshot now, and a
@@ -44,6 +45,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _passCtrl = TextEditingController();
   bool _isConnecting = false;
   bool _showingCertDialog = false;
+  bool _accentPickerOpen = false;
 
   @override
   void initState() {
@@ -581,7 +583,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             // wide screens, out of line with the Theme row above.
             SizedBox(
               width: double.infinity,
-              child: _accentRow(ui.appearanceAccent),
+              child: _accentRow(ui.appearanceAccent, ui.appearanceCustomColor),
             ),
           ]),
           const SizedBox(height: 8),
@@ -1031,12 +1033,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  /// Preset accent row. Colour is never the only carrier of state: every
-  /// swatch carries its name, and the active one also gets a check plus a
-  /// border in the current accent. Wrap keeps all five reachable at 320dp.
-  Widget _accentRow(String selectedKey) {
+  /// Accent row: the brand presets, Material You where the OS supplies it, and
+  /// a Custom swatch that opens the colour picker. Colour is never the only
+  /// carrier of state: every swatch carries its name, and the active one also
+  /// gets a check plus a border in the current accent. Wrap keeps them all
+  /// reachable at 320dp.
+  Widget _accentRow(String selectedKey, int? customArgb) {
     final selected = RCrmAccent.fromKey(selectedKey);
     final dark = Theme.of(context).brightness == Brightness.dark;
+    final customBase = customArgb == null
+        ? RCrmAccent.marquee.dark
+        : Color(customArgb);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       child: Column(
@@ -1045,7 +1052,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           Text('Accent', style: Theme.of(context).textTheme.bodyLarge),
           const SizedBox(height: 2),
           Text(
-            'One accent for the whole library',
+            'One accent for the whole library, or pick your own',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
             ),
@@ -1056,10 +1063,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             runSpacing: 8,
             children: [
               for (final a in RCrmAccent.values)
-                // Material You is offered ONLY where the OS actually supplies
-                // a dynamic scheme. A swatch that cannot act is not shown.
-                if (a != RCrmAccent.materialYou || RCrmColors.hasSystemColor)
+                // Custom has its own chip below. Material You is offered ONLY
+                // where the OS actually supplies a dynamic scheme: a swatch
+                // that cannot act is not shown.
+                if (a != RCrmAccent.custom &&
+                    (a != RCrmAccent.materialYou || RCrmColors.hasSystemColor))
                   _accentChip(a, a == selected, dark),
+              _customAccentChip(
+                customBase,
+                selected == RCrmAccent.custom,
+                dark,
+              ),
             ],
           ),
         ],
@@ -1105,6 +1119,78 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const SizedBox(width: 8),
               Text(
                 accent.label,
+                style: TextStyle(
+                  color: RCrmColors.textPrimary,
+                  fontSize: 13,
+                  fontWeight: active ? FontWeight.w600 : FontWeight.w400,
+                ),
+              ),
+              if (active) ...[
+                const SizedBox(width: 4),
+                Icon(Icons.check, size: 14, color: RCrmColors.primary),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// The picker's swatch. Its colour is the derived shade the app will really
+  /// paint, not the raw pick, so the chip never promises a hue that fails the
+  /// contrast check on that canvas. Tapping opens the picker; the colour is
+  /// committed only on confirm (cancelling changes nothing).
+  Widget _customAccentChip(Color base, bool active, bool dark) {
+    final swatch = dark
+        ? RCrmTheme.customDark(base)
+        : RCrmTheme.customLight(base);
+    return Semantics(
+      button: true,
+      selected: active,
+      label: 'Custom accent, open colour picker',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(RCrmRadii.sm),
+        onTap: () async {
+          // Like the certificate dialog, one door only: a double tap must not
+          // stack two pickers over each other.
+          if (_accentPickerOpen) return;
+          _accentPickerOpen = true;
+          try {
+            final picked = await showAccentColorPicker(
+              context: context,
+              initialColor: base,
+            );
+            if (picked == null || !mounted) return;
+            await ref
+                .read(uiSettingsProvider.notifier)
+                .setAppearanceCustomColor(picked.toARGB32());
+          } finally {
+            _accentPickerOpen = false;
+          }
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(RCrmRadii.sm),
+            border: Border.all(
+              color: active ? RCrmColors.primary : RCrmColors.textFaint,
+              width: active ? 2 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 16,
+                height: 16,
+                decoration: BoxDecoration(
+                  color: swatch,
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Custom',
                 style: TextStyle(
                   color: RCrmColors.textPrimary,
                   fontSize: 13,

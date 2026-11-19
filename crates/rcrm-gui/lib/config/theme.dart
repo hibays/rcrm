@@ -71,6 +71,18 @@ enum RCrmAccent {
     Color(0xFF9E9E9E),
     Color(0xFF616161),
     Color(0xFFBDBDBD),
+  ),
+
+  /// A colour the user picked in the Appearance colour picker. Its three
+  /// shades are NOT constants — they are derived from [RCrmColors.customColor]
+  /// and contrast-checked against each canvas. These values are only the
+  /// fallback before a colour has ever been picked.
+  custom(
+    'custom',
+    'Custom',
+    Color(0xFF4A90E2),
+    Color(0xFF2F5D96),
+    Color(0xFF7FB3F0),
   );
 
   const RCrmAccent(this.key, this.label, this.dark, this.light, this.warm);
@@ -240,6 +252,15 @@ abstract final class RCrmColors {
     _systemDark = dark;
   }
 
+  // ── Custom accent (Appearance → Colour picker) ───────────
+  static Color? _customColor;
+
+  /// The ARGB the user picked, or null when no Custom colour has been chosen.
+  /// Written once per build in `app.dart` beside the Material You colours, so
+  /// the ThemeData and the runtime snapshot can never disagree.
+  static Color? get customColor => _customColor;
+  static void setCustomColor(Color? value) => _customColor = value;
+
   /// Accent: action, focus, progress, selection. On Day it is the deepened
   /// variant so it stays readable on cream; [onPrimary] flips accordingly.
   static Color get primary => _primary;
@@ -273,9 +294,7 @@ abstract final class RCrmColors {
   }) {
     final dark = brightness == Brightness.dark;
     _primary = RCrmTheme.primaryFor(accent, brightness);
-    _primaryWarm = accent == RCrmAccent.materialYou
-        ? _primary
-        : (dark ? accent.warm : accent.light);
+    _primaryWarm = RCrmTheme.selectedNavFor(accent, brightness, _primary);
     _onPrimary = RCrmTheme.onPrimaryFor(accent, brightness, _primary);
     _pitch = dark ? darkPitch : lightPitch;
     _ash = dark ? darkAsh : lightAsh;
@@ -291,6 +310,10 @@ abstract final class RCrmColors {
     // still applies — always its Night (bright) variant, legible on black.
     _playerAccent = accent == RCrmAccent.materialYou
         ? (_systemDark ?? RCrmAccent.marquee.dark)
+        : accent == RCrmAccent.custom
+        ? RCrmTheme.customDark(
+            RCrmColors.customColor ?? RCrmAccent.marquee.dark,
+          )
         : accent.dark;
     _ok = dark ? const Color(0xFF4CAF50) : const Color(0xFF1B5E20);
     _warn = dark ? const Color(0xFFFFB74D) : const Color(0xFF8A5A00);
@@ -324,9 +347,71 @@ abstract final class RCrmTheme {
   static ThemeData get dark =>
       build(accent: RCrmAccent.marquee, brightness: Brightness.dark);
 
-  /// The effective accent: a preset's own colour, or the OS-supplied Material
-  /// You primary when that swatch is active. Shared by ThemeData and the
-  /// runtime snapshot so they can never disagree.
+  /// Minimum contrast an accent owes its canvas to read as text or an icon —
+  /// the same 4.5:1 the five presets were measured against (DESIGN.md §2A).
+  /// A picked colour is never used raw: it is nudged toward white or black
+  /// until it clears this bar, so a pastel or an almost-black pick cannot make
+  /// the app unreadable.
+  static const _minAccentContrast = 4.5;
+
+  static Color _opaque(Color c) => Color.fromARGB(
+    255,
+    (c.r * 255).round().clamp(0, 255),
+    (c.g * 255).round().clamp(0, 255),
+    (c.b * 255).round().clamp(0, 255),
+  );
+
+  static Color _mix(Color a, Color b, double t) {
+    final inv = 1 - t;
+    return Color.fromARGB(
+      255,
+      ((a.r * inv + b.r * t) * 255).round().clamp(0, 255),
+      ((a.g * inv + b.g * t) * 255).round().clamp(0, 255),
+      ((a.b * inv + b.b * t) * 255).round().clamp(0, 255),
+    );
+  }
+
+  static double _contrast(Color a, Color b) {
+    final la = a.computeLuminance(), lb = b.computeLuminance();
+    final hi = la > lb ? la : lb, lo = la > lb ? lb : la;
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
+  /// [canvases] is every surface the accent can be painted on, not just the
+  /// page canvas: the card step is the extreme of each ramp (the lightest dark
+  /// neutral, the darkest cream neutral), so clearing it clears ash/pitch too.
+  /// Checking only the canvas would let a custom Day shade stop at 4.5:1 on
+  /// cream while sitting near 3.7:1 on a card, below the bar the presets meet.
+  static Color _ensureContrast(Color base, List<Color> canvases, Color toward) {
+    bool readable(Color c) =>
+        canvases.every((canvas) => _contrast(c, canvas) >= _minAccentContrast);
+    final opaque = _opaque(base);
+    if (readable(opaque)) return opaque;
+    for (var t = 0.05; t <= 1.0; t += 0.05) {
+      final candidate = _mix(opaque, toward, t);
+      if (readable(candidate)) return candidate;
+    }
+    return toward == const Color(0xFFFFFFFF)
+        ? const Color(0xFFFFFFFF)
+        : const Color(0xFF101010);
+  }
+
+  /// The Night variant of a picked colour: the pick itself, lifted toward
+  /// white only when it would vanish on the dark canvas or a card.
+  static Color customDark(Color base) => _ensureContrast(base, const [
+    RCrmColors.darkPitch,
+    RCrmColors.darkChar,
+  ], const Color(0xFFFFFFFF));
+
+  /// The Day variant: deepened toward black until it reads on cream and cards.
+  static Color customLight(Color base) => _ensureContrast(base, const [
+    RCrmColors.lightPitch,
+    RCrmColors.lightChar,
+  ], const Color(0xFF000000));
+
+  /// The effective accent: a preset's own colour, the OS-supplied Material You
+  /// primary, or the contrast-checked shade derived from the picker's colour.
+  /// Shared by ThemeData and the runtime snapshot so they can never disagree.
   static Color primaryFor(RCrmAccent accent, Brightness brightness) {
     if (accent == RCrmAccent.materialYou) {
       final c = brightness == Brightness.dark
@@ -334,17 +419,41 @@ abstract final class RCrmTheme {
           : RCrmColors.systemLight;
       if (c != null) return c;
     }
+    if (accent == RCrmAccent.custom) {
+      final base = RCrmColors.customColor ?? RCrmAccent.marquee.dark;
+      return brightness == Brightness.dark
+          ? customDark(base)
+          : customLight(base);
+    }
     return accent.on(brightness);
   }
 
-  /// Text ON a primary fill. A wallpaper colour has no known lightness, so it
-  /// is measured instead of assumed; presets keep their fixed pair.
+  /// Selected bottom-nav item. Presets keep their fixed warm/light pair. A
+  /// picked colour gets a lighter Night variant and its deepened Day one.
+  static Color selectedNavFor(
+    RCrmAccent accent,
+    Brightness brightness,
+    Color primary,
+  ) {
+    if (accent == RCrmAccent.materialYou) return primary;
+    if (accent == RCrmAccent.custom) {
+      final base = RCrmColors.customColor ?? RCrmAccent.marquee.dark;
+      return brightness == Brightness.dark
+          ? _mix(customDark(base), const Color(0xFFFFFFFF), 0.18)
+          : customLight(base);
+    }
+    return brightness == Brightness.dark ? accent.warm : accent.light;
+  }
+
+  /// Text ON a primary fill. A wallpaper or picked colour has no known
+  /// lightness, so it is measured instead of assumed; presets keep their fixed
+  /// pair.
   static Color onPrimaryFor(
     RCrmAccent accent,
     Brightness brightness,
     Color primary,
   ) {
-    if (accent == RCrmAccent.materialYou) {
+    if (accent == RCrmAccent.materialYou || accent == RCrmAccent.custom) {
       return primary.computeLuminance() > 0.5
           ? const Color(0xFF101010)
           : const Color(0xFFFFFFFF);
@@ -409,9 +518,11 @@ abstract final class RCrmTheme {
       ),
       bottomNavigationBarTheme: BottomNavigationBarThemeData(
         backgroundColor: ash,
-        selectedItemColor: accent == RCrmAccent.materialYou
-            ? primary
-            : (dark ? accent.warm : accent.light),
+        selectedItemColor: RCrmTheme.selectedNavFor(
+          accent,
+          brightness,
+          primary,
+        ),
         unselectedItemColor: subtle,
         type: BottomNavigationBarType.fixed,
       ),
