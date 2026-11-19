@@ -132,6 +132,13 @@ class SmartPopupMenu<T> extends StatelessWidget {
   /// player controls whose menus must clear the transport bar.
   final bool openUpward;
 
+  /// Anchor the menu to the trigger's RIGHT edge instead of its left. For a
+  /// right-edge trigger (the toolbar's overflow button), a left-anchored menu
+  /// would grow off-screen; the attach layer clamps it, but the result reads
+  /// as a menu that fell away from its button. Right anchoring keeps it under
+  /// the button it belongs to.
+  final bool anchorRight;
+
   final String? tooltip;
 
   /// Surface colour of the menu panel. Defaults to the app's ash panel; the
@@ -153,6 +160,7 @@ class SmartPopupMenu<T> extends StatelessWidget {
     this.onOpened,
     this.onClosed,
     this.openUpward = false,
+    this.anchorRight = false,
     this.tooltip,
     this.backgroundColor,
     this.elevation = 6,
@@ -185,8 +193,12 @@ class SmartPopupMenu<T> extends StatelessWidget {
       // The trigger's own context is the anchor.
       targetContext: context,
       // bottomLeft = open downward, left-aligned (native default);
-      // topLeft + inside = open upward, left-aligned (player bars).
-      alignment: openUpward ? Alignment.topLeft : Alignment.bottomLeft,
+      // topLeft + inside = open upward, left-aligned (player bars);
+      // the Right variants keep a right-edge trigger's menu on screen beside
+      // its button instead of letting it grow off the edge and get clamped.
+      alignment: anchorRight
+          ? (openUpward ? Alignment.topRight : Alignment.bottomRight)
+          : (openUpward ? Alignment.topLeft : Alignment.bottomLeft),
       // A menu has no dark scrim — the transparent mask still captures the
       // outside tap so it dismisses, but the page beneath stays visible.
       maskColor: Colors.transparent,
@@ -318,9 +330,17 @@ class _SmartMenuPanel<T> extends StatelessWidget {
     // IntrinsicWidth is what keeps a menu a menu: the anchored surface would
     // otherwise hand the Column the whole screen width, and `stretch` would
     // fill it (measured: the player's speed menu opened as a full-window slab).
+    //
+    // Height needs a cap too. The toolbar's overflow menu can carry every
+    // extension in a library plus the other controls — 19 rows measured — and
+    // an unbounded panel puts the last rows below the screen, unreachable. A
+    // bounded height makes the SingleChildScrollView above actually scroll;
+    // short menus (the player's, the old 3-row Organize menu) keep their
+    // natural size because this is a cap, not a fixed height. The 96dp leaves
+    // room for the trigger and the system bars on either anchor direction.
     return ConstrainedBox(
-      constraints:
-          constraints ?? const BoxConstraints(minWidth: 112, maxWidth: 280),
+      constraints: (constraints ?? const BoxConstraints(minWidth: 112, maxWidth: 280))
+          .copyWith(maxHeight: MediaQuery.sizeOf(context).height - 96),
       child: IntrinsicWidth(stepWidth: 56, child: panel),
     );
   }

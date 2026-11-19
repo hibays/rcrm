@@ -247,29 +247,24 @@ void main() {
     expect(find.byType(KeywordFilterBar), findsOneWidget);
   });
 
-  testWidgets('the Tags chip follows the toolbar width, not a guessed window '
-      'width', (tester) async {
+  testWidgets('the narrow bar folds the Tags chip into one overflow button', (
+    tester,
+  ) async {
     await _pump(tester, [
       _one,
       _two,
       _three,
     ], surfaceSize: const Size(414, 800));
 
-    FilterChip chipAt() => tester.widget<FilterChip>(
-      find.byWidgetPredicate(
-        (w) => w is FilterChip && w.tooltip == 'Show tag filters',
-      ),
+    final inlineChip = find.byWidgetPredicate(
+      (w) => w is FilterChip && w.tooltip == 'Show tag filters',
     );
 
-    // At a phone width the chip is still the third left-side sibling, but the
-    // label and its padding are gone; the avatar and tooltip still name it.
-    var chip = chipAt();
-    expect(chip.label, isA<SizedBox>());
-    expect((chip.label as SizedBox).width, 0);
-    expect(chip.labelPadding, EdgeInsets.zero);
-    expect(chip.avatar, isNotNull);
-    // The 40dp sort arrow has a second door (re-picking the active sort chip),
-    // so it is the first optional control the narrow bar gives up.
+    // At a phone width the bare `#` is gone: every right-side control, the tag
+    // toggle included, lives in ONE overflow button at the right edge — so no
+    // function is lost and there is no lone `#` beside an empty gap.
+    expect(inlineChip, findsNothing);
+    expect(find.byTooltip('More options'), findsOneWidget);
     expect(find.byTooltip('Sort descending'), findsNothing);
     expect(
       tester.takeException(),
@@ -278,43 +273,38 @@ void main() {
     );
 
     // Grow the surface: LayoutBuilder re-measures the BAR it was given, so the
-    // label and the arrow return without this test knowing a window breakpoint.
+    // labeled chip and the arrow return without this test knowing a breakpoint.
     await tester.binding.setSurfaceSize(const Size(800, 800));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
     await tester.pump(const Duration(milliseconds: 50));
-    chip = chipAt();
+    final chip = tester.widget<FilterChip>(inlineChip);
     expect(chip.label, isA<Text>());
     expect((chip.label as Text).data, 'Tags');
     expect(chip.labelPadding, isNull);
+    expect(find.byTooltip('More options'), findsNothing);
     expect(find.byTooltip('Sort descending'), findsOneWidget);
 
-    // The same ladder keeps going instead of overflowing: the two right-side
-    // menus (both have Settings rows) leave at 375dp, then the column button
-    // at 320dp. The Tags chip itself never leaves.
-    //
-    // The column button is NOT asserted at 375 or 414 here: this harness shrinks
-    // the SURFACE, not the window, so `MediaQuery.sizeOf` still reports the
-    // default 800 and the range the screen hands the bar stays 2..5 — a state
-    // production cannot reach (a 375dp window displays (2,2), and a range that
-    // holds one value is not built at all). `column_button_test.dart` pins that
-    // rule where the range can be stated directly.
-    await tester.binding.setSurfaceSize(const Size(375, 800));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
-    await tester.pump(const Duration(milliseconds: 50));
-    expect(find.byTooltip('Organize'), findsNothing);
-    expect(chipAt().avatar, isNotNull);
-    expect(tester.takeException(), isNull);
+    // Shrink again: the overflow takes over at each narrow width instead of
+    // dropping controls one by one. The inline controls never coexist with
+    // their overflow rows.
+    for (final width in [375, 320]) {
+      await tester.binding.setSurfaceSize(Size(width.toDouble(), 800));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(inlineChip, findsNothing, reason: 'width $width');
+      expect(find.byTooltip('More options'), findsOneWidget, reason: '$width');
+      expect(find.byTooltip('Sort descending'), findsNothing, reason: '$width');
+      expect(tester.takeException(), isNull, reason: 'width $width');
+    }
 
-    await tester.binding.setSurfaceSize(const Size(320, 800));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
-    await tester.pump(const Duration(milliseconds: 50));
+    // At 320dp the column button and grid/list switch are in the menu, not the
+    // row. (This harness shrinks the surface, so MediaQuery still reports 800
+    // and the column RANGE is 2..5 rather than a narrow window's one value;
+    // column_button_test.dart pins that no-op rule where it can be stated.)
     expect(find.byType(ColumnButton), findsNothing);
     expect(find.byTooltip('List view'), findsNothing);
-    expect(chipAt().avatar, isNotNull);
-    expect(tester.takeException(), isNull);
   });
 
   testWidgets('a filter from elsewhere brings the hidden bar back so it can '

@@ -16,46 +16,45 @@
 /// where that third chip still has slack beside its two neighbours.
 const double kToolbarTagLabelMinWidth = 600;
 
-/// The narrow-width ladder for the optional RIGHT-side controls.
-///
-/// Same rule as `planPlayerControlBar`: a control with another door leaves
-/// before one that would otherwise be unreachable. The sort arrow goes first
-/// (re-picking the active sort chip reverses — its tooltip says so), then the
-/// Organize trigger and the grid/list switch (both have a Settings row), and
-/// only then the column button: on a narrow desktop window there is no pinch
-/// gesture, so that button is the last way to change the grid.
-///
-/// Measured at compact size: the row wants 452dp at 414dp available; dropping
-/// the 40dp arrow leaves 412dp, dropping the 16dp Organize trigger and the 40dp
-/// layout toggle leaves 356dp, and dropping the 49dp column button too leaves
-/// 307dp.
-const double kToolbarSortArrowMinWidth = 460;
-const double kToolbarRightIconsMinWidth = 400;
-const double kToolbarColumnButtonMinWidth = 350;
+/// Below this the row cannot hold every control — even with the compact tag —
+/// so every right-side control folds into ONE overflow button on the right.
+/// That button costs the ~40dp the bare `#` chip used to take, so it is a SWAP,
+/// not an addition: the row never gets wider. The measured full row wants
+/// ~508dp with the longest sort label ("Duration ↑", ~195dp against ~139dp for
+/// the short ones), so 520dp keeps the full layout clear of an overflow stripe
+/// at every sort field.
+const double kToolbarOverflowMinWidth = 520;
+
+/// Below this the extension-filter chip joins the overflow too. With the long
+/// sort label inline, the ~96dp filter chip plus a 40dp overflow button cannot
+/// share a 320dp row; folding the filter in leaves ~195 + 40 + gaps + padding,
+/// which fits every width down to 320dp.
+const double kToolbarFormatChipMinWidth = 380;
 
 /// What a toolbar of a given width may render.
 class MediaToolbarLayout {
   /// Whether the tag chip drops its "Tags" label AND its label padding.
+  /// Only relevant while the chip is inline (at or above the overflow width).
   final bool compactTagLabel;
 
-  /// The sort-direction arrow; re-picking the active sort chip replaces it.
-  final bool showSortArrow;
+  /// When any control stops fitting, ONE overflow button on the right carries
+  /// every right-side control — including the tag toggle, whose compact bare
+  /// `#` is the least self-explanatory thing on the bar. The button replaces
+  /// that chip, so the row is no wider than before and keeps a control at each
+  /// end instead of a bare `#` and an empty gap.
+  final bool showOverflow;
 
-  /// The column-count button; a grid pinch reaches it on touch, and Settings
-  /// reaches it everywhere, so this is the last optional control to leave.
-  final bool showColumnButton;
-
-  /// Organize and the grid/list switch; both have a Settings row.
-  final bool showRightIcons;
+  /// The extension-filter chip stays inline while it fits. Below
+  /// [kToolbarFormatChipMinWidth] it moves into the overflow instead.
+  final bool showFormatChipInline;
 
   /// 8dp when the tag label is gone, 12dp otherwise.
   final double horizontalPadding;
 
   const MediaToolbarLayout({
     required this.compactTagLabel,
-    required this.showSortArrow,
-    required this.showColumnButton,
-    required this.showRightIcons,
+    required this.showOverflow,
+    required this.showFormatChipInline,
     required this.horizontalPadding,
   });
 
@@ -63,50 +62,45 @@ class MediaToolbarLayout {
   bool operator ==(Object other) =>
       other is MediaToolbarLayout &&
       other.compactTagLabel == compactTagLabel &&
-      other.showSortArrow == showSortArrow &&
-      other.showColumnButton == showColumnButton &&
-      other.showRightIcons == showRightIcons &&
+      other.showOverflow == showOverflow &&
+      other.showFormatChipInline == showFormatChipInline &&
       other.horizontalPadding == horizontalPadding;
 
   @override
   int get hashCode => Object.hash(
     compactTagLabel,
-    showSortArrow,
-    showColumnButton,
-    showRightIcons,
+    showOverflow,
+    showFormatChipInline,
     horizontalPadding,
   );
 }
 
 const MediaToolbarLayout _full = MediaToolbarLayout(
   compactTagLabel: false,
-  showSortArrow: true,
-  showColumnButton: true,
-  showRightIcons: true,
+  showOverflow: false,
+  showFormatChipInline: true,
   horizontalPadding: 12,
 );
 
 const MediaToolbarLayout _collapsed = MediaToolbarLayout(
   compactTagLabel: true,
-  showSortArrow: false,
-  showColumnButton: false,
-  showRightIcons: false,
+  showOverflow: false,
+  showFormatChipInline: false,
   horizontalPadding: 8,
 );
 
 /// The toolbar layout for the width it was actually given.
 ///
 /// `double.infinity` means an unconstrained horizontal run, which gets the
-/// full layout. NaN and negative widths are treated as collapsed: a layout
+/// full layout. NaN and non-positive widths are treated as collapsed: a layout
 /// decision must never guess "wide" from a number that carries no width.
 MediaToolbarLayout mediaToolbarLayout(double width) {
-  if (width.isNaN) return _collapsed;
+  if (width.isNaN || width <= 0) return _collapsed;
   if (width == double.infinity) return _full;
   return MediaToolbarLayout(
     compactTagLabel: width < kToolbarTagLabelMinWidth,
-    showSortArrow: width >= kToolbarSortArrowMinWidth,
-    showColumnButton: width >= kToolbarColumnButtonMinWidth,
-    showRightIcons: width >= kToolbarRightIconsMinWidth,
+    showOverflow: width < kToolbarOverflowMinWidth,
+    showFormatChipInline: width >= kToolbarFormatChipMinWidth,
     horizontalPadding: width < kToolbarTagLabelMinWidth ? 8 : 12,
   );
 }

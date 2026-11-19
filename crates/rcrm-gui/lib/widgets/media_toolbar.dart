@@ -4,6 +4,13 @@
 // Currently the video screen's toolbar: sort field dropdown, sort direction
 // toggle, extension filter, column-count cycle button, and grid/list layout
 // toggle.
+//
+// Narrow widths used to DROP the right-side controls one by one until the bar
+// was a couple of labeled chips and a bare `#` with nothing on the right. The
+// ladder still decides what stops fitting, but a dropped control now moves into
+// ONE overflow menu on the right (see `utils/media_toolbar_layout.dart`) —
+// swapping the compact `#` for a `⋮` button of the same width. Every function
+// stays reachable, and the bar keeps a control at each end.
 
 import 'package:material_ui/material_ui.dart';
 
@@ -74,6 +81,29 @@ Widget _groupingRow(
   );
 }
 
+/// One choice in the narrow-width overflow menu. The `value` carries whatever
+/// the row needs to hand back: a format extension, a grouping key, or a column
+/// count. Kept as a type (not a raw string) so a new kind fails the exhaustive
+/// switch in `_onOverflowSelected` instead of silently doing nothing.
+enum _OverflowKind { filter, tag, sortDirection, organize, layout, columns }
+
+/// The right-edge overflow button. A fixed 40dp tap box, matching the
+/// IconButtons it replaces.
+const double _kOverflowButtonWidth = 40;
+
+/// The chip's avatar, gaps and paddings around its label. Measured 54dp at
+/// scale 1, 66dp at scale 2 and 88dp at scale 3.12 (iOS's largest Dynamic
+/// Type); the slack covers that full range. Used to keep the sort label from
+/// pushing the overflow button off a narrow screen.
+const double _kChipLabelOverhead = 96;
+
+class _OverflowAction {
+  final _OverflowKind kind;
+  final String? value;
+
+  const _OverflowAction(this.kind, {this.value});
+}
+
 class MediaToolbar extends StatelessWidget {
   final List<String> sortOptions;
   final String currentSort;
@@ -118,9 +148,8 @@ class MediaToolbar extends StatelessWidget {
   ///
   /// A chip beside its siblings rather than a row buried in a menu: it is a
   /// first-class view control, and the bar below no longer spends 56dp of
-  /// permanent space. The chip's selected state is the persisted preference,
-  /// not whether the row happens to be visible right now — an active filter
-  /// forces the row visible so it stays clearable.
+  /// permanent space. At narrow widths the chip's compact `#` moves into the
+  /// overflow menu, so the toggle is never simply gone.
   final bool? tagBarVisible;
   final VoidCallback? onToggleTagBar;
 
@@ -154,8 +183,19 @@ class MediaToolbar extends StatelessWidget {
         // a wide window can still hand this toolbar a narrow column. What that
         // width means is a pure rule in `utils/media_toolbar_layout.dart`,
         // tested at its boundaries instead of only through the rendered chip.
-        final layout = mediaToolbarLayout(constraints.maxWidth);
-        return _buildToolbar(barContext, layout: layout);
+        //
+        // Divide by the user's text scale first: the thresholds were measured
+        // at scale 1, but a 1.3x system font makes "Duration ↑" ~60dp wider and
+        // overflowed the full row at 380/400/414/520/540dp. An effective width
+        // keeps the same ladder correct at every font size — the chips are not
+        // flexible, so this is where the room has to be found.
+        final scale = MediaQuery.textScalerOf(barContext).scale(1);
+        final layout = mediaToolbarLayout(constraints.maxWidth / scale);
+        return _buildToolbar(
+          barContext,
+          layout: layout,
+          availableWidth: constraints.maxWidth,
+        );
       },
     );
   }
@@ -163,7 +203,20 @@ class MediaToolbar extends StatelessWidget {
   Widget _buildToolbar(
     BuildContext context, {
     required MediaToolbarLayout layout,
+    required double availableWidth,
   }) {
+    // The sort chip is the one always-inline control whose label GROWS with
+    // the system font. At a large accessibility size on a small screen it can
+    // push the overflow button right off the edge — which would take away the
+    // only way to reach every control. Bound the label to the room actually
+    // left after the right-edge button and the bar's padding; at normal sizes
+    // this ceiling is far above the label's natural width and changes nothing.
+    final maxSortLabelWidth =
+        (availableWidth -
+                2 * layout.horizontalPadding -
+                (layout.showOverflow ? _kOverflowButtonWidth : 0) -
+                _kChipLabelOverhead)
+            .clamp(0.0, double.infinity);
     return Container(
       padding: EdgeInsets.symmetric(
         horizontal: layout.horizontalPadding,
@@ -178,10 +231,11 @@ class MediaToolbar extends StatelessWidget {
       child: Row(
         children: [
           // Sort
-          _sortChip(context),
+          _sortChip(context, maxLabelWidth: maxSortLabelWidth),
 
           // Filter by extension
-          if (extensions != null &&
+          if (layout.showFormatChipInline &&
+              extensions != null &&
               extensions!.isNotEmpty &&
               onFilterChanged != null) ...[
             const SizedBox(width: 8),
@@ -189,9 +243,10 @@ class MediaToolbar extends StatelessWidget {
           ],
 
           // Tag-filter row toggle (optional): a sibling of the sort and format
-          // chips on the LEFT, not a row buried in the Organize menu. The bar
-          // below is opt-in so it no longer spends a permanent 56dp strip.
-          if (onToggleTagBar != null) ...[
+          // chips on the LEFT, not a row buried in the Organize menu. Below the
+          // overflow threshold its compact `#` moves into the overflow menu —
+          // it is never both inline and in the menu, and never simply gone.
+          if (!layout.showOverflow && onToggleTagBar != null) ...[
             const SizedBox(width: 8),
             _tagFilterChip(context, compact: layout.compactTagLabel),
           ],
@@ -209,7 +264,7 @@ class MediaToolbar extends StatelessWidget {
           // would still call back with that value — overwriting a stored 5 with
           // the 2 the window happened to allow. A control that cannot act is not
           // shown (Settings → Video Grid Columns is the door that survives).
-          if (layout.showColumnButton &&
+          if (!layout.showOverflow &&
               onColumnsChanged != null &&
               currentColumns != null &&
               maxColumns > minColumns)
@@ -225,7 +280,7 @@ class MediaToolbar extends StatelessWidget {
           // (like the layout toggle below) and doubles as the semantics text.
           // First out at phone width: re-picking the active sort chip reverses
           // too, so this 40dp button has a door the Tag chip does not.
-          if (layout.showSortArrow)
+          if (!layout.showOverflow)
             IconButton(
               icon: Icon(
                 isAscending ? Icons.arrow_upward : Icons.arrow_downward,
@@ -243,7 +298,7 @@ class MediaToolbar extends StatelessWidget {
           // icon to something the menu never offered. (The sort and filter menus
           // beside it carry no item icons, but their buttons do not change icon
           // with the selection either.)
-          if (layout.showRightIcons &&
+          if (!layout.showOverflow &&
               currentGrouping != null &&
               onGroupingChanged != null)
             SmartPopupMenu<OrganizeAction>(
@@ -305,14 +360,206 @@ class MediaToolbar extends StatelessWidget {
 
           // Grid/List layout toggle (optional); Settings → Display is its
           // other door, so it leaves before the left-side chips do.
-          if (layout.showRightIcons && isGrid != null && onLayoutToggle != null)
+          if (!layout.showOverflow && isGrid != null && onLayoutToggle != null)
             IconButton(
               icon: Icon(isGrid! ? Icons.list : Icons.grid_view, size: 18),
               onPressed: onLayoutToggle,
               tooltip: isGrid! ? 'List view' : 'Grid view',
               visualDensity: VisualDensity.compact,
             ),
+
+          // Whatever the width ladder dropped lives here, at the right edge.
+          // It replaces the compact `#`, so the row is no wider than before —
+          // and the right end of the bar always has a control to answer the
+          // chips on the left.
+          if (layout.showOverflow) _overflowMenu(context, layout),
         ],
+      ),
+    );
+  }
+
+  /// Build one overflow row: a reserved check slot (so icons line up whether
+  /// or not a check is drawn), an optional icon, and the label. The check is a
+  /// STATE marker, not a second button — it never hijacks the tap.
+  SmartPopupMenuItem<_OverflowAction> _overflowRow(
+    BuildContext context, {
+    required _OverflowAction action,
+    required String label,
+    bool selected = false,
+    IconData? icon,
+  }) {
+    return SmartPopupMenuItem(
+      value: action,
+      child: Row(
+        children: [
+          SizedBox(
+            width: 16,
+            child: selected
+                ? Icon(
+                    Icons.check,
+                    size: 16,
+                    color: Theme.of(context).colorScheme.primary,
+                  )
+                : null,
+          ),
+          const SizedBox(width: 8),
+          if (icon != null) ...[
+            Icon(icon, size: 16),
+            const SizedBox(width: 8),
+          ],
+          // No Expanded: IntrinsicWidth sizes the panel to its content, and an
+          // Expanded child lets the label stretch the row past the panel's
+          // 280dp cap — the text then paints outside the clipped surface
+          // (measured: an overflow row reached x=440 on a 320dp screen). A
+          // plain Text wraps inside the capped panel instead.
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 200),
+            child: Text(label),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Every control the ladder dropped, in its toolbar order. A control the
+  /// caller did not supply (null callbacks, no extensions, a one-value column
+  /// range) is simply absent — the menu never offers a row that cannot act.
+  List<SmartPopupMenuItem<_OverflowAction>> _overflowItems(
+    BuildContext context,
+    MediaToolbarLayout layout,
+  ) {
+    final items = <SmartPopupMenuItem<_OverflowAction>>[];
+
+    // Format filter — only when it is not inline.
+    if (!layout.showFormatChipInline &&
+        extensions != null &&
+        extensions!.isNotEmpty &&
+        onFilterChanged != null) {
+      items.add(_overflowRow(
+        context,
+        action: const _OverflowAction(_OverflowKind.filter),
+        label: 'All formats',
+        selected: currentFilter == null || currentFilter!.isEmpty,
+        icon: Icons.filter_list,
+      ));
+      for (final ext in extensions!) {
+        items.add(_overflowRow(
+          context,
+          action: _OverflowAction(_OverflowKind.filter, value: ext),
+          label: ext.toUpperCase(),
+          selected: ext == currentFilter,
+        ));
+      }
+    }
+
+    // Tag toggle. Its compact `#` is exactly what the overflow replaces, so
+    // the switch is always in the menu at a narrow width.
+    if (onToggleTagBar != null) {
+      final selected = tagBarVisible ?? false;
+      items.add(_overflowRow(
+        context,
+        action: const _OverflowAction(_OverflowKind.tag),
+        label: selected ? 'Hide tag filters' : 'Show tag filters',
+        selected: selected,
+        icon: Icons.tag,
+      ));
+    }
+
+    // Sort direction — the inline arrow is gone in overflow mode.
+    items.add(_overflowRow(
+      context,
+      action: const _OverflowAction(_OverflowKind.sortDirection),
+      label: isAscending ? 'Sort descending' : 'Sort ascending',
+      icon: isAscending ? Icons.arrow_downward : Icons.arrow_upward,
+    ));
+
+    // Organize, when its inline menu is gone. The same three literal icons as
+    // the inline menu keep the glyphs in the release font.
+    if (currentGrouping != null && onGroupingChanged != null) {
+      items.add(_overflowRow(
+        context,
+        action: const _OverflowAction(_OverflowKind.organize, value: 'none'),
+        label: 'Ungrouped',
+        selected: currentGrouping == 'none',
+        icon: Icons.apps,
+      ));
+      items.add(_overflowRow(
+        context,
+        action: const _OverflowAction(_OverflowKind.organize, value: 'folder'),
+        label: 'By folder',
+        selected: currentGrouping == 'folder',
+        icon: Icons.folder,
+      ));
+      items.add(_overflowRow(
+        context,
+        action: const _OverflowAction(_OverflowKind.organize, value: 'format'),
+        label: 'By format',
+        selected: currentGrouping == 'format',
+        icon: Icons.category,
+      ));
+    }
+
+    // Grid/List, when the inline toggle is gone.
+    if (isGrid != null && onLayoutToggle != null) {
+      items.add(_overflowRow(
+        context,
+        action: const _OverflowAction(_OverflowKind.layout),
+        label: isGrid! ? 'List view' : 'Grid view',
+        icon: isGrid! ? Icons.list : Icons.grid_view,
+      ));
+    }
+
+    // Column count — and only when its range holds more than one value, the
+    // same no-op rule the inline button obeys.
+    if (onColumnsChanged != null &&
+        currentColumns != null &&
+        maxColumns > minColumns) {
+      for (var c = minColumns; c <= maxColumns; c++) {
+        items.add(_overflowRow(
+          context,
+          action: _OverflowAction(_OverflowKind.columns, value: '$c'),
+          label: '$c column${c == 1 ? '' : 's'}',
+          selected: c == currentColumns,
+        ));
+      }
+    }
+
+    return items;
+  }
+
+  void _onOverflowSelected(_OverflowAction action) {
+    switch (action.kind) {
+      case _OverflowKind.filter:
+        onFilterChanged?.call(action.value ?? '');
+      case _OverflowKind.tag:
+        onToggleTagBar?.call();
+      case _OverflowKind.sortDirection:
+        onSortDirectionChanged();
+      case _OverflowKind.organize:
+        onGroupingChanged?.call(action.value ?? 'none');
+      case _OverflowKind.layout:
+        onLayoutToggle?.call();
+      case _OverflowKind.columns:
+        final count = int.tryParse(action.value ?? '');
+        if (count != null) onColumnsChanged?.call(count);
+    }
+  }
+
+  Widget _overflowMenu(BuildContext context, MediaToolbarLayout layout) {
+    final items = _overflowItems(context, layout);
+    if (items.isEmpty) return const SizedBox.shrink();
+    return SmartPopupMenu<_OverflowAction>(
+      tooltip: 'More options',
+      // Right-edge trigger: a left-anchored menu would grow off-screen.
+      anchorRight: true,
+      onSelected: _onOverflowSelected,
+      items: items,
+      // A fixed 40dp tap box matches the IconButtons it replaces. A bare 18dp
+      // glyph would be an untappable target on a phone.
+      child: const SizedBox(
+        width: _kOverflowButtonWidth,
+        height: 40,
+        child: Center(child: Icon(Icons.more_vert, size: 18)),
       ),
     );
   }
@@ -349,7 +596,7 @@ class MediaToolbar extends StatelessWidget {
     );
   }
 
-  Widget _sortChip(BuildContext context) {
+  Widget _sortChip(BuildContext context, {required double maxLabelWidth}) {
     return SmartPopupMenu<String>(
       // The chip's own chrome shows the field and the direction in effect, and
       // the menu's check marks the field that is active — neither says what
@@ -381,7 +628,17 @@ class MediaToolbar extends StatelessWidget {
           .toList(),
       child: Chip(
         avatar: const Icon(Icons.sort, size: 16),
-        label: Text('${_capitalize(currentSort)} ${isAscending ? '↑' : '↓'}'),
+        // Ellipsis instead of an unbounded row: a large system font can make
+        // this the widest thing on the bar, and the overflow button beside it
+        // is the only door to the dropped controls.
+        label: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: maxLabelWidth),
+          child: Text(
+            '${_capitalize(currentSort)} ${isAscending ? '↑' : '↓'}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
         visualDensity: VisualDensity.compact,
       ),
     );
