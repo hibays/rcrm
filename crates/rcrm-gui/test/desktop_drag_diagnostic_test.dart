@@ -1,8 +1,8 @@
 // Diagnostic: which path drives page switching on DESKTOP (mouse drag)?
 // Real viewer config:
 //   - ScrollConfiguration(dragDevices: {touch, mouse, trackpad})
-//   - PageView physics: NeverScrollableScrollPhysics (current, broken?)
-//     vs PageScrollPhysics (previous, working)
+//   - PageView physics: NeverScrollableScrollPhysics + pageSnapping: false
+//     (the fix) vs the legacy PageScrollPhysics + pageSnapping: true
 //   - zoom surface: ZoomableViewport, which only pans once zoomed (see
 //     viewer_zoom_test.dart) — so a desktop drag at scale 1 is always the
 //     page's to take.

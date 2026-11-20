@@ -6,7 +6,7 @@
 // first (cross-session); the server is hit only on a cold miss.
 //
 // Used only when thumbnail caching is enabled; otherwise PooledImage keeps
-// using ResizeImage(NetworkImage(...)).
+// using AuthImage(url, targetWidth: w).
 //
 // Generation is a static, shared, deduplicated service: concurrent callers
 // (grid cells, the viewer's thumbnail layer) asking for the same key share

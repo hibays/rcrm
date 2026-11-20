@@ -185,7 +185,7 @@ void main() {
 
   test('an already percent-encoded URL is not encoded a second time', () async {
     // The cast receiver's proxy hands over a URL whose query is ALREADY
-    // percent-encoded (`cast_receiver.dart:637-638` builds
+    // percent-encoded (`CastReceiver._handlePlay` builds
     // `?path=${Uri.encodeQueryComponent(path)}`), so this is the exact shape
     // every cast image arrives in. Re-encoding it (`Uri.encodeFull`) escaped
     // the `%` of every `%2F` into `%252F`; on the wire that stopped decoding as

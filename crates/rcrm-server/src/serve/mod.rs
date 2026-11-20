@@ -712,8 +712,7 @@ fn resolve_flat_path(root: &Path, cwd: &str, ftp_path: &str) -> io::Result<PathB
 
 /// Convert a `(mount_idx, disk_path)` back to an FTP virtual path string.
 ///
-/// **Single-root**: equivalent to the old `disk_to_ftp_path` — strips the
-/// single root prefix.
+/// **Single-root**: strips the single root prefix.
 ///
 /// **Multi-root**: prepends the mount name, e.g. `/Videos/sub/file.mp4`.
 pub fn disk_to_ftp_path(mounts: &[Mount], mount_idx: usize, disk: &Path, is_multi: bool) -> String {

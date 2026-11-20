@@ -6,12 +6,25 @@
 // `extern "C"` functions callable from Dart via `dart:ffi`.
 //
 // ## Memory ownership rules (Dart side MUST follow):
-//   1. Strings returned by `rcrm_*` functions are malloc'd C strings —
-//      Dart must call `rcrm_free_string` after use.
-//   2. Server handles returned by `rcrm_start_server` are opaque i32 ids —
-//      Dart must call `rcrm_free_server` when done (which calls stop+free).
-//   3. Strings passed *to* `rcrm_*` functions are borrowed — Rust copies them
-//      immediately, so Dart may free them after the call returns.
+//   FOUR shapes — see `docs/API_REFERENCE.md` → "Memory Ownership". Picking the
+//   wrong one leaks, double-frees or worse:
+//   1. Strings RETURNED by `rcrm_*` are malloc'd C strings — free with
+//      `rcrm_free_string`.
+//   2. Inputs that are BORROWED (strings passed to `rcrm_*`, and the raw pixels
+//      passed to the thumbnail encoders) are copied/read immediately — Dart
+//      still owns them and may free them after the call returns.
+//   3. Inputs that are TAKEN (the buffers passed to `rcrm_decode_*_async`) become
+//      Rust-owned: the ABI rebuilds its `Vec` from the length alone, so the
+//      buffer must be EXACTLY `len` bytes, and Rust frees it when the decode
+//      ends. Dart must NEVER free it or touch it again — NOT EVEN ON TIMEOUT.
+//   4. Buffers RETURNED by Rust (`WebpBuf` from the WebP producers, including
+//      `rcrm_generate_poster_async`) are read in place and freed with
+//      `rcrm_free_webp_buf` (or a `NativeFinalizer`).
+//
+//   Server handles are opaque i32 ids: `rcrm_start_server` returns the fixed
+//   value `1` to mean "request accepted", NOT success — poll
+//   `rcrm_get_server_status` for the outcome, then `rcrm_stop_server(handle)`
+//   when done. There is no `rcrm_free_server`.
 //
 // ## Thread safety:
 //   All public functions acquire internal locks. They are safe to call
@@ -128,7 +141,7 @@ pub unsafe extern "C" fn rcrm_free_string(ptr: *mut c_char) {
 ///
 /// # Arguments
 /// * `dirs_json` — JSON array of directory paths, e.g. `["/mnt/media","/mnt/backup"]`
-/// * `passwords_json` — JSON array of decryption passwords, e.g. `["pw1","pw2"]`
+/// * `password` — JSON array of decryption passwords, e.g. `["pw1","pw2"]`
 ///   (a bare string is accepted as a single password)
 /// * `bind_addr` — bind address, e.g. "127.0.0.1"
 /// * `port` — port number (0 = OS picks)
@@ -188,7 +201,9 @@ pub unsafe extern "C" fn rcrm_get_server_url(handle: i32) -> *mut c_char {
 	}
 }
 
-/// Get server status: 0 = stopped, 1 = running, -1 = invalid handle.
+/// Get server status: 0 = idle, 1 = starting, 2 = running, -1 = error,
+/// -2 = locked files (only handle `1` is valid; -1 is also returned for any
+/// other handle).
 ///
 /// # Safety
 /// `handle` must be a valid server handle returned by `rcrm_start_server`.
@@ -688,7 +703,8 @@ pub unsafe extern "C" fn rcrm_media_metadata_async(
 	}
 }
 
-/// Free a DecodeBuf returned by `rcrm_decode_avif_async` or `rcrm_decode_jxl_async`.
+/// Free a DecodeBuf returned by `rcrm_decode_avif_async`, `rcrm_decode_jxl_async`
+/// or `rcrm_decode_heic_async`.
 ///
 /// # Safety
 /// `ptr` must be a pointer previously returned by one of the decode

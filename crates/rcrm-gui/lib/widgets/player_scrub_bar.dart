@@ -33,10 +33,9 @@
 // never move, [ScrubBarGeometry] is exact for every frame of the animation
 // rather than only at its ends, and it is unit-tested as the arithmetic it is.
 //
-// (Flutter 3.47 can pin the track to the full box instead, with
-// `SliderThemeData.padding` — the mapping then needs no reconstruction at all.
-// Not used here: it would raise this crate's floor above the 3.44 in the
-// version matrix to save arithmetic that is tested.)
+// `SliderThemeData.padding` could pin the track to the full box instead, but
+// that would swap the inset model here: [ScrubBarGeometry] is the unit-tested
+// pointer↔value mapping, and changing the insets would change that mapping.
 
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:material_ui/material_ui.dart';

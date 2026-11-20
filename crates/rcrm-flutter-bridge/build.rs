@@ -1,8 +1,11 @@
 // build.rs
 // rcrm-flutter-bridge — build script
 //
-// Detects the target platform and sets cfg flags for conditional compilation.
-// On Android, sets up the NDK toolchain integration.
+// Reads `CARGO_CFG_TARGET_OS`, emits `target_os_*` cfg flags (currently with
+// no consumers in this crate), and on Android prints the linker flag
+// `-Wl,-Bsymbolic` that rav1d's ARM assembly needs in a shared library.
+// NDK/toolchain selection is external (cargo-ndk + the platform build scripts);
+// this script does not set it up.
 
 fn main() {
 	let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();

@@ -15,7 +15,6 @@
 │  dart:ffi → rcrm-flutter-bridge          │
 │  • start/stop server (global singleton)   │
 │  • folder encrypt/decrypt                 │
-│  • blank frame detection (zune_jpeg)      │
 │  • WebP thumbnails (RGBA or encoded image)│
 │  • media metadata (EXIF / track, nom-exif)│
 │  • AVIF/JXL/HEIC software decode *        │
@@ -737,8 +736,8 @@ length first, 0.0 last), `poster_log.dart`'s diagnostics, and the queue in
 `utils/poster_queue.dart` (concurrency cap, in-flight dedup, and the start gate
 `PosterQuietRoute` holds through a player route's ENTRANCE — it opens when
 that step ends, because the route's own Related list needs posters; see
-"One hand-shake" above). Zero disk writes: posters live in RAM, plus the opt-in
-`ThumbCache`.
+"The gate is for the STEP, not for the session" above). Zero disk writes:
+posters live in RAM, plus the opt-in `ThumbCache`.
 
 > The libmpv path passes `tls-verify=no` for its own fetch, the same scoped
 > relaxation the old ffmpeg poster command made: the server's certificate is

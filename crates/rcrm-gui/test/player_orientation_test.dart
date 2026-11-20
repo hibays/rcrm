@@ -188,9 +188,9 @@ void main() {
       // `lockedShape` is passed in deliberately, because a lock still in force is
       // exactly the state the exit releases from, and holding one here would put
       // the axis back on a screen that is already leaving. The record therefore
-      // has to come back null: that is what lets the screen recognise the next
-      // parameters report as the shape it already knows (see `_releaseOrientation`,
-      // which leaves the record alone for that reason and writes the hand-back).
+      // has to come back null: `PlayerOrientationSession.release()` clears it
+      // (`_lockedShape = null`) and the `_released` latch silences post-release
+      // video-parameter reports, so no stale axis is re-applied on the way out.
       for (final m in PlayerOrientation.values) {
         expect(
           requestFor(m, fullscreen: false, lockedShape: true),

@@ -91,12 +91,11 @@ pub(crate) enum PosterFrame {
 
 /// Render a poster for `url`.
 ///
-/// `positions` are candidate timestamps in seconds, most promising first — the
-/// order the Dart side's `posterSeekPlan` produces, so both poster backends look
-/// where the same rule says to look. `header_fields` is the CRLF-separated
-/// header block the Dart side already builds for HTTP fetches (empty for none);
-/// it becomes libmpv's `http-header-fields`. `target_width` is a maximum: a
-/// smaller video keeps its own size.
+/// `positions` are candidate timestamps in seconds, most promising first —
+/// the order the Dart side's `posterSeekPlan` produces. `header_fields` is the
+/// CRLF-separated header block the Dart side already builds for HTTP fetches
+/// (empty for none); it becomes libmpv's `http-header-fields`. `target_width`
+/// is a maximum: a smaller video keeps its own size.
 ///
 /// # Errors
 ///
@@ -746,10 +745,9 @@ fn options(header_fields: &str) -> Vec<(&'static str, String)> {
 		("osd-level", "0".to_string()),
 		// RCrm's own server presents a self-signed certificate and the Dart
 		// client pins it; libmpv cannot know about that pin, so its own
-		// verification is off for this one fetch path — the same scoped
-		// relaxation the old ffmpeg poster command made (ffmpeg's
-		// -tls_verify 0). The pin itself still governs every request the app
-		// makes, and the player keeps its own TLS settings.
+		// verification is off for this one fetch path. The pin itself still
+		// governs every request the app makes, and the player keeps its own
+		// TLS settings.
 		("tls-verify", "no".to_string()),
 	];
 	if let Some(fields) = http_header_fields(header_fields) {

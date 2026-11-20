@@ -1,8 +1,8 @@
 // services/window_drag.dart
 // Starting a window move from Dart for the app's own title bar.
 //
-// The app draws its title bar, so there is no caption to press. window_manager's
-// [DragToMoveArea] / `startDragging()` asks Windows to run a move with
+// The app draws its title bar, so there is no caption to press. Calling
+// `windowManager.startDragging()` asks Windows to run a move with
 // `WM_SYSCOMMAND` + `SC_MOVE`, which Windows treats as a *keyboard* move:
 // Windows 11 lets those snap, Windows 10's Aero Snap does not, so on Windows 10
 // the window never snaps to a screen edge.
@@ -12,8 +12,9 @@
 // and winit do for their custom title bars -- which runs a real caption drag and
 // snaps on both versions. See `windows/runner/flutter_window.cpp`.
 //
-// Only Windows needs this; Linux and macOS keep using [DragToMoveArea], which
-// goes through X11 `_NET_WM_MOVERESIZE` and macOS `performWindowDragWithEvent:`.
+// Only Windows needs this; Linux and macOS keep using
+// `windowManager.startDragging()`, which goes through X11 `_NET_WM_MOVERESIZE`
+// and macOS `performWindowDragWithEvent:`.
 
 import 'dart:io' show Platform;
 

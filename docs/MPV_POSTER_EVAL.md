@@ -1,18 +1,20 @@
 # MPV libmpv 原生海报生成评估报告
 
 日期: 2026-11-15
-状态: 可行性原型完成，未接入生产代码
+状态: 可行性原型完成，未接入生产代码（当时的状态；现已实施并接入生产代码，见文首横幅）
 后续执行计划: `docs/PLAN_MPV_POSTER.md`
 
-> **2026-11-16 追加**：iOS 也已走 libmpv 路径（media_kit 的 `Mpv.framework/Mpv` 是动态、已签名的 `MH_DYLIB`），`mpv-poster` 与 media_kit 截图后端已删除。本文中“iOS 不建议”的结论是当时的历史判断，已被取代。
+> **⚠️ 全文为历史文档（已被后续实现取代）**：本文是 2026-11-15 的可行性评估。结论已落地，但方案已被改写 —— libmpv 海报后端现已是**唯一**后端（所有平台，含 iOS），ffmpeg CLI 与 media_kit 截图后端均已删除。文中"保留 ffmpeg 回落""iOS 不建议""当前生产路径是 media_kit screenshot"等均为当时的判断，不再反映当前代码；现状请以 `docs/MPV_POSTER_REVIEW.md`、`docs/ARCHITECTURE.md` 与 `AGENTS.md` 为准。下文标有"当时的状态"的行保留原貌，仅作历史记录。
+
+> **2026-11-16 追加**：iOS 也已走 libmpv 路径（media_kit 的 `Mpv.framework/Mpv` 是动态、已签名的 `MH_DYLIB`），`mpv-poster` 与 media_kit 截图后端已删除。本文中"iOS 不建议"的结论是当时的历史判断，已被取代。
 
 ## 1. 结论
 
-**技术上可行，性能有明确收益，但现在还不能直接、无条件替换桌面端 ffmpeg CLI。**
+**技术上可行，性能有明确收益，但现在还不能直接、无条件替换桌面端 ffmpeg CLI。**（当时的判断；现已直接替换，ffmpeg CLI 后端已删除）
 
 原型在当前 Windows 机器上用 libmpv 0.36 的 `MPV_RENDER_API_TYPE_SW` 软件渲染，把帧直接写进 Rust 分配的 native 缓冲区，再把同一指针交给 Rust 的 WebP 编码器。帧数据没有经过 Dart，也没有中间拷贝；与 ffmpeg 抽帧的像素对比 MAD 约 2.4-3.6（WebP 有损 + 缩放差异）。
 
-建议以独立特性 `libmpv-poster` 做可选后端，保留 ffmpeg 回落；先在 Windows 上 A/B，再评估 Linux/macOS 和 Android。不要复用现有 `mpv-poster`（后者是 media_kit screenshot + Rust 编码，不是 libmpv render API）。
+【当时的建议（现已实施为唯一后端，ffmpeg 回落与 `mpv-poster` 均已删除）】建议以独立特性 `libmpv-poster` 做可选后端，保留 ffmpeg 回落；先在 Windows 上 A/B，再评估 Linux/macOS 和 Android。不要复用现有 `mpv-poster`（后者是 media_kit screenshot + Rust 编码，不是 libmpv render API）。
 
 ## 2. 原型链路
 
@@ -26,7 +28,7 @@ Rust: libloading -> libmpv-2.dll (mpv_create / mpv_initialize)
       -> WebpBuf returned to Dart as a zero-copy view
 ```
 
-当前生产移动端路径是 media_kit `screenshot-raw` -> Dart `Uint8List`（`sublist(0)` 一次 copy）-> `ThumbWebpWorker` 再 copy 到 native -> Rust blank/resize/WebP。libmpv 原生路径可以省掉这两次全帧 copy。桌面 ffmpeg 路径没有原始帧进 Dart，但有进程启动和 JPEG 编码成本。
+【当时的状态（现已被 libmpv 唯一后端取代）】当前生产移动端路径是 media_kit `screenshot-raw` -> Dart `Uint8List`（`sublist(0)` 一次 copy）-> `ThumbWebpWorker` 再 copy 到 native -> Rust blank/resize/WebP。libmpv 原生路径可以省掉这两次全帧 copy。桌面 ffmpeg 路径没有原始帧进 Dart，但有进程启动和 JPEG 编码成本。
 
 ## 3. 实测环境与方法
 
@@ -122,6 +124,6 @@ Rust: libloading -> libmpv-2.dll (mpv_create / mpv_initialize)
 
 ## 9. 最终判断
 
-**值得做可选后端，但不建议现在删除 ffmpeg。** 先实现 `libmpv-poster`，保留 ffmpeg 回落，在真实 WebDAV/HTTPS、4K/HEVC、4-8 路并发下复测；只有稳定快 1.3 倍以上、内存可接受、许可通过，才考虑把桌面默认切到 libmpv。
+【当时的判断（现已删除 ffmpeg，`libmpv-poster` 为唯一后端）】**值得做可选后端，但不建议现在删除 ffmpeg。** 先实现 `libmpv-poster`，保留 ffmpeg 回落，在真实 WebDAV/HTTPS、4K/HEVC、4-8 路并发下复测；只有稳定快 1.3 倍以上、内存可接受、许可通过，才考虑把桌面默认切到 libmpv。
 
 原型脚本（gitignored，本机）: `.local_backup/mpv_bench.py`、`.local_backup/mpv_compare_frames.py`、`.local_backup/frames/`。

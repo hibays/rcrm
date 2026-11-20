@@ -268,7 +268,7 @@ Surfaces are flat at rest. Shadows appear only as a response to state — hover,
 
 - **Buffered:** white 35% (`0x59FFFFFF`)
 - **Played:** Marquee Orange (`#FF6B00`)
-- **Remaining:** white 20% (`RCrmColors.silverDim`) — the three bands are the same thickness (Material's default fattens the played segment by 2dp, which on a 3dp track is the whole personality of the control)
+- **Remaining:** white 20% (`RCrmColors.playerTrack`) — the three bands are the same thickness (Material's default fattens the played segment by 2dp, which on a 3dp track is the whole personality of the control)
 - **Background:** Transparent
 - **Mini progress bar (controls hidden):** Same orange on transparent, thin (2px), buffered band at white 25%. No blanket opacity over it — the bands carry their own alpha, and halving it again made a readout nobody could see
 

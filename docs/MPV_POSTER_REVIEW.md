@@ -82,7 +82,7 @@ VideoPoster.initState → postFrame → ThumbnailService.generatePoster(url)
   ├─ 内存 LRU 命中 → 立即 Future.value
   ├─ ThumbCache 命中 → await 读盘
   ├─ _posterInflight 命中 → 复用同一个 Completer（同 URL 只跑一次）
-  └─ 入队 PosterJob（FIFO，上限 24/128，超出淘汰最老等待者 → null）
+  └─ 入队 PosterJob（LIFO，栈顶优先，上限 24/128，超出淘汰最老等待者 → null）
        → _posterKick: 并发 ≤ 1/4，且未暂停、无 parked job
        → run(): 主 isolate 上的 async 函数
             ├─ libmpv 后端（Android/桌面）：

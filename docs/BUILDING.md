@@ -17,8 +17,8 @@ Move the Android toolchain versions together; verify a release APK, not just `gr
 | Min SDK | **24** | ✅ | `android/app/build.gradle.kts` |
 | MSVC | VS 2022 Build Tools v18 | ✅ | Visual Studio Installer |
 | libmpv (posters) | the build media_kit already ships (0.36+) | ✅ | §libmpv-2.dll§ / §libmpv.so.2§ / §libmpv.dylib§ beside the app |
-| file_picker | 13.1.0 resolved (Android APK + Windows exe built) | ✅ | `pubspec.lock` |
-| `rav1d` (git) | rev `9f00b03b…` | ✅ | `crates/rcrm-flutter-bridge/Cargo.toml` |
+| file_picker | 13.4.0 resolved (Android APK + Windows exe built) | ✅ | `pubspec.lock` |
+| `rav1d` (git) | rev `2e7216c20ac…` | ✅ | `crates/rcrm-flutter-bridge/Cargo.toml` |
 | `heic` (git) | rev `db52055b…` | ✅ | `crates/rcrm-flutter-bridge/Cargo.toml` |
 | `zxing-cpp` | wrapper **0.5.3** (C++ **3.1.1**, `bundled`) | ✅ host + Android | `crates/rcrm-flutter-bridge/Cargo.toml` |
 | CMake / Ninja | CMake **≥ 3.21**; Ninja **required** for Windows→Android | ✅ 4.4.4 / 1.13.2 | `cmake --version`, `ninja --version` |
@@ -32,7 +32,7 @@ module. The 11.x line was unusable here — its Android build applied KGP in a w
 then-current Kotlin 2.3.20 rejected. The 12.0 federated rewrite also split the plugin into per-platform packages
 (`android_file_picker`, `windows_file_picker`, `file_picker_darwin/linux/web`) and made the API
 **static**: `FilePicker.getDirectoryPath()`, never `FilePicker.platform.*` (that accessor is gone,
-not deprecated). With this set (file_picker 13.1.0, package_info_plus 10.2.2, wakelock_plus 1.8.1)
+not deprecated). With this set (file_picker 13.4.0, package_info_plus 10.2.2, wakelock_plus 1.8.2)
 **no Android plugin declares KGP any more**, so Flutter's "plugins that apply Kotlin Gradle Plugin —
 future versions of Flutter will fail to build" warning no longer appears.
 
@@ -515,18 +515,3 @@ RUSTC_BOOTSTRAP=rav1d cargo ndk --target aarch64-linux-android check \
 | `repository 'maven' was added by settings` | Repo config conflict | Remove `allprojects { repositories {} }` or use `RepositoriesMode.PREFER_PROJECT` |
 | Silent NDK link failures | Wrong NDK version | Use exactly 28.2.13676358 |
 | Gradle download fails | Missing version on mirror | Check mirror URL or use official Gradle site |
-| APK hangs at splash | `flutter_vlc_player` installed | Remove from `pubspec.yaml` |
-
-### Bridge Build
-
-```bash
-# Desktop
-cargo build --release -p rcrm-flutter-bridge
-# Output: target/release/rcrm_flutter_bridge.dll (.so/.dylib)
-
-# Android (via cargo-ndk)
-cargo ndk --target aarch64-linux-android --target armv7-linux-androideabi \
-  --target x86_64-linux-android \
-  -o crates/rcrm-gui/android/app/src/main/jniLibs \
-  build -p rcrm-flutter-bridge --release
-```

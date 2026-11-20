@@ -702,6 +702,4 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       }
     });
   }
-
-  // ── Thumbnail diagnostics (temporary) ────────────────────
 }

@@ -4,7 +4,7 @@
 //  * the transition DIRECTION — a forward step plays the platform's own
 //    transition, a back step (the jump history's `Back`) plays what a POP
 //    reveals on that platform — and
-//  * the hooks the route carries: the poster pool's suspension in `install()`,
+//  * the hooks the route carries: the poster start gate's suspension in `install()`,
 //    its release in `dispose()`, and the one warm player created inside the push
 //    and handed to the screen's builder.
 //
@@ -99,11 +99,9 @@ Future<List<double>> _entranceSamples(
   await tester.pumpAndSettle();
   final settled = _pageX(tester);
   // Leave the navigator as it was found: the pop is what releases the poster
-  // gate, and the 30s idle timer `resume()` arms has to be drained before the
-  // test ends (`_drainPosterIdleTimer`).
+  // gate (one release per route), so the tree is back where it started.
   nav.pop();
   await tester.pumpAndSettle();
-  await _drainPosterIdleTimer(tester);
   return [for (final x in samples) x - settled];
 }
 
@@ -176,7 +174,6 @@ Future<List<double>> _popExitSamples(
     samples.add(_pageX(tester));
   }
   await tester.pumpAndSettle();
-  await _drainPosterIdleTimer(tester);
   return [for (final x in samples) x - settled];
 }
 
@@ -215,12 +212,10 @@ Future<List<double>> _leavingSamples(
     samples.add(_pageX(tester));
   }
   await tester.pumpAndSettle();
-  // Leave the navigator as it was found: a route still on it when the test ends
-  // has its `dispose()` run during teardown, and that `resume()` arms the pool's
-  // 30s idle timer after the last chance to drain it.
+  // Leave the navigator as it was found: pop the route and settle, letting the
+  // pop's transition finish before the test ends.
   nav.pop();
   await tester.pumpAndSettle();
-  await _drainPosterIdleTimer(tester);
   return [for (final x in samples) x - settled];
 }
 
@@ -275,7 +270,6 @@ Future<List<double>> _leftAfterReturningSamples(
       samples.add(_pageX(tester));
     }
     await tester.pumpAndSettle();
-    await _drainPosterIdleTimer(tester);
   } else {
     final covering = PosterQuietRoute<void>(build: (_) => const Text('next'));
     nav.pushReplacement(covering);
@@ -291,7 +285,6 @@ Future<List<double>> _leftAfterReturningSamples(
     await tester.pumpAndSettle();
     nav.pop();
     await tester.pumpAndSettle();
-    await _drainPosterIdleTimer(tester);
   }
   return [for (final x in samples) x - settled];
 }
@@ -357,13 +350,6 @@ Future<NavigatorState> _hostWith(
   );
   return nav;
 }
-
-/// `ThumbnailService.resume()` re-arms the poster pool's 30s idle timer, and a
-/// timer still pending when the widget tree goes away fails the test. Firing it
-/// is the whole fix: `ThumbnailService._disposePool` disposes an empty pool and
-/// arms nothing.
-Future<void> _drainPosterIdleTimer(WidgetTester tester) =>
-    tester.pump(const Duration(seconds: 31));
 
 void main() {
   late Player? Function() productionFactory;
@@ -498,7 +484,6 @@ void main() {
 
       nav.pop();
       await tester.pumpAndSettle();
-      await _drainPosterIdleTimer(tester);
     });
 
     testWidgets('the forward step is still the platform\'s own call', (
@@ -524,7 +509,6 @@ void main() {
 
       nav.pop();
       await tester.pumpAndSettle();
-      await _drainPosterIdleTimer(tester);
     });
 
     testWidgets('a back step LEAVES the page it replaces the way a pop leaves the page it '
@@ -710,7 +694,6 @@ void main() {
         await tester.pumpAndSettle();
         nav.pop();
         await tester.pumpAndSettle();
-        await _drainPosterIdleTimer(tester);
       },
     );
 
@@ -740,7 +723,6 @@ void main() {
         await tester.pumpAndSettle();
         nav.pop();
         await tester.pumpAndSettle();
-        await _drainPosterIdleTimer(tester);
       },
     );
 
@@ -790,7 +772,6 @@ void main() {
       );
       nav.pop();
       await tester.pumpAndSettle();
-      await _drainPosterIdleTimer(tester);
     });
   });
 
@@ -835,7 +816,6 @@ void main() {
         isFalse,
         reason: 'the route is gone for real: poster work may start again',
       );
-      await _drainPosterIdleTimer(tester);
     });
 
     testWidgets('a route popped while still entering still opens the gate', (
@@ -852,7 +832,6 @@ void main() {
       await tester.pump();
       await tester.pumpAndSettle();
       expect(ThumbnailService.posterSuspended, isFalse);
-      await _drainPosterIdleTimer(tester);
     });
 
     testWidgets(
@@ -879,7 +858,6 @@ void main() {
 
         await tester.pumpAndSettle();
         expect(ThumbnailService.posterSuspended, isFalse);
-        await _drainPosterIdleTimer(tester);
       },
     );
 
@@ -913,7 +891,6 @@ void main() {
 
       nav.pop();
       await tester.pumpAndSettle();
-      await _drainPosterIdleTimer(tester);
     });
 
     testWidgets(
@@ -946,7 +923,6 @@ void main() {
 
         nav.pop();
         await tester.pumpAndSettle();
-        await _drainPosterIdleTimer(tester);
       },
     );
 
@@ -971,7 +947,6 @@ void main() {
       );
       nav.pop();
       await tester.pumpAndSettle();
-      await _drainPosterIdleTimer(tester);
     });
 
     testWidgets('the route knows what is under it, for the way out', (
@@ -1017,7 +992,6 @@ void main() {
       await tester.pumpAndSettle();
       nav.pop();
       await tester.pumpAndSettle();
-      await _drainPosterIdleTimer(tester);
     });
   });
 }

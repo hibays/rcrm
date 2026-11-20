@@ -14,8 +14,8 @@ import 'package:rcrm_gui/models/media_item.dart';
 import 'package:rcrm_gui/widgets/episode_picker_panel.dart';
 
 /// Rows are not what this file is about, and a real [VideoCard] in a test
-/// host brings a poster request with it (a 30s timer outlives the test) and a
-/// 3px overflow at this size. The sheet's own geometry is what is under test.
+/// host brings a poster request with it and a 3px overflow at this size. The
+/// sheet's own geometry is what is under test.
 const _items = <MediaItem>[];
 
 /// Long enough to have run any of the sheet's motions to its end. Derived from

@@ -17,10 +17,10 @@
 - **分级从"desktop/mobile"改为按后端命名**：`utils/poster_backend.dart` 的
   `PosterBackend` 只有两个值 —— `libmpv`（libmpv 自己渲染，iOS 以外的所有平台）
   和 `mpv`（media_kit 的 `Player.screenshot` + Rust 编码，iOS，以及没有该导出的
-  旧 bridge）。`ThumbnailService` 不再按平台分叉。
+  旧 bridge）。`ThumbnailService` 不再按平台分叉。【已 superseded：`poster_backend.dart` / `PosterBackend` 已删除；iOS 现也走 libmpv，`ThumbnailService` 只有一条后端路径】
 - **特性拆分**：新增 `libmpv-poster`（`libmpv.rs` + `libmpv_poster.rs` +
   `rcrm_generate_poster_async` + `libloading`）；原 `mpv-poster` 保持不动，仍只负责
-  iOS 的截图编码。桌面脚本默认启用 `libmpv-poster`，iOS 故意不启用。
+  iOS 的截图编码。桌面脚本默认启用 `libmpv-poster`，iOS 故意不启用。【已 superseded：`mpv-poster` 特性已删除；`libmpv-poster` 现为唯一海报后端，所有平台（含 iOS）全部启用】
 - **复用**：blank band / 不透明 alpha / WebP 编码都在 `poster.rs`，两条后端共用；
   `webp.rs` 新增 `encode_bgra`（原地编码，无通道交换）并与 `encode_rgba` 共用一个
   编码函数；`webpBufBytes` 统一了 Dart 侧所有 `WebpBuf*` 的零拷贝包装。
@@ -36,6 +36,8 @@
 - 始终保留现有 ffmpeg / media_kit 回落。
 
 ## 2. 非目标
+
+> 【已 superseded：以下三条"非目标"均已在实施中被推翻 —— ffmpeg CLI 后端已删除、iOS 已接入 libmpv、`mpv-poster` 特性已删除；见第 0 节】
 
 - 本轮不删除 ffmpeg CLI；
 - 不在 iOS 上动态加载 libmpv；
@@ -140,11 +142,7 @@
 ## 9. 启动命令
 
 ```powershell
-# 当前特性门禁（不启用新后端时）
-cargo test -p rcrm-flutter-bridge --features mpv-poster
-cargo clippy -p rcrm-flutter-bridge --features mpv-poster --all-targets
-
-# 未来新特性（实现后）
+# 当前唯一的海报后端（原 `--features mpv-poster` 两行已删除：该 Cargo 特性不存在）
 cargo test -p rcrm-flutter-bridge --features libmpv-poster
 cargo clippy -p rcrm-flutter-bridge --features libmpv-poster --all-targets
 ```

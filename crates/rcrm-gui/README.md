@@ -1,17 +1,30 @@
 # rcrm_gui
 
-A new Flutter project.
+The Flutter GUI for RCrm, an encrypted media library browser. It uses Riverpod
+for state, `media_kit` for video playback and `dart:ffi` to talk to the Rust
+`rcrm-flutter-bridge`: the bridge runs the read-only WebDAV / FTP server and
+decodes media on the fly, so no plaintext is written to disk. This project
+requires Flutter 3.50+ / Dart 3.14+ and uses the official `material_ui` package
+in place of `package:flutter/material.dart`.
 
-## Getting Started
+## Build / run
 
-This project is a starting point for a Flutter application.
+Build from the repository root using the platform scripts — see
+`../../docs/BUILDING.md` (for example
+`powershell -File ../../scripts/build_windows.ps1 -Release` or
+`../../scripts/build_android.ps1 -Release -SplitAbi`). The native bridge is
+always compiled in release mode, even for a debug Flutter build.
 
-A few resources to get you started if this is your first Flutter project:
+## Test / analyze
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+Run from this directory:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+flutter analyze lib test
+flutter test
+```
+
+## Documentation
+
+Architecture, C-ABI/ownership rules and UI guidelines live in `../../docs/`
+(`ARCHITECTURE.md`, `API_REFERENCE.md`, `DESIGN.md`, `BUILDING.md`).

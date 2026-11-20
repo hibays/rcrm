@@ -11,9 +11,10 @@ import '../services/window_drag.dart';
 /// Both platforms get the same behaviour — drag to move, double-click to
 /// maximize/restore — but Windows has no caption to press, so the move is handed
 /// to the runner ([startWindowDrag]): `WM_SYSCOMMAND` + `SC_MOVE` (what
-/// [DragToMoveArea] sends) is treated as a keyboard move and never snaps on
-/// Windows 10. Elsewhere [DragToMoveArea] is the correct implementation: X11
-/// `_NET_WM_MOVERESIZE` and macOS `performWindowDragWithEvent:`.
+/// `windowManager.startDragging()` sends) is treated as a keyboard move and
+/// never snaps on Windows 10. Elsewhere `windowManager.startDragging()` is the
+/// correct implementation: X11 `_NET_WM_MOVERESIZE` and macOS
+/// `performWindowDragWithEvent:`.
 class _DragArea extends StatelessWidget {
   final Widget child;
 

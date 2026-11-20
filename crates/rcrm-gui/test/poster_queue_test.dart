@@ -10,7 +10,7 @@
 // before enqueueing.
 //
 // The service itself cannot be driven from a test — a backend run descends into
-// a libmpv render (Rust) or a media_kit `Player`, and the one seam
+// a libmpv render (Rust), and the one seam
 // (`ThumbnailService.debugPosterLoader`) answers before the queue is touched, so
 // nothing here can observe it. That is why the decision is a pure function,
 // following `advanceScrubPreview` / `planPlayerControlBar`.

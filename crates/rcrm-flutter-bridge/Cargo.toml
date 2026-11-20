@@ -16,7 +16,8 @@ crate-type = ["cdylib", "staticlib"]
 mobile-decode = ["dep:rav1d", "dep:jxl-oxide", "dep:jxl-render", "dep:heic"]
 
 # Direct libmpv poster path: load the process's libmpv at runtime, seek with
-# `absolute+exact`, draw the frame into Rust memory with
+# `absolute+keyframes` first for large sources (falling back to `absolute+exact`
+# when the keyframe lands too early), draw the frame into Rust memory with
 # MPV_RENDER_API_TYPE_SW, and encode it in place. Every platform uses it,
 # including iOS — media_kit ships libmpv there as an embedded, code-signed
 # `Mpv.framework` (a real MH_DYLIB), which is exactly what iOS permits: the

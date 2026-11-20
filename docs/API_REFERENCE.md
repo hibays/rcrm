@@ -41,10 +41,10 @@ Rules that follow from the table:
 
 | Function | Signature | Returns |
 |----------|-----------|---------|
-| `rcrm_start_server` | `(dirs_json, passwords_json, bind_addr, port, tls_json?)` | handle (≥0) or -1 |
+| `rcrm_start_server` | `(dirs_json, password, bind_addr, port)` | always `1` (request accepted — poll `rcrm_get_server_status` for the outcome) |
 | `rcrm_stop_server` | `(handle)` | 0 OK, -1 invalid |
 | `rcrm_get_server_url` | `(handle)` | malloc'd URL string |
-| `rcrm_get_server_status` | `(handle)` | 1 running, 0 stopped, -1 invalid |
+| `rcrm_get_server_status` | `(handle)` | 0 idle, 1 starting, 2 running, -1 error, -2 locked |
 | `rcrm_get_auth_credentials` | `(handle)` | JSON `{"username":"…","password":"…"}` |
 
 ## Crypt
@@ -53,15 +53,6 @@ Rules that follow from the table:
 |----------|-----------|---------|
 | `rcrm_crypt_folder` | `(path, password, is_encrypt)` | 0 success |
 | `rcrm_last_verify` | `()` | JSON `{"encrypted":N,"locked":M}` |
-
-## Blank Frame Detection
-
-| Function | Signature | Returns |
-|----------|-----------|---------|
-
-Decodes JPEG via `zune_jpeg` (YCbCr, channel 0 = luminance). Threshold: avg
-luminance < 20 (near-black) or > 235 (near-white) = blank. Thread-safe,
-reentrant. Takes a borrowed buffer.
 
 ## Media Metadata — EXIF / track *(all platforms)*
 

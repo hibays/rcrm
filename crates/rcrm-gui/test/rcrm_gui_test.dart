@@ -4,7 +4,7 @@
 // Run:  flutter test test/rcrm_gui_test.dart
 // (`dart test` cannot load this file: webdav_client.dart imports
 // package:flutter/foundation.dart, so the chain reaches dart:ui.)
-// Widget tests live in test/widgets/ and use `flutter test`.
+// Widget tests live alongside in test/ and use `flutter test`.
 
 import 'package:test/test.dart';
 
@@ -354,27 +354,6 @@ void main() {
       final formatNames = <String, String>{};
       final label = formatNames[item.extension] ?? item.extension.toUpperCase();
       expect(label, 'XYZ');
-    });
-
-    test('none grouping puts all images in one album', () {
-      final items = [mkImage('a.jpg'), mkImage('b.png'), mkImage('c.gif')];
-
-      // Simulate _groupNone: single album with all images
-      final album = Album.fromItems(
-        name: 'All Images',
-        path: '/',
-        url: 'http://127.0.0.1:8080/',
-        items: items,
-      );
-
-      expect(album.name, 'All Images');
-      expect(album.itemCount, 3);
-      expect(album.items, items);
-    });
-
-    test('none grouping with no images returns empty', () {
-      // Simulate _groupNone with empty list
-      expect(<MediaItem>[].isEmpty, isTrue);
     });
   });
 }
