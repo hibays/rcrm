@@ -10,7 +10,10 @@ import 'package:rcrm_gui/utils/frame_ready_gate.dart';
 void main() {
   test('null and zero width do not open the gate', () async {
     var ready = 0;
-    final gate = FrameReadyGate(() => ready++, deadline: const Duration(seconds: 5));
+    final gate = FrameReadyGate(
+      () => ready++,
+      deadline: const Duration(seconds: 5),
+    );
     gate.arm();
     gate.onWidth(null);
     gate.onWidth(0);
@@ -22,7 +25,10 @@ void main() {
 
   test('a positive width opens the gate once', () async {
     var ready = 0;
-    final gate = FrameReadyGate(() => ready++, deadline: const Duration(seconds: 5));
+    final gate = FrameReadyGate(
+      () => ready++,
+      deadline: const Duration(seconds: 5),
+    );
     gate.arm();
     gate.onWidth(1280);
     expect(ready, 1);
@@ -73,7 +79,10 @@ void main() {
 
   test('a stale width after cancel cannot open the gate', () async {
     var ready = 0;
-    final gate = FrameReadyGate(() => ready++, deadline: const Duration(seconds: 5));
+    final gate = FrameReadyGate(
+      () => ready++,
+      deadline: const Duration(seconds: 5),
+    );
     gate.arm();
     gate.cancel();
     gate.onWidth(1920); // late event from the cancelled open

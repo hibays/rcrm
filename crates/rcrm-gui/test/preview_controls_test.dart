@@ -38,8 +38,11 @@ void main() {
     );
     await tester.pump();
 
-    expect(tester.takeException(), isNull,
-        reason: 'the seek bar must not overflow the preview card');
+    expect(
+      tester.takeException(),
+      isNull,
+      reason: 'the seek bar must not overflow the preview card',
+    );
     expect(find.byType(PlayerScrubBar), findsOneWidget);
   });
 }

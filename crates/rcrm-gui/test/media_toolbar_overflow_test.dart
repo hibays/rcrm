@@ -55,13 +55,14 @@ Future<void> _pump(
       builder: (context, appChild) => FlutterSmartDialog.init()(
         context,
         MediaQuery(
-          data: MediaQuery.of(context).copyWith(
-            textScaler: TextScaler.linear(textScale),
-          ),
+          data: MediaQuery.of(context)
+              .copyWith(textScaler: TextScaler.linear(textScale)),
           child: appChild!,
         ),
       ),
-      home: Scaffold(body: SizedBox(width: width, child: child)),
+      home: Scaffold(
+        body: SizedBox(width: width, child: child),
+      ),
     ),
   );
   await tester.pumpAndSettle();
@@ -202,12 +203,7 @@ void main() {
     // so the measured boundaries still hold when every label grows.
     for (final width in [320.0, 380.0, 400.0, 414.0, 460.0, 520.0, 540.0]) {
       final calls = <String>[];
-      await _pump(
-        tester,
-        _bar(calls, sort: 'duration'),
-        width,
-        textScale: 1.3,
-      );
+      await _pump(tester, _bar(calls, sort: 'duration'), width, textScale: 1.3);
       expect(
         tester.takeException(),
         isNull,
@@ -257,9 +253,20 @@ void main() {
     final calls = <String>[];
     await _pump(
       tester,
-      _bar(calls, extensions: const [
-        'mp4', 'mkv', 'avi', 'mov', 'webm', 'ts', 'flv', 'wmv', 'm4v',
-      ]),
+      _bar(
+        calls,
+        extensions: const [
+          'mp4',
+          'mkv',
+          'avi',
+          'mov',
+          'webm',
+          'ts',
+          'flv',
+          'wmv',
+          'm4v',
+        ],
+      ),
       320,
       height: 700,
     );

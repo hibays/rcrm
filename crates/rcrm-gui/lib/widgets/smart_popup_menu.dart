@@ -339,8 +339,9 @@ class _SmartMenuPanel<T> extends StatelessWidget {
     // natural size because this is a cap, not a fixed height. The 96dp leaves
     // room for the trigger and the system bars on either anchor direction.
     return ConstrainedBox(
-      constraints: (constraints ?? const BoxConstraints(minWidth: 112, maxWidth: 280))
-          .copyWith(maxHeight: MediaQuery.sizeOf(context).height - 96),
+      constraints:
+          (constraints ?? const BoxConstraints(minWidth: 112, maxWidth: 280))
+              .copyWith(maxHeight: MediaQuery.sizeOf(context).height - 96),
       child: IntrinsicWidth(stepWidth: 56, child: panel),
     );
   }

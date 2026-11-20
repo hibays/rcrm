@@ -37,12 +37,13 @@ Widget _host({
   );
 }
 
-AnimatedOpacity _videoFade(WidgetTester tester) => tester.widget<AnimatedOpacity>(
-  find.ancestor(
-    of: find.byKey(kVideo),
-    matching: find.byType(AnimatedOpacity),
-  ),
-);
+AnimatedOpacity _videoFade(WidgetTester tester) =>
+    tester.widget<AnimatedOpacity>(
+      find.ancestor(
+        of: find.byKey(kVideo),
+        matching: find.byType(AnimatedOpacity),
+      ),
+    );
 
 void main() {
   testWidgets('poster is the persistent bottom layer, video above it', (
@@ -55,10 +56,16 @@ void main() {
     final stack = tester.widget<Stack>(
       find.ancestor(of: find.byKey(kPoster), matching: find.byType(Stack)),
     );
-    expect(stack.children[0], isA<IgnorePointer>(),
-        reason: 'the bottom layer is the hit-transparent poster');
-    expect(stack.children[1], isA<AnimatedOpacity>(),
-        reason: 'the fading video layer sits above the poster');
+    expect(
+      stack.children[0],
+      isA<IgnorePointer>(),
+      reason: 'the bottom layer is the hit-transparent poster',
+    );
+    expect(
+      stack.children[1],
+      isA<AnimatedOpacity>(),
+      reason: 'the fading video layer sits above the poster',
+    );
   });
 
   testWidgets('before a frame the video is transparent, showing the poster', (
@@ -95,8 +102,11 @@ void main() {
     await tester.pumpWidget(_host(frameReady: true));
     await tester.pump(const Duration(milliseconds: 300));
     final after = tester.element(find.byKey(kPoster));
-    expect(identical(before, after), isTrue,
-        reason: 'poster must not remount when the video fades in');
+    expect(
+      identical(before, after),
+      isTrue,
+      reason: 'poster must not remount when the video fades in',
+    );
   });
 
   testWidgets('the whole preview is one ExcludeSemantics boundary', (
@@ -126,7 +136,10 @@ void main() {
   testWidgets('the tap surface covers the whole card', (tester) async {
     await tester.pumpWidget(_host(frameReady: false));
     final positioned = tester.widget<Positioned>(
-      find.ancestor(of: find.byType(GestureDetector), matching: find.byType(Positioned)),
+      find.ancestor(
+        of: find.byType(GestureDetector),
+        matching: find.byType(Positioned),
+      ),
     );
     expect(positioned.left, 0);
     expect(positioned.top, 0);

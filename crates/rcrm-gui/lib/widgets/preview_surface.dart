@@ -89,7 +89,8 @@ class PreviewSurface extends StatelessWidget {
             onTap: onTap,
             onLongPressStart: onMenu == null
                 ? null
-                : (d) => requestItemMenu(onMenu, d.globalPosition, haptic: true),
+                : (d) =>
+                      requestItemMenu(onMenu, d.globalPosition, haptic: true),
             onSecondaryTapDown: onMenu == null
                 ? null
                 : (d) => requestItemMenu(onMenu, d.globalPosition),

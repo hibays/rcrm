@@ -55,7 +55,6 @@ void main() {
     );
   });
 
-
   testWidgets('the preview subtree is hidden from the semantics tree', (
     tester,
   ) async {

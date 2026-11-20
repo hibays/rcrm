@@ -403,10 +403,7 @@ class MediaToolbar extends StatelessWidget {
                 : null,
           ),
           const SizedBox(width: 8),
-          if (icon != null) ...[
-            Icon(icon, size: 16),
-            const SizedBox(width: 8),
-          ],
+          if (icon != null) ...[Icon(icon, size: 16), const SizedBox(width: 8)],
           // No Expanded: IntrinsicWidth sizes the panel to its content, and an
           // Expanded child lets the label stretch the row past the panel's
           // 280dp cap — the text then paints outside the clipped surface
@@ -435,20 +432,24 @@ class MediaToolbar extends StatelessWidget {
         extensions != null &&
         extensions!.isNotEmpty &&
         onFilterChanged != null) {
-      items.add(_overflowRow(
-        context,
-        action: const _OverflowAction(_OverflowKind.filter),
-        label: 'All formats',
-        selected: currentFilter == null || currentFilter!.isEmpty,
-        icon: Icons.filter_list,
-      ));
-      for (final ext in extensions!) {
-        items.add(_overflowRow(
+      items.add(
+        _overflowRow(
           context,
-          action: _OverflowAction(_OverflowKind.filter, value: ext),
-          label: ext.toUpperCase(),
-          selected: ext == currentFilter,
-        ));
+          action: const _OverflowAction(_OverflowKind.filter),
+          label: 'All formats',
+          selected: currentFilter == null || currentFilter!.isEmpty,
+          icon: Icons.filter_list,
+        ),
+      );
+      for (final ext in extensions!) {
+        items.add(
+          _overflowRow(
+            context,
+            action: _OverflowAction(_OverflowKind.filter, value: ext),
+            label: ext.toUpperCase(),
+            selected: ext == currentFilter,
+          ),
+        );
       }
     }
 
@@ -456,57 +457,75 @@ class MediaToolbar extends StatelessWidget {
     // the switch is always in the menu at a narrow width.
     if (onToggleTagBar != null) {
       final selected = tagBarVisible ?? false;
-      items.add(_overflowRow(
-        context,
-        action: const _OverflowAction(_OverflowKind.tag),
-        label: selected ? 'Hide tag filters' : 'Show tag filters',
-        selected: selected,
-        icon: Icons.tag,
-      ));
+      items.add(
+        _overflowRow(
+          context,
+          action: const _OverflowAction(_OverflowKind.tag),
+          label: selected ? 'Hide tag filters' : 'Show tag filters',
+          selected: selected,
+          icon: Icons.tag,
+        ),
+      );
     }
 
     // Sort direction — the inline arrow is gone in overflow mode.
-    items.add(_overflowRow(
-      context,
-      action: const _OverflowAction(_OverflowKind.sortDirection),
-      label: isAscending ? 'Sort descending' : 'Sort ascending',
-      icon: isAscending ? Icons.arrow_downward : Icons.arrow_upward,
-    ));
+    items.add(
+      _overflowRow(
+        context,
+        action: const _OverflowAction(_OverflowKind.sortDirection),
+        label: isAscending ? 'Sort descending' : 'Sort ascending',
+        icon: isAscending ? Icons.arrow_downward : Icons.arrow_upward,
+      ),
+    );
 
     // Organize, when its inline menu is gone. The same three literal icons as
     // the inline menu keep the glyphs in the release font.
     if (currentGrouping != null && onGroupingChanged != null) {
-      items.add(_overflowRow(
-        context,
-        action: const _OverflowAction(_OverflowKind.organize, value: 'none'),
-        label: 'Ungrouped',
-        selected: currentGrouping == 'none',
-        icon: Icons.apps,
-      ));
-      items.add(_overflowRow(
-        context,
-        action: const _OverflowAction(_OverflowKind.organize, value: 'folder'),
-        label: 'By folder',
-        selected: currentGrouping == 'folder',
-        icon: Icons.folder,
-      ));
-      items.add(_overflowRow(
-        context,
-        action: const _OverflowAction(_OverflowKind.organize, value: 'format'),
-        label: 'By format',
-        selected: currentGrouping == 'format',
-        icon: Icons.category,
-      ));
+      items.add(
+        _overflowRow(
+          context,
+          action: const _OverflowAction(_OverflowKind.organize, value: 'none'),
+          label: 'Ungrouped',
+          selected: currentGrouping == 'none',
+          icon: Icons.apps,
+        ),
+      );
+      items.add(
+        _overflowRow(
+          context,
+          action: const _OverflowAction(
+            _OverflowKind.organize,
+            value: 'folder',
+          ),
+          label: 'By folder',
+          selected: currentGrouping == 'folder',
+          icon: Icons.folder,
+        ),
+      );
+      items.add(
+        _overflowRow(
+          context,
+          action: const _OverflowAction(
+            _OverflowKind.organize,
+            value: 'format',
+          ),
+          label: 'By format',
+          selected: currentGrouping == 'format',
+          icon: Icons.category,
+        ),
+      );
     }
 
     // Grid/List, when the inline toggle is gone.
     if (isGrid != null && onLayoutToggle != null) {
-      items.add(_overflowRow(
-        context,
-        action: const _OverflowAction(_OverflowKind.layout),
-        label: isGrid! ? 'List view' : 'Grid view',
-        icon: isGrid! ? Icons.list : Icons.grid_view,
-      ));
+      items.add(
+        _overflowRow(
+          context,
+          action: const _OverflowAction(_OverflowKind.layout),
+          label: isGrid! ? 'List view' : 'Grid view',
+          icon: isGrid! ? Icons.list : Icons.grid_view,
+        ),
+      );
     }
 
     // Column count — and only when its range holds more than one value, the
@@ -515,12 +534,14 @@ class MediaToolbar extends StatelessWidget {
         currentColumns != null &&
         maxColumns > minColumns) {
       for (var c = minColumns; c <= maxColumns; c++) {
-        items.add(_overflowRow(
-          context,
-          action: _OverflowAction(_OverflowKind.columns, value: '$c'),
-          label: '$c column${c == 1 ? '' : 's'}',
-          selected: c == currentColumns,
-        ));
+        items.add(
+          _overflowRow(
+            context,
+            action: _OverflowAction(_OverflowKind.columns, value: '$c'),
+            label: '$c column${c == 1 ? '' : 's'}',
+            selected: c == currentColumns,
+          ),
+        );
       }
     }
 
