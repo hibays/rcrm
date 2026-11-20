@@ -31,6 +31,7 @@ crates/rcrm-gui/android/app/src/main/jniLibs/
 
 .reasonix/
 AGENTS.md
+opencode.jsonc
 
 crates/rcrm-gui/android/build/reports/problems
 crates/rcrm-gui/android/.kotlin/sessions/
