@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -38,19 +38,19 @@ struct ServerState {
 /// This replaces the previous scatter of `SERVER` plus five cache statics.
 /// `start()` and `stop()` operate on this one object behind a lock, which is
 /// what makes the start/stop race impossible: a `stop()` that tears the server
-/// down and an in-flight `start_body` that is about to *register* a server are
+/// down and an in-flight `run_start` that is about to *register* a server are
 /// mutually exclusive under the same `Mutex`. Either `stop()` sees the server
-/// and shuts it down, or `start_body` registers it — and `stop()` (which needs
+/// and shuts it down, or `run_start` registers it — and `stop()` (which needs
 /// the lock to look) is blocked until that registration completes, after which
 /// it tears the server down. A server can never be left running after `stop()`
 /// returns.
 ///
 /// `cancel` is the one bit of shared state used to abort a still-scanning
 /// startup *without* blocking `stop()`: `stop()` flips it and returns
-/// immediately; `start_body` checks it at its yield points and self-destructs
+/// immediately; `run_start` checks it at its yield points and self-destructs
 /// before binding a server. It is owned here (and cloned into the task), not a
-/// free-floating global — the same cancellation token the running server
-/// already uses (`ServerState.shutdown`).
+/// free-floating global. A running server has a separate `shutdown` flag in
+/// `ServerState`, set at the same time but consumed by its own serve thread.
 struct Session {
 	/// Background `start()` task, present only while it is alive. `start()`
 	/// owns this slot: it stores the `JoinHandle` after spawning and takes it
@@ -64,11 +64,14 @@ struct Session {
 	cancel: Arc<AtomicBool>,
 	/// All encrypted file paths + mount index, set after first directory scan.
 	scanned: Vec<(usize, PathBuf)>,
-	/// Files that are still locked (no accepted key can open them).
+	/// Files that are still locked (no key in the keyring can open them).
 	locked: Vec<PathBuf>,
-	/// Keys that have successfully opened at least one file.
-	accepted: Vec<Zeroizing<String>>,
-	/// Original canonicalized directory paths, cached after first scan.
+	/// The one keyring that owns every derived key. Lives across the
+	/// start → locked → start attempts so an added password costs exactly one
+	/// Argon2id derivation, and is moved into the server once it starts.
+	keyring: Option<Manager>,
+	/// Original canonicalized directory paths — the session's identity. A
+	/// changed dir list invalidates every cache.
 	cached_dirs: Vec<PathBuf>,
 	/// How many files have been unlocked so far.
 	unlocked: u64,
@@ -82,27 +85,92 @@ impl Session {
 			cancel: Arc::new(AtomicBool::new(false)),
 			scanned: Vec::new(),
 			locked: Vec::new(),
-			accepted: Vec::new(),
+			keyring: None,
 			cached_dirs: Vec::new(),
 			unlocked: 0,
 		}
 	}
 
-	/// Clear the scan/unlock caches. Used both when tearing a session down and
-	/// when an in-flight startup self-destructs.
+	/// Clear the whole session: scan caches and keys. Used when tearing a
+	/// session down, on a takeover of a running server, and when an in-flight
+	/// startup self-destructs.
 	fn reset_caches(&mut self) {
 		self.scanned.clear();
 		self.locked.clear();
-		self.accepted.clear();
+		self.keyring = None;
 		self.cached_dirs.clear();
 		self.unlocked = 0;
 	}
 }
 
 static SESSION: Lazy<Mutex<Session>> = Lazy::new(|| Mutex::new(Session::new()));
-/// 0=idle, 1=starting (bg thread), 2=running, -1=error, -2=locked
-static START_STATUS: AtomicI32 = AtomicI32::new(0);
 static LAST_ERROR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
+
+/// A password buffer Rust allocated and Dart writes into. The address is the
+/// opaque identity handed across the ABI; the bytes and their exact length
+/// never leave this module.
+struct PasswordBuffer {
+	addr: usize,
+	bytes: Zeroizing<Vec<u8>>,
+}
+
+/// The single outstanding password buffer. Allocating a new one replaces (and
+/// zeroizes) any previous buffer, so a buffer orphaned by a Dart-side throw
+/// cannot accumulate. Only the address crosses the ABI — no length, and no
+/// `Vec::from_raw_parts` on a caller-supplied size.
+static PENDING_PASSWORD: Lazy<Mutex<Option<PasswordBuffer>>> = Lazy::new(|| Mutex::new(None));
+
+/// Codes pushed to Dart through the registered server-event listener. The
+/// `PROGRESS` is feedback-only and never ends a start attempt.
+pub(crate) mod event {
+	pub const PROGRESS: i32 = 1;
+	pub const STOPPED: i32 = 0;
+	pub const ERROR: i32 = -1;
+	pub const LOCKED: i32 = -2;
+	pub const RUNNING: i32 = 2;
+}
+
+/// All event data is passed as plain integers — no heap allocation on either
+/// side, so the callback has no string to free and no leak path. Meanings by
+/// code: PROGRESS(a=phase 0 scan / 1 verify, b=done, c=total), LOCKED(a=encrypted,
+/// b=locked, c=unlocked), others ignore the values.
+type ServerEventFn = unsafe extern "C" fn(i32, i32, i32, i32);
+static SERVER_EVENT_CB: Lazy<Mutex<Option<ServerEventFn>>> = Lazy::new(|| Mutex::new(None));
+
+/// Register the one Dart listener for start progress and terminal outcomes.
+/// Passing `None` unregisters it; the pointer is copied into Rust and never
+/// stored as a borrowed reference.
+pub fn register_event_callback(cb: Option<ServerEventFn>) {
+	*SERVER_EVENT_CB.lock() = cb;
+}
+
+/// Push one event. Pure integers — no allocation, nothing for Dart to free.
+fn emit_event(code: i32, a: i32, b: i32, c: i32) {
+	let cb = *SERVER_EVENT_CB.lock();
+	if let Some(f) = cb {
+		unsafe { f(code, a, b, c) };
+	}
+}
+
+/// Push a terminal event to the Dart listener, so the UI never waits for a
+/// poll tick.
+fn finish(code: i32) {
+	emit_event(code, 0, 0, 0);
+}
+
+/// The locked verdict carries the three counts the setup screen needs to
+/// choose its message.
+fn finish_locked() {
+	let (encrypted, locked, unlocked) = {
+		let g = SESSION.lock();
+		(
+			g.scanned.len() as i32,
+			g.locked.len() as i32,
+			g.unlocked as i32,
+		)
+	};
+	emit_event(event::LOCKED, encrypted, locked, unlocked);
+}
 
 pub(crate) fn set_error(msg: impl Into<String>) {
 	*LAST_ERROR.lock() = Some(msg.into());
@@ -118,11 +186,34 @@ pub fn last_error() -> *mut c_char {
 	}
 }
 
-pub fn last_verify() -> *mut c_char {
-	let total = SESSION.lock().scanned.len() as u64;
-	let locked = SESSION.lock().locked.len() as u64;
-	let json = format!(r#"{{"encrypted":{},"locked":{}}}"#, total, locked);
-	CString::new(json).unwrap_or_default().into_raw()
+/// Allocate a zeroed buffer of exactly `len` bytes for Dart to write the
+/// password into. Rust keeps the allocation and its length; `start()` looks it
+/// up by address and takes ownership back. No length crosses the ABI, so a
+/// mismatched `len` cannot cause an out-of-bounds zeroize or free. Returns
+/// null only when `len == 0` (empty password).
+pub fn password_buffer(len: usize) -> *mut u8 {
+	if len == 0 {
+		return std::ptr::null_mut();
+	}
+	let mut bytes = Zeroizing::new(vec![0u8; len]);
+	let addr = bytes.as_mut_ptr() as usize;
+	// Replacing the entry drops the old buffer, zeroizing any orphan left by a
+	// previously failed start.
+	*PENDING_PASSWORD.lock() = Some(PasswordBuffer { addr, bytes });
+	addr as *mut u8
+}
+
+/// Take back the buffer Dart wrote into. `None` means it was never allocated
+/// (or was already consumed) — a contract violation, surfaced as an error.
+fn take_password(ptr: *const u8) -> Option<Zeroizing<Vec<u8>>> {
+	let mut pending = PENDING_PASSWORD.lock();
+	if ptr.is_null() {
+		return None;
+	}
+	if pending.as_ref().is_none_or(|buf| buf.addr != ptr as usize) {
+		return None;
+	}
+	pending.take().map(|buf| buf.bytes)
 }
 
 fn random_string(len: usize) -> String {
@@ -136,60 +227,95 @@ fn random_string(len: usize) -> String {
 // Public API
 // =======================
 
-/// Build a Manager holding every provided key. Used for both verification
-/// and serving so one Manager covers files with different passwords.
-///
-/// Duplicates are dropped: the multi-password flow concatenates the already
-/// accepted keys with the newly typed ones, and re-typing an accepted
-/// password would otherwise register the same index twice — which `Manager`
-/// treats as a programming error and panics on.
-fn build_manager(passwords: &[Zeroizing<String>]) -> Manager {
-	let mut unique: Vec<&[u8]> = Vec::with_capacity(passwords.len());
-	for p in passwords {
-		let bytes = p.as_bytes();
-		let idx = rcrm_core::key_index(bytes);
-		if !unique.iter().any(|q| rcrm_core::key_index(q) == idx) {
-			unique.push(bytes);
+/// An empty keyring. The parameters are fixed by the on-disk format: 2048 is
+/// the head calibration and 4 is the worker count used by the CLI's `serve`.
+fn new_keyring() -> Manager {
+	Manager::new(true, true, 2048, rcrm_core::is_supported_file, 4, None)
+}
+
+/// Owns the keyring while a startup attempt runs. A normal exit (locked, or a
+/// panic) returns the manager to `SESSION` so keys the user paid to derive
+/// survive another attempt. A cancel/stop leaves `cancel` set, so the guard
+/// drops the manager instead — its locked pages zeroize on drop.
+struct KeyringGuard {
+	manager: Option<Manager>,
+	cancel: Arc<AtomicBool>,
+}
+
+impl KeyringGuard {
+	/// Emit a terminal verdict only while this attempt is still the current
+	/// one. A superseded attempt must stay silent: its event would otherwise
+	/// land on the newer attempt's subscriber and drive the wrong state (F2).
+	fn verdict(&self, code: i32) {
+		if !self.cancel.load(Ordering::SeqCst) {
+			finish(code);
 		}
 	}
 
-	let mut it = unique.into_iter();
-	let first = it.next();
-	let mut manager = Manager::new(true, true, 2048, rcrm_core::is_supported_file, 4, first);
-	for p in it {
-		manager.use_added_key(p);
+	fn verdict_locked(&self) {
+		if self.cancel.load(Ordering::SeqCst) {
+			return;
+		}
+		finish_locked();
 	}
-	manager
 }
 
-/// Start the server. First call: scans directories, caches paths, verifies
-/// all files against the provided passwords. Subsequent calls with additional
-/// passwords: only verifies the NEW password against still-locked files.
-/// When all files are unlocked, starts the WebDAV server.
-pub fn start(dirs_json: &str, passwords: &[Zeroizing<String>], bind_addr: &str, port: u16) -> i32 {
+impl Drop for KeyringGuard {
+	fn drop(&mut self) {
+		if let Some(manager) = self.manager.take()
+			&& !self.cancel.load(Ordering::SeqCst)
+		{
+			SESSION.lock().keyring = Some(manager);
+		}
+	}
+}
+
+/// Parse and canonicalize the directory list passed over FFI. Returns the
+/// error text (not `io::Error`) because this is reported through the event
+/// channel. A missing/non-directory path is rejected before any cache is
+/// touched, so a bad `dirs_json` can never poison the session.
+fn canonical_dirs(dirs_json: &str) -> Result<Vec<PathBuf>, String> {
+	let dirs: Vec<String> =
+		serde_json::from_str(dirs_json).map_err(|e| format!("Invalid dirs JSON: {e}"))?;
+	let mut out = Vec::with_capacity(dirs.len());
+	for d in dirs {
+		let path = dunce::canonicalize(&d).unwrap_or_else(|_| PathBuf::from(&d));
+		if !path.exists() {
+			return Err(format!("Dir not found: {}", path.display()));
+		}
+		if !path.is_dir() {
+			return Err(format!("Not a dir: {}", path.display()));
+		}
+		out.push(path);
+	}
+	Ok(out)
+}
+
+/// Start the server. Scans directories once, derives the newly supplied
+/// password into the persistent keyring, then verifies the still-locked files
+/// with every key held. When all files are unlocked, starts the `WebDAV` server.
+/// `password` is the pointer from `rcrm_password_buffer`, or null for plaintext.
+pub fn start(dirs_json: &str, password: *const u8, bind_addr: &str, port: u16) -> i32 {
 	clear_error();
 
-	// Keep passwords inside Zeroizing the whole way across the thread
-	// boundary: never copy them into a plain String (which would leave an
-	// uncleaned copy in the heap).
-	let pw_vec: Vec<Zeroizing<String>> = passwords
-		.iter()
-		.map(|z| Zeroizing::new(z.as_str().to_string()))
-		.collect();
-	let dirs_owned = dirs_json.to_string();
+	// Validate inputs first — pure checks, no session mutation. The single
+	// teardown below runs regardless of the outcome, so a rejected start still
+	// leaves no prior server or in-flight attempt behind.
+	let dirs = canonical_dirs(dirs_json);
+	let password = if password.is_null() {
+		Ok(Zeroizing::new(Vec::new())) // plaintext folders
+	} else {
+		take_password(password)
+			.ok_or_else(|| "password buffer was not allocated by password_buffer()".to_string())
+	};
 	let bind_addr_owned = bind_addr.to_string();
 
-	START_STATUS.store(1, Ordering::SeqCst);
-
 	// Take over any prior session so a fresh start never stacks a second
-	// server on the same files. Resetting the caches is *conditional*: only
-	// when we actually tore down a running server. The multi-password flow
-	// (start → locked → start with another key) has no server running between
-	// attempts, so its incremental scan + still-locked set + accumulated
-	// accepted keys must be preserved — re-scanning and re-verifying the whole
-	// library on every added key would be a serious regression for large
-	// libraries. (See `library_setup_screen._connect`: it passes the full
-	// password union, but the per-attempt cost is dominated by the scan.)
+	// server. Caches are reset when a running server was torn down OR when the
+	// directory set changed. For the SAME library across locked attempts there
+	// is no server running, so the incremental scan + still-locked set + derived
+	// keyring are preserved — re-deriving every accepted key on every attempt
+	// would be a serious regression for large libraries.
 	{
 		let (took_over, startup) = {
 			let mut g = SESSION.lock();
@@ -222,103 +348,133 @@ pub fn start(dirs_json: &str, passwords: &[Zeroizing<String>], bind_addr: &str, 
 				took_over = true;
 			}
 		}
+		// A fresh run gets a NEW cancel token: a stale `stop()` holding the
+		// previous Arc cannot cancel this attempt. Reset when a server was
+		// taken over or the directory set changed (F1), or when validation
+		// failed — in all cases the prior session is no longer usable.
+		let cancel = Arc::new(AtomicBool::new(false));
 		let mut g = SESSION.lock();
-		if took_over {
+		let dirs_changed = match &dirs {
+			Ok(d) => g.cached_dirs != *d,
+			Err(_) => true,
+		};
+		if took_over || dirs_changed {
 			g.reset_caches();
 		}
-		// A fresh run starts with cancellation cleared.
-		g.cancel.store(false, Ordering::SeqCst);
+		g.cancel = cancel;
 	}
 
-	let cancel = SESSION.lock().cancel.clone();
+	// Now surface any validation failure. The session is already clean.
+	let dirs = match dirs {
+		Ok(d) => d,
+		Err(e) => {
+			set_error(e);
+			finish(event::ERROR);
+			return 1;
+		}
+	};
+	let password = match password {
+		Ok(p) => p,
+		Err(e) => {
+			set_error(e);
+			finish(event::ERROR);
+			return 1;
+		}
+	};
+
+	// Move the persistent keyring into the startup task. The takeover above
+	// may have cleared it (new library), which is why this happens after it.
+	let (keyring, cancel) = {
+		let mut g = SESSION.lock();
+		(g.keyring.take(), Arc::clone(&g.cancel))
+	};
 
 	// `start()` owns the `startup` handle slot: store it now so a later
-	// takeover can join this task.
-	let handle = thread::Builder::new()
+	// takeover can join this task. Panic handling lives inside `start_body`,
+	// where it goes through the same `KeyringGuard::verdict` as every other
+	// terminal — so it needs no second handle to the cancel token.
+	let spawned = thread::Builder::new()
 		.name("rcrm-startup".into())
 		.spawn(move || {
-			// A panic here would leave the Dart side polling "starting"
-			// forever — `stop()` waits for a terminal status on the UI
-			// thread.
-			let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-				start_body(pw_vec, dirs_owned, bind_addr_owned, port, cancel)
-			}));
-			if let Err(payload) = outcome {
-				// Surface the panic text: the one that can realistically
-				// reach here is "Index (...) of key exists!".
-				let detail = if let Some(s) = payload.downcast_ref::<&str>() {
-					(*s).to_string()
-				} else if let Some(s) = payload.downcast_ref::<String>() {
-					s.clone()
-				} else {
-					"unknown panic".to_string()
-				};
-				set_error(format!(
-					"Internal error while starting the server: {detail}"
-				));
-				START_STATUS.store(-1, Ordering::SeqCst);
-			}
+			start_body(
+				KeyringGuard {
+					manager: keyring,
+					cancel,
+				},
+				password,
+				dirs,
+				&bind_addr_owned,
+				port,
+			);
 			// The startup task is done. It never touches `startup` itself; the
 			// slot stays set (a finished handle, harmless) until the next
 			// `start()` reaps it, or reflects a still-running task while alive.
-		})
-		.expect("spawn startup");
-	SESSION.lock().startup = Some(handle);
+		});
+	// A spawn failure must still emit a terminal event, or Dart's
+	// `terminal.future` hangs forever. On error the closure (and with it the
+	// `Zeroizing` password and keyring) is dropped, so nothing leaks.
+	match spawned {
+		Ok(handle) => SESSION.lock().startup = Some(handle),
+		Err(e) => {
+			set_error(format!("failed to spawn startup thread: {e}"));
+			finish(event::ERROR);
+		}
+	}
 
 	1
 }
 
-/// The startup sequence that runs on the background thread.
-///
-/// Split out of `start()` so it can run under `catch_unwind`: a panic must
-/// still leave `START_STATUS` on a terminal value. `cancel` lets `stop()` abort
-/// an in-flight startup without blocking: we check it at the points where we
-/// could otherwise go on to bind and serve.
+/// Entry point of the startup thread. The guard stays here (borrowed by the
+/// work below) so both normal and panic terminals go through one
+/// `KeyringGuard::verdict` — a cancelled attempt never emits into a newer
+/// attempt's subscriber, and no second cancel handle is needed.
 fn start_body(
-	passwords: Vec<Zeroizing<String>>,
-	dirs_json: String,
-	bind_addr: String,
+	mut keyring: KeyringGuard,
+	password: Zeroizing<Vec<u8>>,
+	dirs: Vec<PathBuf>,
+	bind_addr: &str,
 	port: u16,
-	cancel: Arc<AtomicBool>,
 ) {
+	let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		run_start(&mut keyring, password, dirs, bind_addr, port);
+	}));
+	if let Err(payload) = outcome {
+		// The panic text that can realistically reach here is
+		// "Index (...) of key exists!" from a duplicate key index.
+		let detail = if let Some(s) = payload.downcast_ref::<&str>() {
+			(*s).to_string()
+		} else if let Some(s) = payload.downcast_ref::<String>() {
+			s.clone()
+		} else {
+			"unknown panic".to_string()
+		};
+		set_error(format!(
+			"Internal error while starting the server: {detail}"
+		));
+		keyring.verdict(event::ERROR);
+	}
+}
+
+/// The startup sequence. `cancel` lets `stop()` abort an in-flight startup
+/// without blocking: we check it at the points where we could otherwise go on
+/// to bind and serve.
+fn run_start(
+	keyring: &mut KeyringGuard,
+	password: Zeroizing<Vec<u8>>,
+	dirs: Vec<PathBuf>,
+	bind_addr: &str,
+	port: u16,
+) {
+	emit_event(event::PROGRESS, 0, 0, 0);
+
 	// --- Step 1: scan directories (once) ---
-	// The cache lives in `SESSION`. We don't hold the lock across the
-	// (possibly long) directory walk: peek, drop, scan into locals, write back.
-	// This is what lets `stop()` set `cancel` and return immediately even while
-	// we are still scanning.
+	// `dirs` was parsed and canonicalized in `start()`. The cache lives in
+	// `SESSION`; we don't hold the lock across the (possibly long) walk, which
+	// is what lets `stop()` cancel and return immediately.
 	let all_paths = {
 		let g = SESSION.lock();
-		if !g.scanned.is_empty() {
-			g.scanned.clone()
-		} else {
+		if g.scanned.is_empty() {
 			drop(g);
-			let dirs: Vec<String> = match serde_json::from_str(&dirs_json) {
-				Ok(d) => d,
-				Err(e) => {
-					set_error(format!("Invalid dirs JSON: {e}"));
-					START_STATUS.store(-1, Ordering::SeqCst);
-					return;
-				}
-			};
-			let dirs: Vec<PathBuf> = dirs
-				.into_iter()
-				.map(|d| {
-					dunce::canonicalize(PathBuf::from(&d)).unwrap_or_else(|_| PathBuf::from(&d))
-				})
-				.collect();
-			for d in &dirs {
-				if !d.exists() {
-					set_error(format!("Dir not found: {}", d.display()));
-					START_STATUS.store(-1, Ordering::SeqCst);
-					return;
-				}
-				if !d.is_dir() {
-					set_error(format!("Not a dir: {}", d.display()));
-					START_STATUS.store(-1, Ordering::SeqCst);
-					return;
-				}
-			}
-			// Scan once, cache forever
 			let mut all: Vec<(usize, PathBuf)> = Vec::new();
 			for (idx, d) in dirs.iter().enumerate() {
 				let (_n, enc) = rcrm_core::resolve_ne_path_from_dir_with_progress(d, |_| {});
@@ -327,10 +483,10 @@ fn start_body(
 				}
 			}
 			let mut g = SESSION.lock();
-			if g.scanned.is_empty() {
-				g.scanned = all;
-				g.cached_dirs = dirs.clone();
-			}
+			g.scanned = all;
+			g.cached_dirs = dirs;
+			g.scanned.clone()
+		} else {
 			g.scanned.clone()
 		}
 	};
@@ -338,15 +494,30 @@ fn start_body(
 	// A stop() may have arrived while we scanned. Bail before doing any
 	// irreversible work — no server has been created, so there is nothing to
 	// tear down beyond the (already discarded) scan cache.
-	if cancel.load(Ordering::SeqCst) {
-		let mut g = SESSION.lock();
-		g.reset_caches();
-		START_STATUS.store(0, Ordering::SeqCst);
+	if keyring.cancel.load(Ordering::SeqCst) {
+		SESSION.lock().reset_caches();
+		// Stay silent: a cancelled start is either replaced by a newer start
+		// (which emits its own verdict) or followed by Dart's own state reset.
+		// A STOPPED here would land on the newer attempt's subscriber (F2).
 		return;
 	}
 
-	// --- Step 2: try NEW passwords against locked files ---
-	// On first call, LOCKED_PATHS starts empty — move all files there.
+	// --- Step 2: derive ONLY this newly typed password into the keyring ---
+	// Keys already in the keyring keep their derived pages across attempts:
+	// adding the Nth password costs one Argon2id, never N. A repeated password
+	// is skipped by index instead of panicking inside `Manager`.
+	let manager = keyring.manager.get_or_insert_with(new_keyring);
+	if !password.is_empty() {
+		let idx = rcrm_core::key_index(password.as_slice());
+		if !manager.has_key_index(idx) {
+			manager.use_added_key(password.as_slice());
+		}
+	}
+	// The plaintext is no longer needed: wipe it now rather than keeping it
+	// alive through the whole scan + verification phase.
+	drop(password);
+
+	// On first call, the locked set starts empty — move all files there.
 	{
 		let mut g = SESSION.lock();
 		if g.locked.is_empty() {
@@ -356,28 +527,34 @@ fn start_body(
 		}
 	}
 
-	let all_keys: Vec<Zeroizing<String>> = {
-		let g = SESSION.lock();
-		let mut keys = g.accepted.clone();
-		keys.extend(passwords.clone());
-		keys
-	};
-	let manager = build_manager(&all_keys);
-
-	// Verify remaining locked files
+	// Verify remaining locked files, reporting progress to Dart as we go.
 	let locked_snapshot = SESSION.lock().locked.clone();
+	let total = locked_snapshot.len();
+	emit_event(event::PROGRESS, 1, 0, total as i32);
+	let step = (total / 50).max(1);
 	let mut still_locked: Vec<PathBuf> = Vec::new();
 	let mut newly_unlocked = 0u64;
 
-	for fp in &locked_snapshot {
+	for (i, fp) in locked_snapshot.iter().enumerate() {
 		let ok = std::fs::File::open(fp)
 			.ok()
-			.and_then(|mut f| manager.read_file_header_any_key(&mut f).ok())
+			.and_then(|mut f| {
+				keyring
+					.manager
+					.as_ref()
+					.expect("keyring initialized above")
+					.read_file_header_any_key(&mut f)
+					.ok()
+			})
 			.is_some();
 		if ok {
 			newly_unlocked += 1;
 		} else {
 			still_locked.push(fp.clone());
+		}
+		let done = i + 1;
+		if done % step == 0 || done == total {
+			emit_event(event::PROGRESS, 1, done as i32, total as i32);
 		}
 	}
 
@@ -388,43 +565,36 @@ fn start_body(
 	}
 
 	let remaining_locked = SESSION.lock().locked.len() as u64;
-	// On first attempt: if no files opened, password is wrong
+	// On first attempt: if no files opened, password is wrong.
 	if newly_unlocked == 0 && SESSION.lock().unlocked == 0 {
-		START_STATUS.store(-2, Ordering::SeqCst);
+		keyring.verdict_locked();
 		return;
 	}
 
-	// If some files were unlocked this round, save the keys that worked
-	if newly_unlocked > 0 {
-		SESSION.lock().accepted.extend(passwords);
-	}
-
-	// Still locked? Need more passwords
+	// Still locked? Need more passwords. The event carries the counts, so Dart
+	// needs no extra FFI round-trip.
 	if remaining_locked > 0 {
-		// Return -2 so Dart knows some files are still locked.
-		// The `last_verify()` now reports `encrypted=total, locked=remaining`.
-		START_STATUS.store(-2, Ordering::SeqCst);
+		keyring.verdict_locked();
 		return;
 	}
 
 	// Guard against a stop() that landed during verification: if cancellation
 	// was requested we must not bind a server the UI believes is stopped.
-	if cancel.load(Ordering::SeqCst) {
-		let mut g = SESSION.lock();
-		g.reset_caches();
-		START_STATUS.store(0, Ordering::SeqCst);
+	if keyring.cancel.load(Ordering::SeqCst) {
+		SESSION.lock().reset_caches();
+		// Stay silent — see the cancel check above.
 		return;
 	}
 
 	// --- Step 3: all files unlocked, start server ---
-	// Reuse Step 2's manager: it already holds the accepted keys
-	// (ACCEPTED_KEYS was extended above), and rebuilding it would run the
-	// whole Argon2id derivation a second time.
+	// Move the keyring into the server: its keys are already derived, and the
+	// server is the only owner from here. The guard sees None and does not put
+	// it back into SESSION.
 	let session_key = match rcrm_core::SessionKey::generate() {
 		Ok(k) => Arc::new(k),
 		Err(e) => {
 			set_error(format!("mlock failed: {e}"));
-			START_STATUS.store(-1, Ordering::SeqCst);
+			keyring.verdict(event::ERROR);
 			return;
 		}
 	};
@@ -433,7 +603,12 @@ fn start_body(
 
 	let mount_names = generate_mount_names(&dirs);
 	let cache = Arc::new(FileCache::new());
-	let manager = Arc::new(manager);
+	let manager = Arc::new(
+		keyring
+			.manager
+			.take()
+			.expect("keyring initialized before verification"),
+	);
 	let auth_username = random_string(8);
 	let auth_password = Zeroizing::new(random_string(16));
 
@@ -454,7 +629,7 @@ fn start_body(
 		Ok(a) => a,
 		Err(e) => {
 			set_error(format!("Invalid bind: {e}"));
-			START_STATUS.store(-1, Ordering::SeqCst);
+			keyring.verdict(event::ERROR);
 			return;
 		}
 	};
@@ -463,11 +638,11 @@ fn start_body(
 		Ok(x) => x,
 		Err(e) => {
 			set_error(format!("Bind failed: {e}"));
-			START_STATUS.store(-1, Ordering::SeqCst);
+			keyring.verdict(event::ERROR);
 			return;
 		}
 	};
-	let url = format!("http://{}", local_addr);
+	let url = format!("http://{local_addr}");
 	let shutdown = Arc::new(AtomicBool::new(false));
 
 	// Build the server state, then register it under the session lock. The
@@ -482,26 +657,41 @@ fn start_body(
 		auth_password,
 	};
 	let sd = server_state.shutdown.clone();
-	{
+	// Check-and-publish stays atomic under one lock acquisition; the callback
+	// is emitted only after the lock is released (it may re-enter the bridge).
+	let aborted = {
 		let mut g = SESSION.lock();
-		if cancel.load(Ordering::SeqCst) {
+		if keyring.cancel.load(Ordering::SeqCst) {
 			// stop() asked us to abort after we bound but before we published.
-			START_STATUS.store(0, Ordering::SeqCst);
-			return;
+			true
+		} else {
+			g.server = Some(server_state);
+			false
 		}
-		g.server = Some(server_state);
+	};
+	if aborted {
+		// Stay silent — see the cancel check above.
+		return;
 	}
 	// Commit to serving: only now spawn the detached serve thread. If the check
 	// above had lost the race, we would have returned without spawning it.
-	let _serve_thread = thread::Builder::new()
+	// A spawn failure must roll back the published server and emit a terminal
+	// event — panicking here would cross the extern "C" boundary and leave
+	// Dart's `terminal.future` pending forever.
+	let spawned = thread::Builder::new()
 		.name("rcrm-webdav".into())
 		.spawn(move || {
 			if let Err(e) = server.serve(listener, sd) {
 				rcrm_core::log_error!("[bridge] Server error: {e}");
 			}
-		})
-		.expect("spawn serve");
-	START_STATUS.store(2, Ordering::SeqCst);
+		});
+	if let Err(e) = spawned {
+		SESSION.lock().server = None;
+		set_error(format!("failed to spawn serve thread: {e}"));
+		keyring.verdict(event::ERROR);
+		return;
+	}
+	keyring.verdict(event::RUNNING);
 }
 
 pub fn stop(handle: i32) -> i32 {
@@ -510,16 +700,14 @@ pub fn stop(handle: i32) -> i32 {
 		set_error("Invalid handle");
 		return -1;
 	}
-	// Ask any in-flight startup to abort. This is non-blocking: the task
-	// self-destructs at its next yield point and never binds a server, so a
-	// `stop()` that returns "stopped" can never leave a server running. We do
-	// not reset `cancel` here — it stays set until the task acknowledges it (or
-	// until the next `start()` clears it), so the task cannot read a stale
-	// "false" and go on to bind.
-	let cancel = SESSION.lock().cancel.clone();
-	cancel.store(true, Ordering::SeqCst);
-
+	// Ask the CURRENT in-flight startup to abort. Clone the token and set it
+	// under one lock acquisition: a concurrent `start()` replaces the token
+	// with a fresh one, and setting a stale clone afterwards would leave the
+	// new attempt running. Non-blocking — the task self-destructs at its next
+	// yield point, so `stop()` returning can never leave a server bound.
 	let mut g = SESSION.lock();
+	let cancel = Arc::clone(&g.cancel);
+	cancel.store(true, Ordering::SeqCst);
 	// Case 1: a server is already running — signal its serve thread to drain
 	// and exit. The serve thread is detached; we don't join it.
 	if let Some(s) = g.server.take() {
@@ -530,7 +718,10 @@ pub fn stop(handle: i32) -> i32 {
 	// next `start()` can reap it. We do not join here — stop() must return
 	// immediately to the UI thread.
 	g.reset_caches();
-	START_STATUS.store(0, Ordering::SeqCst);
+	drop(g);
+	// Emit from the calling thread, never from the cancelled task: a late
+	// task event could otherwise land on a newer attempt's subscriber.
+	finish(event::STOPPED);
 	0
 }
 
@@ -539,13 +730,6 @@ pub fn get_url(handle: i32) -> Option<String> {
 		return None;
 	}
 	SESSION.lock().server.as_ref().map(|s| s.url.clone())
-}
-
-pub fn status(handle: i32) -> i32 {
-	if handle != 1 {
-		return -1;
-	}
-	START_STATUS.load(Ordering::SeqCst)
 }
 
 pub fn get_auth_json(handle: i32) -> Option<String> {

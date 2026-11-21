@@ -6,7 +6,7 @@
 // `extern "C"` functions callable from Dart via `dart:ffi`.
 //
 // ## Memory ownership rules (Dart side MUST follow):
-//   FOUR shapes — see `docs/API_REFERENCE.md` → "Memory Ownership". Picking the
+//   FIVE shapes — see `docs/API_REFERENCE.md` → "Memory Ownership". Picking the
 //   wrong one leaks, double-frees or worse:
 //   1. Strings RETURNED by `rcrm_*` are malloc'd C strings — free with
 //      `rcrm_free_string`.
@@ -20,11 +20,15 @@
 //   4. Buffers RETURNED by Rust (`WebpBuf` from the WebP producers, including
 //      `rcrm_generate_poster_async`) are read in place and freed with
 //      `rcrm_free_webp_buf` (or a `NativeFinalizer`).
+//   5. The password buffer is ALLOCATED by `rcrm_password_buffer`; Dart writes
+//      UTF-8 into it and passes only the address to `rcrm_start_server`, which
+//      reclaims it. No length crosses the ABI and Rust frees with its own
+//      allocator.
 //
 //   Server handles are opaque i32 ids: `rcrm_start_server` returns the fixed
-//   value `1` to mean "request accepted", NOT success — poll
-//   `rcrm_get_server_status` for the outcome, then `rcrm_stop_server(handle)`
-//   when done. There is no `rcrm_free_server`.
+//   value `1` to mean "request accepted", NOT success — the outcome is pushed
+//   through the `rcrm_register_server_event` listener, then
+//   `rcrm_stop_server(handle)` when done. There is no `rcrm_free_server`.
 //
 // ## Thread safety:
 //   All public functions acquire internal locks. They are safe to call
@@ -68,29 +72,6 @@ mod webp;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
-use zeroize::Zeroizing;
-
-/// Parse the password argument into owned, zeroizing copies.
-///
-/// Accepts a JSON array of strings (`["pw1","pw2"]`) so multiple passwords
-/// can be supplied (different files may use different keys, mirroring the
-/// CLI's `serve` accumulation). For backward compatibility a bare string is
-/// treated as a single password. Empty entries are dropped. Each returned
-/// `Zeroizing<String>` wipes its bytes when dropped.
-unsafe fn parse_passwords(ptr: *const c_char) -> Vec<Zeroizing<String>> {
-	let s = unsafe { cstr_to_str(ptr) };
-	if s.is_empty() {
-		return Vec::new();
-	}
-	if let Ok(list) = serde_json::from_str::<Vec<String>>(s) {
-		return list
-			.into_iter()
-			.filter(|p| !p.is_empty())
-			.map(Zeroizing::new)
-			.collect();
-	}
-	vec![Zeroizing::new(s.to_string())]
-}
 
 // =======================
 // String helpers
@@ -137,43 +118,73 @@ pub unsafe extern "C" fn rcrm_free_string(ptr: *mut c_char) {
 // Server operations
 // =======================
 
-/// Start the projection WebDAV server.
+/// Allocate a zeroed native buffer of exactly `len` bytes for Dart to write
+/// the UTF-8 password into, then hand it back to `rcrm_start_server`. Rust
+/// owns the allocation and frees it with the same allocator, so there is no
+/// cross-allocator free. Returns null when `len == 0` (empty password).
+#[unsafe(no_mangle)]
+pub extern "C" fn rcrm_password_buffer(len: usize) -> *mut u8 {
+	server::password_buffer(len)
+}
+
+/// Start the projection `WebDAV` server.
 ///
 /// # Arguments
 /// * `dirs_json` — JSON array of directory paths, e.g. `["/mnt/media","/mnt/backup"]`
-/// * `password` — JSON array of decryption passwords, e.g. `["pw1","pw2"]`
-///   (a bare string is accepted as a single password)
+/// * `password` — pointer returned by `rcrm_password_buffer()` for the one
+///   newly typed password (null = plaintext folders). Ownership is taken back
+///   here; Rust knows the length from its own registry. Dart must not touch
+///   the buffer after the call.
 /// * `bind_addr` — bind address, e.g. "127.0.0.1"
 /// * `port` — port number (0 = OS picks)
 ///
+/// Rust owns the keyring and derives only this key; earlier keys stay derived
+/// across attempts, so adding the Nth password costs one KDF.
+///
 /// # Returns
 /// Always `1` if the start request was accepted (a background thread then
-/// scans directories, verifies passwords, and starts the server). The actual
-/// outcome is reported asynchronously via `rcrm_get_server_status`:
+/// scans directories, verifies passwords, and starts the server). The
+/// outcome is pushed to the listener registered with
+/// `rcrm_register_server_event`:
 ///   * `2`  — running (call `rcrm_get_server_url` for the base URL)
 ///   * `-2` — some encrypted files could not be opened by any key (server NOT
-///     started — call `rcrm_last_verify()` for the encrypted/locked
-///     counts, then start again with more passwords)
+///     started — call again with another password)
 ///   * `-1` — error (call `rcrm_last_error()`)
 ///
 /// The returned `1` is a fixed handle; do not use it to distinguish success
-/// from failure — poll `rcrm_get_server_status` instead.
+/// from failure — watch the events instead.
 ///
 /// # Safety
-/// `dirs_json`, `password`, and `bind_addr` must be non-null pointers to
-/// null-terminated UTF-8 C strings. Copied immediately — caller may free
-/// after return.
+/// `dirs_json` and `bind_addr` must be non-null pointers to null-terminated
+/// UTF-8 C strings (copied immediately — caller may free after return).
+/// `password` must be either null (empty password) or a pointer returned by
+/// `rcrm_password_buffer()` that has not been passed to this function before.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcrm_start_server(
 	dirs_json: *const c_char,
-	password: *const c_char,
+	password: *const u8,
 	bind_addr: *const c_char,
 	port: u16,
 ) -> i32 {
 	let dirs_str = unsafe { cstr_to_str(dirs_json) };
-	let passwords = unsafe { parse_passwords(password) };
 	let bind_str = unsafe { cstr_to_str(bind_addr) };
-	server::start(dirs_str, &passwords, bind_str, port)
+	server::start(dirs_str, password, bind_str, port)
+}
+
+/// Register the listener that receives start progress and the terminal
+/// verdict. The callback receives `(code, a, b, c)` — all plain integers,
+/// so no allocation crosses the boundary and the Dart side has nothing to
+/// free. See `server::event` for the codes and payload meanings. Passing a
+/// null pointer unregisters the current listener.
+///
+/// # Safety
+/// `cb` is either null or a valid function pointer that stays alive for as
+/// long as it is registered.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcrm_register_server_event(
+	cb: Option<unsafe extern "C" fn(i32, i32, i32, i32)>,
+) {
+	server::register_event_callback(cb);
 }
 
 /// Stop and free a server previously started with `rcrm_start_server`.
@@ -199,17 +210,6 @@ pub unsafe extern "C" fn rcrm_get_server_url(handle: i32) -> *mut c_char {
 		Some(url) => str_to_cstring(&url),
 		None => std::ptr::null_mut(),
 	}
-}
-
-/// Get server status: 0 = idle, 1 = starting, 2 = running, -1 = error,
-/// -2 = locked files (only handle `1` is valid; -1 is also returned for any
-/// other handle).
-///
-/// # Safety
-/// `handle` must be a valid server handle returned by `rcrm_start_server`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rcrm_get_server_status(handle: i32) -> i32 {
-	server::status(handle)
 }
 
 /// Get the random HTTP Basic Auth credentials for this server session.
@@ -255,25 +255,6 @@ pub unsafe extern "C" fn rcrm_crypt_folder(
 	let path_str = unsafe { cstr_to_str(path) };
 	let pw_str = unsafe { cstr_to_str(password) };
 	crypt_ops::crypt_folder(path_str, pw_str, is_encrypt != 0)
-}
-
-// =======================
-// Verification result
-// =======================
-
-/// Get the result of the most recent `rcrm_start_server` verification.
-///
-/// Returns a malloc'd JSON string `{"encrypted":N,"locked":M}` (call
-/// `rcrm_free_string`), where `locked` is how many encrypted files no provided
-/// key could open. After `rcrm_start_server` returns -2, read this to decide
-/// whether to prompt for another password.
-///
-/// # Safety
-/// Must not be called concurrently with `rcrm_start_server` from another
-/// thread.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rcrm_last_verify() -> *mut c_char {
-	server::last_verify()
 }
 
 // =======================

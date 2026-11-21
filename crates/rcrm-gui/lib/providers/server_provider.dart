@@ -23,10 +23,14 @@ class ServerState {
   final String? url;
   final String? error;
   final WebDavClient? client;
-  // When status == locked: how many encrypted files no entered key could open.
+  // When status == locked: how many encrypted files no key could open.
   final int locked;
   // Total encrypted files seen by the last verification (the all-locked baseline).
   final int encrypted;
+  // Files unlocked so far. Rust is the authority; Dart keeps no password list.
+  final int unlocked;
+  // Latest progress text pushed by Rust during a start.
+  final String? progressText;
 
   const ServerState({
     this.status = ServerStatus.stopped,
@@ -36,6 +40,8 @@ class ServerState {
     this.client,
     this.locked = 0,
     this.encrypted = 0,
+    this.unlocked = 0,
+    this.progressText,
   });
 
   bool get isRunning => status == ServerStatus.running;
@@ -48,6 +54,8 @@ class ServerState {
     WebDavClient? client,
     int? locked,
     int? encrypted,
+    int? unlocked,
+    String? progressText,
   }) => ServerState(
     status: status ?? this.status,
     handle: handle ?? this.handle,
@@ -56,6 +64,8 @@ class ServerState {
     client: client ?? this.client,
     locked: locked ?? this.locked,
     encrypted: encrypted ?? this.encrypted,
+    unlocked: unlocked ?? this.unlocked,
+    progressText: progressText ?? this.progressText,
   );
 }
 
@@ -68,7 +78,7 @@ class ServerNotifier extends Notifier<ServerState> {
   SettingsService get _settings => ref.read(settingsServiceProvider);
   RustBridge get _bridge => ref.read(rustBridgeProvider);
 
-  Future<void> start(ServerConfig config) async {
+  Future<void> start(ServerConfig config, {String? password}) async {
     if (state.status == ServerStatus.running) return;
     if (config.isCloud) {
       await connectCloud(
@@ -78,7 +88,7 @@ class ServerNotifier extends Notifier<ServerState> {
       );
       return;
     }
-    await _startLocal(config);
+    await _startLocal(config, password: password);
   }
 
   Future<void> connectCloud(
@@ -150,8 +160,17 @@ class ServerNotifier extends Notifier<ServerState> {
     }
   }
 
-  Future<void> _startLocal(ServerConfig config) async {
-    if (state.status == ServerStatus.running) return;
+  Future<void> _startLocal(ServerConfig config, {String? password}) async {
+    // A second start while one is in flight would create two subscribers to
+    // the shared event stream and two writers of `state`. Refuse it.
+    if (state.status == ServerStatus.running ||
+        state.status == ServerStatus.starting) {
+      return;
+    }
+    // Do not clear `sharedAuthHeader` here: a previous session's credentials
+    // are cleared by stop(), and clearing here would strip auth from in-flight
+    // requests if a restart is ever triggered while a server is live. A new
+    // successful start overwrites it on RUNNING anyway.
     // The library is (re)established here, so this is where previously cached
     // metadata stops applying: the identity is part of the cache key, so a
     // re-scan (different roots, or another server) invalidates by itself instead
@@ -161,15 +180,39 @@ class ServerNotifier extends Notifier<ServerState> {
     MediaMetadataService.setLibraryIdentity(
       'local|${config.directories.join('|')}',
     );
-    state = state.copyWith(status: ServerStatus.starting, error: null);
+    state = state.copyWith(
+      status: ServerStatus.starting,
+      error: null,
+      progressText: 'Scanning directories…',
+    );
+    StreamSubscription<ServerEvent>? sub;
     try {
       if (!_bridge.isLoaded) _bridge.load();
       // Local server logs exposes private infomation so set silent.
       _bridge.setLogLevel(0);
-      // Start local background server.
+      // The one newly typed password travels with the start call; Rust owns
+      // every key and keeps earlier ones derived across attempts.
+
+      // Rust pushes progress and the terminal verdict. No polling: the event
+      // carrying -2/-1/2 is emitted at the moment the decision is made.
+      final terminal = Completer<ServerEvent>();
+      sub = RustBridge.serverEvents.listen((ev) {
+        if (ev.code == ServerEventCode.progress) {
+          if (!terminal.isCompleted) {
+            state = state.copyWith(
+              progressText: ev.a == 0
+                  ? 'Scanning directories…'
+                  : 'Verifying files… ${ev.b}/${ev.c}',
+            );
+          }
+          return;
+        }
+        if (!terminal.isCompleted) terminal.complete(ev);
+      });
+
       final handle = _bridge.startWebDavServer(
         directories: config.directories,
-        passwords: config.passwords,
+        password: password ?? '',
         bindAddress: config.bindAddress,
         port: config.port,
       );
@@ -180,73 +223,75 @@ class ServerNotifier extends Notifier<ServerState> {
         );
         return;
       }
-      while (true) {
-        await Future.delayed(const Duration(milliseconds: 100));
-        final st = _bridge.getServerStatusValue(handle);
-        if (st == 1) continue;
-        if (st == -2) {
-          final v = _bridge.lastVerifyResult();
+      final ev = await terminal.future.timeout(
+        const Duration(minutes: 5),
+        onTimeout: () => const ServerEvent(-99, 0, 0, 0),
+      );
+      switch (ev.code) {
+        case ServerEventCode.running:
+          final url = _bridge.getServerUrlString(handle);
+          if (url == null) {
+            state = state.copyWith(
+              status: ServerStatus.error,
+              error: 'Failed to get URL',
+            );
+            return;
+          }
+          final creds = _bridge.getAuthCredentialsMap(handle);
+          final client = WebDavClient(
+            baseUrl: url,
+            username: creds?['username'],
+            password: creds?['password'],
+          );
+          // Share auth with thumbnail service and HttpClient fetchers
+          setSharedAuth(client.authHeader);
+
+          // Verify server is responding
+          if (!await client.ping()) {
+            client.dispose();
+            state = state.copyWith(
+              status: ServerStatus.error,
+              error: 'Server not responding',
+            );
+            return;
+          }
+          state = state.copyWith(
+            status: ServerStatus.running,
+            handle: handle,
+            url: url,
+            error: null,
+            client: client,
+          );
+        case ServerEventCode.locked:
           state = ServerState(
             status: ServerStatus.locked,
             handle: handle,
-            locked: (v?['locked'] as num?)?.toInt() ?? 0,
-            encrypted: (v?['encrypted'] as num?)?.toInt() ?? 0,
+            encrypted: ev.a,
+            locked: ev.b,
+            unlocked: ev.c,
           );
-          return;
-        }
-        if (st == -1) {
+        case ServerEventCode.error:
           state = state.copyWith(
             status: ServerStatus.error,
             error: _bridge.getLastErrorMessage() ?? 'Unknown error',
           );
-          return;
-        }
-        if (st != 2) {
+        case ServerEventCode.stopped:
+          state = const ServerState();
+        default:
+          // Unknown code or the 5-minute timeout. The Rust startup may still
+          // be running and could bind a server whose verdict we will never
+          // deliver (the subscription is cancelled in `finally`). Cancel it
+          // before leaving the state so it cannot serve orphaned media.
+          _bridge.stopWebDavServer(handle);
           state = state.copyWith(
             status: ServerStatus.error,
-            error: 'Unexpected server status: $st',
+            error: 'Server start did not produce a result',
           );
-          return;
-        }
-
-        // Server is running
-        final url = _bridge.getServerUrlString(handle);
-        if (url == null) {
-          state = state.copyWith(
-            status: ServerStatus.error,
-            error: 'Failed to get URL',
-          );
-          return;
-        }
-        final creds = _bridge.getAuthCredentialsMap(handle);
-        final client = WebDavClient(
-          baseUrl: url,
-          username: creds?['username'],
-          password: creds?['password'],
-        );
-        // Share auth with thumbnail service and HttpClient fetchers
-        setSharedAuth(client.authHeader);
-
-        // Verify server is responding
-        if (!await client.ping()) {
-          client.dispose();
-          state = state.copyWith(
-            status: ServerStatus.error,
-            error: 'Server not responding',
-          );
-          return;
-        }
-        state = state.copyWith(
-          status: ServerStatus.running,
-          handle: handle,
-          url: url,
-          error: null,
-          client: client,
-        );
-        return;
       }
     } catch (e) {
       state = state.copyWith(status: ServerStatus.error, error: e.toString());
+    } finally {
+      await sub?.cancel();
     }
   }
 
@@ -256,6 +301,7 @@ class ServerNotifier extends Notifier<ServerState> {
     final client = state.client;
     state = const ServerState();
     client?.dispose();
+    setSharedAuth(null);
   }
 
   Future<void> startWithSavedConfig() async {

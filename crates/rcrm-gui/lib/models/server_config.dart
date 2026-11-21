@@ -9,9 +9,6 @@ class ServerConfig {
   final List<String> directories;
   final String bindAddress;
   final int port;
-  // In-memory only — NEVER serialized. May hold several keys
-  // because different files can use different passwords (mirrors the CLI).
-  final List<String> passwords;
   // Cloud mode: remote WebDAV server URL + credentials.
   // remotePassword is in-memory only, never serialized.
   final String remoteUrl;
@@ -23,7 +20,6 @@ class ServerConfig {
     this.directories = const [],
     this.bindAddress = '127.0.0.1',
     this.port = 8080,
-    this.passwords = const [],
     this.remoteUrl = '',
     this.remoteUsername = '',
     this.remotePassword = '',
@@ -32,8 +28,8 @@ class ServerConfig {
   bool get isLocal => deployMode == DeployMode.local;
   bool get isCloud => deployMode == DeployMode.cloud;
 
-  // NOTE: passwords + remotePassword are deliberately NOT serialized. They are
-  // held only in memory for the current session and never written to disk.
+  // NOTE: remotePassword is deliberately NOT serialized. Decryption passwords
+  // are never held by Dart at all — Rust owns the keyring.
   Map<String, dynamic> toJson() => {
     'deployMode': deployMode.name,
     'directories': directories,
@@ -50,8 +46,6 @@ class ServerConfig {
       directories: List<String>.from(json['directories'] ?? []),
       bindAddress: json['bindAddress'] ?? '127.0.0.1',
       port: json['port'] ?? 8080,
-      // Loaded config is always password-free; the user re-enters each session.
-      passwords: const [],
       remoteUrl: json['remoteUrl'] ?? '',
       remoteUsername: json['remoteUsername'] ?? '',
       remotePassword: '',
@@ -63,7 +57,6 @@ class ServerConfig {
     List<String>? directories,
     String? bindAddress,
     int? port,
-    List<String>? passwords,
     String? remoteUrl,
     String? remoteUsername,
     String? remotePassword,
@@ -73,7 +66,6 @@ class ServerConfig {
       directories: directories ?? this.directories,
       bindAddress: bindAddress ?? this.bindAddress,
       port: port ?? this.port,
-      passwords: passwords ?? this.passwords,
       remoteUrl: remoteUrl ?? this.remoteUrl,
       remoteUsername: remoteUsername ?? this.remoteUsername,
       remotePassword: remotePassword ?? this.remotePassword,

@@ -4,12 +4,15 @@
 // All symbols registered once here.  MobileImageDecoder reuses the
 // same DynamicLibrary + cached function addresses.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
+
+import '../utils/native_utf8.dart';
 
 /// Native layout of the Rust `WebpBuf` struct (data_len + data pointer),
 /// returned by every WebP producer: `rcrm_encode_thumb_webp`,
@@ -23,17 +26,40 @@ final class RustWebpBuf extends Struct {
 
 // ── C function typedefs ──────────────────────────────────────────
 
+typedef RcrmPasswordBufferC = Pointer<Uint8> Function(IntPtr len);
+typedef RcrmPasswordBufferDart = Pointer<Uint8> Function(int len);
+
 typedef RcrmStartServerC = Int32 Function(
   Pointer<Utf8> dirsJson,
-  Pointer<Utf8> password,
+  Pointer<Uint8> password,
   Pointer<Utf8> bindAddr,
   Uint16 port,
 );
 typedef RcrmStartServerDart = int Function(
   Pointer<Utf8> dirsJson,
-  Pointer<Utf8> password,
+  Pointer<Uint8> password,
   Pointer<Utf8> bindAddr,
   int port,
+);
+
+/// Rust → Dart start events. Four plain ints, no heap allocation to free.
+typedef RcrmServerEventC = Void Function(
+  Int32 code,
+  Int32 a,
+  Int32 b,
+  Int32 c,
+);
+typedef RcrmServerEventDart = void Function(
+  int code,
+  int a,
+  int b,
+  int c,
+);
+typedef RcrmRegisterServerEventC = Void Function(
+  Pointer<NativeFunction<RcrmServerEventC>> cb,
+);
+typedef RcrmRegisterServerEventDart = void Function(
+  Pointer<NativeFunction<RcrmServerEventC>> cb,
 );
 
 typedef RcrmStopServerC = Int32 Function(Int32 handle);
@@ -41,9 +67,6 @@ typedef RcrmStopServerDart = int Function(int handle);
 
 typedef RcrmGetServerUrlC = Pointer<Utf8> Function(Int32 handle);
 typedef RcrmGetServerUrlDart = Pointer<Utf8> Function(int handle);
-
-typedef RcrmGetServerStatusC = Int32 Function(Int32 handle);
-typedef RcrmGetServerStatusDart = int Function(int handle);
 
 typedef RcrmCryptFolderC = Int32 Function(
   Pointer<Utf8> path,
@@ -55,9 +78,6 @@ typedef RcrmCryptFolderDart = int Function(
   Pointer<Utf8> password,
   int isEncrypt,
 );
-
-typedef RcrmLastVerifyC = Pointer<Utf8> Function();
-typedef RcrmLastVerifyDart = Pointer<Utf8> Function();
 
 typedef RcrmFreeStringC = Void Function(Pointer<Utf8> ptr);
 typedef RcrmFreeStringDart = void Function(Pointer<Utf8> ptr);
@@ -259,6 +279,30 @@ typedef RcrmGenerateQrWebpDart = Pointer<Void> Function(
 typedef RcrmFreeWebpBufC = Void Function(Pointer<Void> ptr);
 typedef RcrmFreeWebpBufDart = void Function(Pointer<Void> ptr);
 
+// ── Server start events ──────────────────────────────────────────
+
+/// Codes pushed by Rust while a server start runs. Values match
+/// `server::event` in the bridge.
+abstract final class ServerEventCode {
+  static const int progress = 1;
+  static const int stopped = 0;
+  static const int error = -1;
+  static const int locked = -2;
+  static const int running = 2;
+}
+
+/// One start event. For [ServerEventCode.progress], `a` is 0 (scanning) or 1
+/// (verifying) and `b`/`c` are done/total. For [ServerEventCode.locked],
+/// `a`/`b`/`c` are encrypted/locked/unlocked counts.
+class ServerEvent {
+  const ServerEvent(this.code, this.a, this.b, this.c);
+
+  final int code;
+  final int a;
+  final int b;
+  final int c;
+}
+
 // ── Bridge class ─────────────────────────────────────────────────
 
 class RustBridge {
@@ -266,12 +310,24 @@ class RustBridge {
   DynamicLibrary? _lib;
   bool _loaded = false;
 
+  // Rust calls _onServerEvent from its startup thread; listener routes it to
+  // the main isolate's event loop. One persistent callback, no allocation.
+  static NativeCallable<RcrmServerEventC>? _serverEventCallable;
+  static final StreamController<ServerEvent> _serverEvents =
+      StreamController<ServerEvent>.broadcast();
+  static Stream<ServerEvent> get serverEvents => _serverEvents.stream;
+
+  static void _onServerEvent(int code, int a, int b, int c) {
+    if (_serverEvents.isClosed) return;
+    _serverEvents.add(ServerEvent(code, a, b, c));
+  }
+
+  late RcrmPasswordBufferDart _passwordBuffer;
   late RcrmStartServerDart startServer;
+  late RcrmRegisterServerEventDart _registerServerEvent;
   late RcrmStopServerDart stopServer;
   late RcrmGetServerUrlDart getServerUrl;
-  late RcrmGetServerStatusDart getServerStatus;
   late RcrmCryptFolderDart cryptFolder;
-  late RcrmLastVerifyDart lastVerify;
   late RcrmGetAuthCredentialsDart getAuthCredentials;
   late RcrmFreeStringDart freeString;
   late RcrmLastErrorDart lastError;
@@ -356,9 +412,21 @@ class RustBridge {
   }
 
   void _bindFunctions() {
+    _passwordBuffer = _lib!.lookupFunction<
+      RcrmPasswordBufferC,
+      RcrmPasswordBufferDart
+    >('rcrm_password_buffer');
     startServer = _lib!.lookupFunction<RcrmStartServerC, RcrmStartServerDart>(
       'rcrm_start_server',
     );
+    _registerServerEvent = _lib!.lookupFunction<
+      RcrmRegisterServerEventC,
+      RcrmRegisterServerEventDart
+    >('rcrm_register_server_event');
+    _serverEventCallable ??= NativeCallable<RcrmServerEventC>.listener(
+      _onServerEvent,
+    );
+    _registerServerEvent(_serverEventCallable!.nativeFunction);
     stopServer = _lib!.lookupFunction<RcrmStopServerC, RcrmStopServerDart>(
       'rcrm_stop_server',
     );
@@ -366,15 +434,8 @@ class RustBridge {
         .lookupFunction<RcrmGetServerUrlC, RcrmGetServerUrlDart>(
           'rcrm_get_server_url',
         );
-    getServerStatus = _lib!
-        .lookupFunction<RcrmGetServerStatusC, RcrmGetServerStatusDart>(
-          'rcrm_get_server_status',
-        );
     cryptFolder = _lib!.lookupFunction<RcrmCryptFolderC, RcrmCryptFolderDart>(
       'rcrm_crypt_folder',
-    );
-    lastVerify = _lib!.lookupFunction<RcrmLastVerifyC, RcrmLastVerifyDart>(
-      'rcrm_last_verify',
     );
     freeString = _lib!.lookupFunction<RcrmFreeStringC, RcrmFreeStringDart>(
       'rcrm_free_string',
@@ -525,23 +586,39 @@ class RustBridge {
     calloc.free(ptr);
   }
 
-  /// Start the WebDAV server. Returns handle (>0) or -1.
+  /// Start the WebDAV server. Returns handle (>0) or -1. Progress and the
+  /// terminal verdict arrive on [serverEvents]. [password] is the one newly
+  /// typed key (empty for plaintext folders).
+  ///
+  /// The password is UTF-8 encoded straight into an exact-size native buffer
+  /// (one copy, no Dart-heap intermediate). Ownership of that buffer transfers
+  /// to Rust, which wipes and frees it after deriving the key.
   int startWebDavServer({
     required List<String> directories,
-    required List<String> passwords,
+    required String password,
     String bindAddress = '127.0.0.1',
     int port = 8080,
   }) {
-    final dirsJson = jsonEncode(directories);
-    final pwJson = jsonEncode(passwords); // ["pw1","pw2"] — multi-password
-    final dirsPtr = dirsJson.toNativeUtf8();
-    final pwPtr = pwJson.toNativeUtf8();
-    final bindPtr = bindAddress.toNativeUtf8();
-    final result = startServer(dirsPtr, pwPtr, bindPtr, port);
-    calloc.free(dirsPtr);
-    _zeroAndFree(pwPtr); // wipe plaintext passwords before free
-    calloc.free(bindPtr);
-    return result;
+    Pointer<Utf8>? dirsPtr;
+    Pointer<Utf8>? bindPtr;
+    try {
+      dirsPtr = jsonEncode(directories).toNativeUtf8();
+      bindPtr = bindAddress.toNativeUtf8();
+
+      // Rust allocates the exact-size buffer and frees it with the same
+      // allocator in start(); Dart only writes UTF-8 into it. No cross-allocator
+      // free, no Dart-side buffer to leak on a throw.
+      final pwLen = utf8ByteLength(password);
+      final pwPtr = _passwordBuffer(pwLen);
+      if (pwLen != 0) {
+        writeUtf8Native(password, pwPtr.asTypedList(pwLen));
+      }
+      return startServer(dirsPtr, pwPtr, bindPtr, port);
+    } finally {
+      if (dirsPtr != null) calloc.free(dirsPtr);
+      if (bindPtr != null) calloc.free(bindPtr);
+      // pwPtr is Rust-owned from allocation; this side never frees it.
+    }
   }
 
   /// Stop the WebDAV server.
@@ -550,28 +627,15 @@ class RustBridge {
   /// Get the server URL (e.g. "http://127.0.0.1:8080/").
   String? getServerUrlString(int handle) => _readString(getServerUrl(handle));
 
-  /// Get server status: 2=running, 1=starting, 0=idle, -1=error, -2=locked.
-  int getServerStatusValue(int handle) => getServerStatus(handle);
-
   /// Encrypt or decrypt a folder.
   bool cryptFolderOp(String path, String password, {required bool encrypt}) {
     final pathPtr = path.toNativeUtf8();
     final pwPtr = password.toNativeUtf8();
-    final result = cryptFolder(pathPtr, pwPtr, encrypt ? 1 : 0);
-    calloc.free(pathPtr);
-    _zeroAndFree(pwPtr); // wipe plaintext password before free
-    return result == 0;
-  }
-
-  /// Read the result of the most recent startWebDavServer verification:
-  /// {encrypted, locked}. `locked` = encrypted files no key opened.
-  Map<String, dynamic>? lastVerifyResult() {
-    final jsonStr = _readString(lastVerify());
-    if (jsonStr == null) return null;
     try {
-      return jsonDecode(jsonStr) as Map<String, dynamic>;
-    } catch (_) {
-      return null;
+      return cryptFolder(pathPtr, pwPtr, encrypt ? 1 : 0) == 0;
+    } finally {
+      calloc.free(pathPtr);
+      _zeroAndFree(pwPtr); // wipe plaintext password before free
     }
   }
 

@@ -10,12 +10,13 @@ there as an embedded, code-signed `Mpv.framework`). It does not require
 
 ## Memory Ownership
 
-Four shapes exist; picking the wrong one is a leak, a double free or worse.
+Five shapes exist; picking the wrong one is a leak, a double free or worse.
 
 | Shape | Who allocates | Who frees | Used by |
 |---|---|---|---|
 | **Returned string** | Rust (`str_to_cstring`) | Dart, via `rcrm_free_string` | `rcrm_get_server_url`, `rcrm_last_error`, `rcrm_version`, `rcrm_media_metadata_async`'s reply |
-| **Passed string** | Dart | Dart — Rust copies immediately | `rcrm_start_server`, `rcrm_crypt_folder` |
+| **Passed string** | Dart | Dart — Rust copies immediately | `rcrm_start_server`'s `dirs_json`/`bind_addr`, `rcrm_crypt_folder` |
+| **Password buffer** | Rust (`rcrm_password_buffer`) | Rust, in `rcrm_start_server` | the password pointer passed to `rcrm_start_server` |
 | **Owned buffer** (`DecodeBuf`) | Dart (`calloc`, or a copy-free native fetch) | **Rust**, when the decode finishes | `rcrm_decode_avif_async` / `_jxl_async` / `_heic_async` |
 | **Borrowed buffer** | Dart | Dart, after the call returns | `rcrm_encode_thumb_webp`, `rcrm_generate_thumb_webp_from_image` |
 | **Returned buffer** (`WebpBuf`) | Rust | Dart, via `rcrm_free_webp_buf` (or a `NativeFinalizer`) | every WebP producer, including `rcrm_generate_poster_async`'s callback |
@@ -41,18 +42,27 @@ Rules that follow from the table:
 
 | Function | Signature | Returns |
 |----------|-----------|---------|
-| `rcrm_start_server` | `(dirs_json, password, bind_addr, port)` | always `1` (request accepted — poll `rcrm_get_server_status` for the outcome) |
+| `rcrm_password_buffer` | `(len)` | `*mut u8` — Rust-allocated zeroed buffer of exactly `len` bytes (null when `len==0`); Dart writes UTF-8 into it, then `rcrm_start_server` takes it back |
+| `rcrm_start_server` | `(dirs_json, password, bind_addr, port)` | always `1` (request accepted — watch `rcrm_register_server_event` for the outcome); `password` must be the pointer from `rcrm_password_buffer()`, or null for plaintext folders |
+| `rcrm_register_server_event` | `(cb)` | void — registers `(code,a,b,c)` listener; all-int payload, nothing to free |
 | `rcrm_stop_server` | `(handle)` | 0 OK, -1 invalid |
 | `rcrm_get_server_url` | `(handle)` | malloc'd URL string |
-| `rcrm_get_server_status` | `(handle)` | 0 idle, 1 starting, 2 running, -1 error, -2 locked |
 | `rcrm_get_auth_credentials` | `(handle)` | JSON `{"username":"…","password":"…"}` |
+
+Rust owns all decryption keys **and the password buffer**. Dart never keeps a
+password list: it writes the one newly typed UTF-8 password into a Rust-
+allocated buffer and hands it to `rcrm_start_server`; Rust frees it with the
+same allocator (no cross-allocator free) and derives that single key into a
+persistent keyring (one Argon2id per password, never N). Progress and the
+verdict are pushed through the event callback: `code=1` progress (`a`=0 scan /
+1 verify, `b`/`c`=done/total), `code=-2` locked (`a`/`b`/`c` =
+encrypted/locked/unlocked), `code=2` running, `-1` error, `0` stopped.
 
 ## Crypt
 
 | Function | Signature | Returns |
 |----------|-----------|---------|
 | `rcrm_crypt_folder` | `(path, password, is_encrypt)` | 0 success |
-| `rcrm_last_verify` | `()` | JSON `{"encrypted":N,"locked":M}` |
 
 ## Media Metadata — EXIF / track *(all platforms)*
 
@@ -256,8 +266,8 @@ already use `NativeCallable.listener` for Rust→Dart callbacks plus a
 `NativeFinalizer` for `WebpBuf`. C FFI was stable long before 3.50; this
 release added Objective-C bindings and JNIgen, neither of which applies here.
 
-FFIgen 23.0.0 generates **signatures only**. It cannot express the four
-ownership shapes above, the len-only `Vec::from_raw_parts` hand-off, the
+FFIgen 23.0.0 generates **signatures only**. It cannot express the five
+ownership shapes above, the address-keyed Rust-owned password buffer, the
 "never free on timeout" rule, the runtime probe that treats the five
 `mobile-decode` symbols as absent on desktop, or the callback/finalizer
 addresses. It also needs a maintained C header (the crate has none) and

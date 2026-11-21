@@ -195,28 +195,20 @@ void main() {
       expect(c.directories, isEmpty);
       expect(c.bindAddress, '127.0.0.1');
       expect(c.port, 8080);
-      expect(c.passwords, isEmpty);
     });
 
-    test('json roundtrip excludes passwords', () {
-      const c = ServerConfig(
-        directories: ['/a', '/b'],
-        port: 0,
-        passwords: ['pw'],
-      );
+    test('json roundtrip', () {
+      const c = ServerConfig(directories: ['/a', '/b'], port: 0);
       final r = ServerConfig.fromJson(c.toJson());
       expect(r.directories, ['/a', '/b']);
       expect(r.port, 0);
-      // passwords are NOT serialized
-      expect(r.passwords, isEmpty);
     });
 
     test('copyWith preserves unmodified fields', () {
-      const c = ServerConfig(directories: ['/a'], port: 0, passwords: ['pw']);
+      const c = ServerConfig(directories: ['/a'], port: 0);
       final u = c.copyWith(port: 9000);
       expect(u.port, 9000);
       expect(u.directories, ['/a']);
-      expect(u.passwords, ['pw']);
     });
 
     test('copyWith all fields', () {
@@ -225,12 +217,10 @@ void main() {
         directories: ['/x'],
         bindAddress: '0.0.0.0',
         port: 9999,
-        passwords: ['a', 'b'],
       );
       expect(u.directories, ['/x']);
       expect(u.bindAddress, '0.0.0.0');
       expect(u.port, 9999);
-      expect(u.passwords, ['a', 'b']);
     });
   });
 

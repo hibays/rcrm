@@ -32,11 +32,10 @@ class LibrarySetupScreen extends ConsumerStatefulWidget {
 class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
   late List<String> _selectedDirs;
   final _passwordController = TextEditingController();
-  // Keys accepted so far (each unlocked some files). In-memory only, never saved.
-  final List<String> _passwords = [];
-  int _lockedRemaining = 0; // encrypted files still locked by the accepted set
+  // Rust owns every password/key. These are only counts used to word the
+  // message and the button — never the passwords themselves.
+  int _lockedRemaining = 0;
   bool _isLoading = false;
-  String _statusText = '';
   String? _error;
 
   @override
@@ -185,12 +184,15 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
   Future<void> _connect() async {
     if (!_hasFolders || _isLoading) return;
     final entered = _passwordController.text;
+    final wasEmpty = entered.isEmpty;
+    // Release the plaintext from the editing state as soon as it is captured.
+    // Rust gets its own zeroizing copy in startWebDavServer; Dart Strings cannot be
+    // wiped, so the controller must not hold one for the whole scan/verify.
+    _passwordController.clear(); // don't keep the plaintext around
     setState(() {
       _isLoading = true;
-      _statusText = 'Scanning directories…';
       _error = null;
     });
-    final working = [..._passwords, if (entered.isNotEmpty) entered];
     final existing = await ref.read(settingsServiceProvider).getServerConfig();
     // The list is already saved on every pick; this writes it once more for the
     // paths that arrive as initialDirs, and it is the only place that persists
@@ -205,19 +207,15 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
       directories: List<String>.from(_selectedDirs),
       bindAddress: '127.0.0.1',
       port: 0,
-      passwords: working,
     );
-    // Password list is in-memory only — saveServerConfig persists dirs, not it.
-    setState(() => _statusText = 'Verifying files…');
-    await ref.read(serverProvider.notifier).start(config);
+    // Rust owns the keyring: it derives only this newly typed password and
+    // reuses every key accepted on earlier attempts.
+    await ref.read(serverProvider.notifier).start(config, password: entered);
     if (!mounted) return;
     final st = ref.read(serverProvider);
 
     if (st.isRunning) {
-      _passwordController.clear();
-      _passwords.clear();
       _lockedRemaining = 0;
-      setState(() => _statusText = 'Server ready — loading library…');
       // Home is the ROOT of the stack — never leave anything below it, or
       // the AppBar would show a spurious back button ("home is just home").
       Navigator.of(context).pushNamedAndRemoveUntil('/home', (_) => false);
@@ -225,21 +223,19 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
     }
 
     if (st.status == ServerStatus.locked) {
-      // Rust caches encrypted file paths — only NEW passwords are verified.
-      if (_passwords.isEmpty) {
-        // First attempt, no files opened at all → wrong password.
-        _error = entered.isEmpty
+      // `unlocked` is Rust's authoritative "did any key open any file" — it
+      // replaces the old Dart-side password list as the failure signal.
+      if (st.unlocked == 0) {
+        _error = wasEmpty
             ? 'Encrypted folders need a password.'
             : 'Wrong password.';
       } else if (st.locked == _lockedRemaining) {
         // This key didn't unlock anything new.
         _error = 'This key didn\'t unlock any files new. Type another.';
       } else {
-        _passwords.add(entered);
         _error = '${st.locked} file(s) still locked — type another password.';
       }
       _lockedRemaining = st.locked;
-      _passwordController.clear(); // don't keep the plaintext around
       setState(() => _isLoading = false);
       return;
     }
@@ -270,7 +266,8 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final addingMore = _passwords.isNotEmpty;
+    final serverState = ref.watch(serverProvider);
+    final addingMore = serverState.unlocked > 0;
     return DoubleBackExit(
       child: Scaffold(
         body: SafeArea(
@@ -386,8 +383,7 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
                                 Padding(
                                   padding: const EdgeInsets.only(bottom: 12),
                                   child: Text(
-                                    '${_passwords.length} password(s) accepted'
-                                    '${_lockedRemaining > 0 ? '  ·  $_lockedRemaining still locked' : ''}',
+                                    '$_lockedRemaining file(s) still locked',
                                     style: TextStyle(
                                       color: Theme.of(context)
                                           .colorScheme
@@ -432,7 +428,8 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
                                       ),
                                 label: Text(
                                   _isLoading
-                                      ? _statusText
+                                      ? (serverState.progressText ??
+                                            'Starting…')
                                       : (addingMore
                                             ? 'Add Password'
                                             : 'Unlock & Enter'),
