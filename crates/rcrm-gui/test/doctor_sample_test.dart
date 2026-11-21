@@ -60,9 +60,7 @@ void main() {
     final c = ProviderContainer();
     addTearDown(c.dispose);
     c.read(serverProvider.notifier).state = ServerState(
-      status: ServerStatus.running,
-      url: 'http://127.0.0.1:1',
-      client: fake,
+      phase: ServerRunning(url: 'http://127.0.0.1:1', client: fake),
     );
 
     await tester.pumpWidget(

@@ -36,8 +36,7 @@ void main() {
 
       // Server running with scanned media.
       container.read(serverProvider.notifier).state = const ServerState(
-        status: ServerStatus.running,
-        url: 'http://127.0.0.1:18443',
+        phase: ServerRunning(url: 'http://127.0.0.1:18443'),
       );
       final videos = container.read(videosMapProvider.notifier);
       videos.addAll([_video('/a.mp4', 'a.mp4'), _video('/b.mp4', 'b.mp4')]);
@@ -90,7 +89,7 @@ void main() {
     final container = ProviderContainer();
     addTearDown(container.dispose);
     container.read(serverProvider.notifier).state = const ServerState(
-      status: ServerStatus.running,
+      phase: ServerRunning(),
     );
     // Videos present (recommended will be non-empty) but recent list empty —
     // the pathological split the old condition missed.
@@ -121,7 +120,7 @@ void main() {
     final container = ProviderContainer();
     addTearDown(container.dispose);
     container.read(serverProvider.notifier).state = const ServerState(
-      status: ServerStatus.running,
+      phase: ServerRunning(),
     );
 
     // Fake WebDAV server: root listing returns one video + a subdir whose

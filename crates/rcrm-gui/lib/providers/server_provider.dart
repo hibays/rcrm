@@ -15,58 +15,87 @@ import '../services/media_metadata.dart';
 
 // ── State ────────────────────────────────────────────────────
 
-enum ServerStatus { stopped, starting, running, error, locked }
+/// What the server is doing. Each phase carries only the data valid for it:
+/// an error is a variant with a message, never a nullable field on the state.
+/// A running server therefore cannot hold a stale error, and there is no
+/// `copyWith(error: null)` that silently keeps the previous one.
+sealed class ServerPhase {
+  const ServerPhase();
+}
+
+final class ServerStopped extends ServerPhase {
+  const ServerStopped();
+}
+
+final class ServerStarting extends ServerPhase {
+  const ServerStarting({this.progress});
+  final String? progress;
+}
+
+final class ServerRunning extends ServerPhase {
+  const ServerRunning({this.url, this.client});
+  // Production always has both; nullable so tests can drive isRunning-only
+  // states without standing up a WebDAV client.
+  final String? url;
+  final WebDavClient? client;
+}
+
+final class ServerLocked extends ServerPhase {
+  const ServerLocked({
+    required this.encrypted,
+    required this.locked,
+    required this.unlocked,
+  });
+  // How many encrypted files no key could open / were seen / were opened.
+  // Rust is the authority; Dart keeps no password list.
+  final int encrypted;
+  final int locked;
+  final int unlocked;
+}
+
+final class ServerError extends ServerPhase {
+  const ServerError({required this.message});
+  final String message;
+}
 
 class ServerState {
-  final ServerStatus status;
+  const ServerState({this.phase = const ServerStopped(), this.handle = -1});
+
+  /// The current phase — the single source of truth for what data is valid.
+  final ServerPhase phase;
+  /// Rust session id, shared by starting/running/locked. Kept across a locked
+  /// retry so `stop()` can still cancel the in-flight startup.
   final int handle;
-  final String? url;
-  final String? error;
-  final WebDavClient? client;
-  // When status == locked: how many encrypted files no key could open.
-  final int locked;
-  // Total encrypted files seen by the last verification (the all-locked baseline).
-  final int encrypted;
-  // Files unlocked so far. Rust is the authority; Dart keeps no password list.
-  final int unlocked;
-  // Latest progress text pushed by Rust during a start.
-  final String? progressText;
 
-  const ServerState({
-    this.status = ServerStatus.stopped,
-    this.handle = -1,
-    this.url,
-    this.error,
-    this.client,
-    this.locked = 0,
-    this.encrypted = 0,
-    this.unlocked = 0,
-    this.progressText,
-  });
-
-  bool get isRunning => status == ServerStatus.running;
-
-  ServerState copyWith({
-    ServerStatus? status,
-    int? handle,
-    String? url,
-    String? error,
-    WebDavClient? client,
-    int? locked,
-    int? encrypted,
-    int? unlocked,
-    String? progressText,
-  }) => ServerState(
-    status: status ?? this.status,
-    handle: handle ?? this.handle,
-    url: url ?? this.url,
-    error: error ?? this.error,
-    client: client ?? this.client,
-    locked: locked ?? this.locked,
-    encrypted: encrypted ?? this.encrypted,
-    unlocked: unlocked ?? this.unlocked,
-    progressText: progressText ?? this.progressText,
-  );
+  bool get isRunning => phase is ServerRunning;
+  String? get error => switch (phase) {
+    ServerError(:final message) => message,
+    _ => null,
+  };
+  String? get url => switch (phase) {
+    ServerRunning(:final url) => url,
+    _ => null,
+  };
+  WebDavClient? get client => switch (phase) {
+    ServerRunning(:final client) => client,
+    _ => null,
+  };
+  int get encrypted => switch (phase) {
+    ServerLocked(:final encrypted) => encrypted,
+    _ => 0,
+  };
+  int get locked => switch (phase) {
+    ServerLocked(:final locked) => locked,
+    _ => 0,
+  };
+  int get unlocked => switch (phase) {
+    ServerLocked(:final unlocked) => unlocked,
+    _ => 0,
+  };
+  String? get progressText => switch (phase) {
+    ServerStarting(:final progress) => progress,
+    _ => null,
+  };
 }
 
 // ── Provider ─────────────────────────────────────────────────
@@ -79,7 +108,7 @@ class ServerNotifier extends Notifier<ServerState> {
   RustBridge get _bridge => ref.read(rustBridgeProvider);
 
   Future<void> start(ServerConfig config, {String? password}) async {
-    if (state.status == ServerStatus.running) return;
+    if (state.isRunning) return;
     if (config.isCloud) {
       await connectCloud(
         config.remoteUrl,
@@ -96,12 +125,12 @@ class ServerNotifier extends Notifier<ServerState> {
     String username,
     String password,
   ) async {
-    if (state.status == ServerStatus.running) return;
+    if (state.isRunning) return;
     if (!_bridge.isLoaded) _bridge.load();
     // Clear any certificate from a previous attempt so BAD_CERT below can only
     // be produced by THIS connection's rejection.
     CertTrust.lastRejected = null;
-    state = state.copyWith(status: ServerStatus.starting, error: null);
+    state = ServerState(phase: const ServerStarting(), handle: state.handle);
     WebDavClient? client;
     try {
       client = WebDavClient(
@@ -113,33 +142,35 @@ class ServerNotifier extends Notifier<ServerState> {
       final pingResult = await client.pingStatusCode();
       if (pingResult == null) {
         client.dispose(); // failed connection — don't leak the HttpClient
-        state = state.copyWith(
-          status: ServerStatus.error,
-          error: 'Cloud server not reachable. Check URL and port.',
+        state = ServerState(
+          phase: const ServerError(
+            message: 'Cloud server not reachable. Check URL and port.',
+          ),
+          handle: state.handle,
         );
         return;
       }
       if (pingResult == 401 || pingResult == 403) {
         client.dispose();
-        state = state.copyWith(
-          status: ServerStatus.error,
-          error: 'Authentication failed. Check username and password.',
+        state = ServerState(
+          phase: const ServerError(
+            message: 'Authentication failed. Check username and password.',
+          ),
+          handle: state.handle,
         );
         return;
       }
       if (pingResult != 200) {
         client.dispose();
-        state = state.copyWith(
-          status: ServerStatus.error,
-          error: 'Server returned HTTP $pingResult.',
+        state = ServerState(
+          phase: ServerError(message: 'Server returned HTTP $pingResult.'),
+          handle: state.handle,
         );
         return;
       }
-      state = state.copyWith(
-        status: ServerStatus.running,
-        url: url,
-        error: null,
-        client: client,
+      state = ServerState(
+        phase: ServerRunning(url: url, client: client),
+        handle: state.handle,
       );
     } on HandshakeException catch (_) {
       client?.dispose();
@@ -147,24 +178,28 @@ class ServerNotifier extends Notifier<ServerState> {
       // in CertTrust.lastRejected for the confirmation dialog. If the
       // handshake failed for another reason (lastRejected is null), surface
       // the raw failure instead of offering a bogus cert dialog.
-      state = state.copyWith(
-        status: ServerStatus.error,
-        error: CertTrust.lastRejected != null
-            ? 'BAD_CERT'
-            : 'TLS handshake failed. The server may not support secure '
-                  'connections, or the certificate is invalid.',
+      state = ServerState(
+        phase: ServerError(
+          message: CertTrust.lastRejected != null
+              ? 'BAD_CERT'
+              : 'TLS handshake failed. The server may not support secure '
+                    'connections, or the certificate is invalid.',
+        ),
+        handle: state.handle,
       );
     } catch (e) {
       client?.dispose();
-      state = state.copyWith(status: ServerStatus.error, error: e.toString());
+      state = ServerState(
+        phase: ServerError(message: e.toString()),
+        handle: state.handle,
+      );
     }
   }
 
   Future<void> _startLocal(ServerConfig config, {String? password}) async {
     // A second start while one is in flight would create two subscribers to
     // the shared event stream and two writers of `state`. Refuse it.
-    if (state.status == ServerStatus.running ||
-        state.status == ServerStatus.starting) {
+    if (state.isRunning || state.phase is ServerStarting) {
       return;
     }
     // Do not clear `sharedAuthHeader` here: a previous session's credentials
@@ -180,10 +215,9 @@ class ServerNotifier extends Notifier<ServerState> {
     MediaMetadataService.setLibraryIdentity(
       'local|${config.directories.join('|')}',
     );
-    state = state.copyWith(
-      status: ServerStatus.starting,
-      error: null,
-      progressText: 'Scanning directories…',
+    state = ServerState(
+      phase: const ServerStarting(progress: 'Scanning directories…'),
+      handle: state.handle,
     );
     StreamSubscription<ServerEvent>? sub;
     try {
@@ -199,10 +233,13 @@ class ServerNotifier extends Notifier<ServerState> {
       sub = RustBridge.serverEvents.listen((ev) {
         if (ev.code == ServerEventCode.progress) {
           if (!terminal.isCompleted) {
-            state = state.copyWith(
-              progressText: ev.a == 0
-                  ? 'Scanning directories…'
-                  : 'Verifying files… ${ev.b}/${ev.c}',
+            state = ServerState(
+              phase: ServerStarting(
+                progress: ev.a == 0
+                    ? 'Scanning directories…'
+                    : 'Verifying files… ${ev.b}/${ev.c}',
+              ),
+              handle: state.handle,
             );
           }
           return;
@@ -217,9 +254,11 @@ class ServerNotifier extends Notifier<ServerState> {
         port: config.port,
       );
       if (handle <= 0) {
-        state = state.copyWith(
-          status: ServerStatus.error,
-          error: _bridge.getLastErrorMessage() ?? 'Unknown error',
+        state = ServerState(
+          phase: ServerError(
+            message: _bridge.getLastErrorMessage() ?? 'Unknown error',
+          ),
+          handle: state.handle,
         );
         return;
       }
@@ -231,9 +270,9 @@ class ServerNotifier extends Notifier<ServerState> {
         case ServerEventCode.running:
           final url = _bridge.getServerUrlString(handle);
           if (url == null) {
-            state = state.copyWith(
-              status: ServerStatus.error,
-              error: 'Failed to get URL',
+            state = ServerState(
+              phase: const ServerError(message: 'Failed to get URL'),
+              handle: state.handle,
             );
             return;
           }
@@ -249,31 +288,31 @@ class ServerNotifier extends Notifier<ServerState> {
           // Verify server is responding
           if (!await client.ping()) {
             client.dispose();
-            state = state.copyWith(
-              status: ServerStatus.error,
-              error: 'Server not responding',
+            state = ServerState(
+              phase: const ServerError(message: 'Server not responding'),
+              handle: state.handle,
             );
             return;
           }
-          state = state.copyWith(
-            status: ServerStatus.running,
+          state = ServerState(
+            phase: ServerRunning(url: url, client: client),
             handle: handle,
-            url: url,
-            error: null,
-            client: client,
           );
         case ServerEventCode.locked:
           state = ServerState(
-            status: ServerStatus.locked,
+            phase: ServerLocked(
+              encrypted: ev.a,
+              locked: ev.b,
+              unlocked: ev.c,
+            ),
             handle: handle,
-            encrypted: ev.a,
-            locked: ev.b,
-            unlocked: ev.c,
           );
         case ServerEventCode.error:
-          state = state.copyWith(
-            status: ServerStatus.error,
-            error: _bridge.getLastErrorMessage() ?? 'Unknown error',
+          state = ServerState(
+            phase: ServerError(
+              message: _bridge.getLastErrorMessage() ?? 'Unknown error',
+            ),
+            handle: state.handle,
           );
         case ServerEventCode.stopped:
           state = const ServerState();
@@ -283,13 +322,18 @@ class ServerNotifier extends Notifier<ServerState> {
           // deliver (the subscription is cancelled in `finally`). Cancel it
           // before leaving the state so it cannot serve orphaned media.
           _bridge.stopWebDavServer(handle);
-          state = state.copyWith(
-            status: ServerStatus.error,
-            error: 'Server start did not produce a result',
+          state = ServerState(
+            phase: const ServerError(
+              message: 'Server start did not produce a result',
+            ),
+            handle: state.handle,
           );
       }
     } catch (e) {
-      state = state.copyWith(status: ServerStatus.error, error: e.toString());
+      state = ServerState(
+        phase: ServerError(message: e.toString()),
+        handle: state.handle,
+      );
     } finally {
       await sub?.cancel();
     }
@@ -308,9 +352,11 @@ class ServerNotifier extends Notifier<ServerState> {
     final config = await _settings.getServerConfig();
     if (config.isCloud) {
       if (config.remoteUrl.isEmpty) {
-        state = state.copyWith(
-          status: ServerStatus.stopped,
-          error: 'No cloud server URL configured',
+        state = ServerState(
+          phase: const ServerError(
+            message: 'No cloud server URL configured',
+          ),
+          handle: state.handle,
         );
         return;
       }
@@ -325,9 +371,9 @@ class ServerNotifier extends Notifier<ServerState> {
       return;
     }
     if (config.directories.isEmpty) {
-      state = state.copyWith(
-        status: ServerStatus.stopped,
-        error: 'No media directories configured',
+      state = ServerState(
+        phase: const ServerError(message: 'No media directories configured'),
+        handle: state.handle,
       );
       return;
     }

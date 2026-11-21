@@ -6,7 +6,7 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:file_picker/file_picker.dart';
+import '../utils/pick_directory.dart';
 
 import '../models/server_config.dart';
 import '../config/theme.dart';
@@ -1444,7 +1444,7 @@ class _DirEditorState extends State<_DirEditor> {
 
   Future<void> _pick() async {
     if (_finishing) return;
-    final r = await FilePicker.getDirectoryPath();
+    final r = await pickDirectoryPath();
     if (r == null || _dirs.contains(r)) return;
     setState(() => _dirs.add(r));
     await _commit();

@@ -14,7 +14,8 @@ import 'dart:io' show Platform;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:file_picker/file_picker.dart';
+
+import '../utils/pick_directory.dart';
 
 import '../models/server_config.dart';
 import '../providers/server_provider.dart';
@@ -158,7 +159,7 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
   }
 
   Future<void> _pickFolder() async {
-    final result = await FilePicker.getDirectoryPath();
+    final result = await pickDirectoryPath();
     if (result == null || _selectedDirs.contains(result)) return;
     setState(() => _selectedDirs.add(result));
     await _persistDirs();
@@ -222,7 +223,7 @@ class _LibrarySetupScreenState extends ConsumerState<LibrarySetupScreen> {
       return;
     }
 
-    if (st.status == ServerStatus.locked) {
+    if (st.phase is ServerLocked) {
       // `unlocked` is Rust's authoritative "did any key open any file" — it
       // replaces the old Dart-side password list as the failure signal.
       if (st.unlocked == 0) {
