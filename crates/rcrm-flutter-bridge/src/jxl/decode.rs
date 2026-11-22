@@ -1,252 +1,178 @@
 // jxl/decode.rs
-// JXL frame decode via jxl-oxide.
-// Reads directly from planar colour channels — no interleaved float allocation.
+// JXL frame decode via jxl-rs (the `jxl` crate).
+// The decoder renders straight into the RGBA8 buffer we hand back to Dart —
+// no planar float grid, no interleaved intermediate, no copy on the way out.
 
-#![allow(clippy::too_many_arguments)]
+use std::sync::LazyLock;
 
-use crate::decode::{DecodeBuf, Limit, bilinear_taps_at};
-use jxl_oxide::JxlImage;
-use jxl_oxide::image::BitDepth;
-use jxl_render::ImageBuffer;
+use jxl::api::{
+	Event, JxlDecoder, JxlDecoderOptions, JxlOutputBuffer, JxlParallelRunner, JxlParallelRunnerFun,
+	JxlPixelFormat, ProfileLevel,
+};
+use jxl::error::Result as JxlResult;
+use rayon::prelude::*;
+
+use crate::decode::{DecodeBuf, Limit, downscale_rgba_bilinear};
+
+/// jxl-rs is sequential unless a runner is supplied; measured on the local
+/// fixtures that is 2–5x slower than the old decoder and loses the speed win.
+/// Cap the count like the poster renderer: min(cores, 8), 4 on Android. Sharing
+/// one pool also stops several concurrent decodes from multiplying threads.
+fn decoder_threads() -> usize {
+	let available = std::thread::available_parallelism()
+		.map(|n| n.get())
+		.unwrap_or(2);
+	#[cfg(target_os = "android")]
+	{
+		available.min(4)
+	}
+	#[cfg(not(target_os = "android"))]
+	{
+		available.min(8)
+	}
+}
+
+static JXL_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+	rayon::ThreadPoolBuilder::new()
+		.num_threads(decoder_threads())
+		.thread_name(|i| format!("jxl-decode-{i}"))
+		.build()
+		.expect("bounded jxl thread pool")
+});
+
+struct JxlRunner;
+
+impl JxlParallelRunner for JxlRunner {
+	fn run(&mut self, num: usize, fun: &JxlParallelRunnerFun<'_>) -> JxlResult<()> {
+		if decoder_threads() <= 1 {
+			for i in 0..num {
+				fun(i)?;
+			}
+			return Ok(());
+		}
+		// One pool for the whole process: jxl-rs calls `run` many times per
+		// frame, and building a pool per call would cost more than the decode.
+		JXL_POOL.install(|| (0..num).into_par_iter().try_for_each(fun))
+	}
+
+	fn num_threads(&self) -> usize {
+		decoder_threads()
+	}
+}
 
 pub fn decode_frame(data: &[u8], target_width: u32) -> Option<Box<DecodeBuf>> {
-	let reader = std::io::Cursor::new(data);
-	let image = JxlImage::builder().read(reader).ok()?;
-	let (full_w, full_h) = (image.width(), image.height());
-	// A header-declared canvas is attacker-controlled and the renderer allocates
-	// for it infallibly, so without this a crafted file ends in an OOM abort
-	// (the whole process) instead of "this file cannot be decoded".
-	//
-	// The bound is the pixel COUNT and nothing else: total pixels are what the
-	// allocation scales with, so an extreme aspect ratio (say 1 x 64M) is allowed
-	// through as long as the product stays inside the ceiling. JXL is deliberately
-	// uncapped in the *quality* sense — the AVIF/HEIC policy limit is not applied to
-	// real JXL images — so this is the shared memory ceiling, not a limit of its own.
-	const MAX_CANVAS_PIXELS: u64 = Limit::PRODUCTION.pixels();
-	if full_w == 0 || full_h == 0 || (full_w as u64) * (full_h as u64) > MAX_CANVAS_PIXELS {
+	let mut input = data;
+	let mut options = JxlDecoderOptions::default();
+	// `sample_limit` counts samples as pixels * (3 + extra channels) and rejects
+	// when the count is >= the limit, so it needs headroom over the shared
+	// ceiling. It is an early, pre-allocation guard for hostile headers; the
+	// exact pixel policy is checked against `basic_info()` below.
+	options.sample_limit = Some(
+		Limit::PRODUCTION
+			.pixels()
+			.saturating_mul(8)
+			.try_into()
+			.unwrap_or(usize::MAX),
+	);
+	// The old decoder enforced no ISO complexity limits. jxl-rs defaults to
+	// Main5, which enforces them; Main10 lifts them only when the container
+	// declares Level 10 (a `jxll` box). Our sample_limit and pixel ceiling
+	// still bound memory, so accept those files rather than reject files the
+	// old path took.
+	options.max_profile_level = ProfileLevel::Main10;
+	let mut decoder = JxlDecoder::new(options);
+	let mut runner = JxlRunner;
+
+	// A hostile stream can ask for bytes forever. The input is a complete
+	// in-memory slice, so there is nothing more to give: cap the event count
+	// and turn that into "no image" instead of a hung ImageLoadGate slot.
+	const MAX_EVENTS: usize = 4096;
+	let mut events = 0usize;
+
+	// Output buffers are refused before BasicInfo, and with `adjust_orientation`
+	// on (the default) the reported size is already the display-oriented one —
+	// the old path's manual `orient_src` mapping is no longer needed.
+	let (w, h, extra_channels) = loop {
+		events += 1;
+		if events > MAX_EVENTS {
+			return None;
+		}
+		match decoder.process(&mut input, None, Some(&mut runner)).ok()? {
+			Event::BasicInfo => {
+				let info = decoder.basic_info()?;
+				break (info.size.0, info.size.1, info.extra_channels.len());
+			}
+			Event::NeedMoreInput { .. } => continue,
+			_ => {}
+		}
+	};
+
+	if w == 0 || h == 0 || (w as u64) * (h as u64) > Limit::PRODUCTION.pixels() {
 		return None;
 	}
-	let bit_depth = image.image_header().metadata.bit_depth;
-	let render = image.render_frame(0).ok()?;
-	let orientation = render.orientation();
-	let channels = render.color_channels();
-	let is_gray = channels.len() < 3;
+	// jxl-rs requires one entry in `extra_channel_format` per extra channel in
+	// the frame header (it asserts equality). A file with an alpha/depth channel
+	// would otherwise panic inside the decoder; `None` discards that channel
+	// because RGBA already carries colour + alpha. The old decoder never looked
+	// at extra channels, so this is required for behaviour parity.
+	decoder
+		.set_pixel_format(JxlPixelFormat::rgba8(extra_channels))
+		.ok()?;
 
-	// Source grid dimensions (before orientation).
-	let (grid_w, grid_h) = match orientation {
-		1..=4 => (full_w, full_h),
-		_ => (full_h, full_w),
-	};
-
-	let (dw, dh, rgba) = if target_width > 0 && target_width < full_w {
-		let dh = (full_h as f64 * target_width as f64 / full_w as f64) as u32;
-		if dh > 0 {
-			let rgba = planar_sample_downscale(
-				channels,
-				grid_w,
-				grid_h,
-				orientation,
-				bit_depth,
-				is_gray,
-				target_width,
-				dh,
-			);
-			(target_width, dh, rgba)
-		} else {
-			let rgba = planar_sample(channels, grid_w, grid_h, orientation, bit_depth, is_gray);
-			(full_w, full_h, rgba)
+	// Direct output: the decoder fills this exact allocation, which is then
+	// moved into `DecodeBuf` without a copy. The size derives from a
+	// header-declared canvas, so allocation must be fallible like the AVIF path's
+	// `alloc_buf` and the shared `downscale_rgba_bilinear`: `vec!`/`with_capacity`
+	// would abort the whole process under Android memory pressure.
+	// `JxlOutputBuffer::new` requires initialized bytes, so fill with zeros after
+	// the reservation (which does not allocate again). rgba8 is byte-aligned, so
+	// there is no row-alignment constraint.
+	let len = w * h * 4;
+	let mut rgba = Vec::new();
+	rgba.try_reserve_exact(len).ok()?;
+	rgba.resize(len, 0);
+	let mut buffers = [JxlOutputBuffer::new(&mut rgba, h, w * 4)];
+	let mut saw_frame = false;
+	loop {
+		events += 1;
+		if events > MAX_EVENTS {
+			return None;
 		}
-	} else {
-		let rgba = planar_sample(channels, grid_w, grid_h, orientation, bit_depth, is_gray);
-		(full_w, full_h, rgba)
-	};
-
-	let n = rgba.len();
-	// `into_raw_parts` drops the capacity on the floor; these buffers are built
-	// with `with_capacity(n * 4)` and filled exactly, so length is the capacity.
-	let (p, _, _) = rgba.into_raw_parts();
-	Some(Box::new(DecodeBuf {
-		width: dw,
-		height: dh,
-		channels: 4,
-		data_len: n,
-		cap: n,
-		data: p,
-	}))
-}
-
-/// Read a float sample from a planar ImageBuffer at grid coordinates (x, y).
-#[inline]
-fn sample_planar(ch: &ImageBuffer, x: usize, y: usize, bd: BitDepth) -> f32 {
-	match ch {
-		ImageBuffer::F32(g) => g.try_get_ref(x, y).copied().unwrap_or(0.0),
-		ImageBuffer::I32(g) => bd.parse_integer_sample(g.try_get_ref(x, y).copied().unwrap_or(0)),
-		ImageBuffer::I16(g) => {
-			bd.parse_integer_sample(g.try_get_ref(x, y).copied().unwrap_or(0) as i32)
-		}
-	}
-}
-
-/// Map oriented output coords (dx, dy) → source grid coords (gx, gy).
-#[inline]
-fn orient_src(dx: u32, dy: u32, gw: u32, gh: u32, o: u32) -> (u32, u32) {
-	match o {
-		2 => (gw - 1 - dx, dy),
-		3 => (gw - 1 - dx, gh - 1 - dy),
-		4 => (dx, gh - 1 - dy),
-		5 => (dy, dx),
-		6 => (gw - 1 - dy, dx),
-		7 => (gh - 1 - dy, gw - 1 - dx),
-		8 => (dy, gh - 1 - dx),
-		_ => (dx, dy),
-	}
-}
-
-/// Bilinear sample from planar channels, write RGBA to output.
-fn sample_bilin(
-	channels: &[ImageBuffer],
-	fx: f64,
-	fy: f64,
-	gw: u32,
-	gh: u32,
-	bd: BitDepth,
-	gray: bool,
-	out: &mut Vec<u8>,
-) {
-	// Shared tap maths with the HEIC path (see `decode::bilinear_taps_at`); the
-	// coordinate itself arrives already mapped through the container's
-	// orientation. The blend below stays in f32, as it always has.
-	let (x0, x1, wx) = bilinear_taps_at(fx, gw);
-	let (y0, y1, wy) = bilinear_taps_at(fy, gh);
-	let frac_x = wx as f32;
-	let frac_y = wy as f32;
-
-	if gray {
-		let s = |x, y| sample_planar(&channels[0], x, y, bd);
-		let t = s(x0, y0) + (s(x1, y0) - s(x0, y0)) * frac_x;
-		let b = s(x0, y1) + (s(x1, y1) - s(x0, y1)) * frac_x;
-		let v = ((t + (b - t) * frac_y).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-		out.extend_from_slice(&[v, v, v, 255]);
-	} else {
-		let s = |c, x, y| sample_planar(&channels[c], x, y, bd);
-		for c in 0..3 {
-			let t = s(c, x0, y0) + (s(c, x1, y0) - s(c, x0, y0)) * frac_x;
-			let b = s(c, x0, y1) + (s(c, x1, y1) - s(c, x0, y1)) * frac_x;
-			let v = ((t + (b - t) * frac_y).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-			out.push(v);
-		}
-		out.push(255);
-	}
-}
-
-/// Planar → RGBA at full resolution.
-fn planar_sample(
-	channels: &[ImageBuffer],
-	gw: u32,
-	gh: u32,
-	orientation: u32,
-	bd: BitDepth,
-	gray: bool,
-) -> Vec<u8> {
-	let (ow, oh) = match orientation {
-		1..=4 => (gw, gh),
-		_ => (gh, gw),
-	};
-	let n = (ow * oh) as usize;
-	// `with_capacity` aborts if the allocation fails, and `n` derives from the image
-	// geometry. The canvas ceiling in `decode_frame` is what keeps that request
-	// bounded (<= 64 MP, ~256 MB); making the failure graceful instead would need
-	// these two helpers to return a Result, which their callers do not expect.
-	let mut out = Vec::with_capacity(n * 4);
-	if gray {
-		for dy in 0..oh {
-			for dx in 0..ow {
-				let (sx, sy) = orient_src(dx, dy, gw, gh, orientation);
-				let v = sample_planar(&channels[0], sx as usize, sy as usize, bd);
-				let v = (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-				out.extend_from_slice(&[v, v, v, 255]);
+		match decoder
+			.process(&mut input, Some(&mut buffers), Some(&mut runner))
+			.ok()?
+		{
+			// The first visible frame is all the app ever shows, matching the
+			// old `render_frame(0)`. Pixels are complete at FrameComplete; the
+			// decoder's scratch memory is released when it drops here.
+			Event::FrameComplete { .. } => {
+				saw_frame = true;
+				break;
 			}
-		}
-	} else {
-		for dy in 0..oh {
-			for dx in 0..ow {
-				let (sx, sy) = orient_src(dx, dy, gw, gh, orientation);
-				let sx = sx as usize;
-				let sy = sy as usize;
-				for ch in channels.iter().take(3) {
-					let v = sample_planar(ch, sx, sy, bd);
-					out.push((v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-				}
-				out.push(255);
-			}
+			// Internal/reference-only frames are not reported by jxl-rs; without
+			// a visible frame the zeroed buffer is not an image, so refuse it
+			// instead of handing Dart a fabricated transparent picture.
+			Event::Complete => break,
+			Event::NeedMoreInput { .. } => {}
+			_ => {}
 		}
 	}
-	out
-}
+	if !saw_frame {
+		return None;
+	}
 
-/// Map oriented float coord → source grid float coord.
-#[inline]
-fn orient_src_f(fx: f64, fy: f64, gw: f64, gh: f64, o: u32) -> (f64, f64) {
-	let w = gw - 1.0;
-	let h = gh - 1.0;
-	match o {
-		2 => (w - fx, fy),
-		3 => (w - fx, h - fy),
-		4 => (fx, h - fy),
-		5 => (fy, fx),
-		6 => (w - fy, fx),
-		7 => (h - fy, w - fx),
-		8 => (fy, h - fx),
-		_ => (fx, fy),
-	}
-}
-
-/// Planar → RGBA at target width (bilinear downscale during conversion).
-fn planar_sample_downscale(
-	channels: &[ImageBuffer],
-	gw: u32,
-	gh: u32,
-	orientation: u32,
-	bd: BitDepth,
-	gray: bool,
-	dw: u32,
-	dh: u32,
-) -> Vec<u8> {
-	let n = (dw * dh) as usize;
-	// `with_capacity` aborts if the allocation fails, and `n` derives from the image
-	// geometry. The canvas ceiling in `decode_frame` is what keeps that request
-	// bounded (<= 64 MP, ~256 MB); making the failure graceful instead would need
-	// these two helpers to return a Result, which their callers do not expect.
-	let mut out = Vec::with_capacity(n * 4);
-	// Oriented full-res dimensions.
-	let fw = match orientation {
-		1..=4 => gw,
-		_ => gh,
-	} as f64;
-	let fh = match orientation {
-		1..=4 => gh,
-		_ => gw,
-	} as f64;
-	let gwf = gw as f64;
-	let ghf = gh as f64;
-	for dy in 0..dh {
-		for dx in 0..dw {
-			let ofx = ((dx as f64 + 0.5) * fw / dw as f64 - 0.5).clamp(0.0, fw - 1.0);
-			let ofy = ((dy as f64 + 0.5) * fh / dh as f64 - 0.5).clamp(0.0, fh - 1.0);
-			let (gfx, gfy) = orient_src_f(ofx, ofy, gwf, ghf, orientation);
-			sample_bilin(
-				channels,
-				gfx.clamp(0.0, gwf - 1.0),
-				gfy.clamp(0.0, ghf - 1.0),
-				gw,
-				gh,
-				bd,
-				gray,
-				&mut out,
-			);
+	let (w32, h32) = (w as u32, h as u32);
+	if target_width > 0 && target_width < w32 {
+		// Truncating aspect maths, without a float round-trip. The shared
+		// downscaler works on the already-oriented RGBA8 pixels.
+		let dh = (h as u64 * target_width as u64 / w as u64) as u32;
+		if dh > 0
+			&& let Some(scaled) = downscale_rgba_bilinear(&rgba, w32, h32, target_width, dh)
+		{
+			return Some(scaled);
 		}
 	}
-	out
+	Some(DecodeBuf::from_vec(rgba, w32, h32))
 }
 
 #[cfg(test)]
@@ -263,7 +189,19 @@ mod tests {
 			"jxl/Chungking.Express.1994.CHINESE.2160p.UHD.BluRay.x265.10bit.HDR.DDP5.1-RARBG.mkv_snapshot_00.41.05_[2023.11.19_14.06.32].jxl",
 		);
 		let buf = decode_frame(&data, 0).expect("decode jxl");
-		assert!(buf.width > 0);
+		assert_eq!((buf.width, buf.height), (3596, 2160));
+		assert_eq!(buf.channels, 4);
+		assert_eq!(buf.data_len, buf.width as usize * buf.height as usize * 4);
+		assert_eq!(buf.cap, buf.data_len, "capacity travels with the buffer");
+		// Not a blank frame: the alpha channel alone is 255 for an opaque still.
+		let px = unsafe { std::slice::from_raw_parts(buf.data, buf.data_len) };
+		assert!(
+			px.as_chunks::<4>()
+				.0
+				.iter()
+				.take(4096)
+				.any(|p| p[0] != 0 || p[1] != 0 || p[2] != 0)
+		);
 		unsafe { crate::decode::free_decode_buf(Box::into_raw(buf)) };
 	}
 
@@ -272,6 +210,35 @@ mod tests {
 		let data = test_read("jxl/4x-IMG_20250716_002259_095.jxl");
 		let buf = decode_frame(&data, 400).expect("jxl downscale");
 		assert_eq!(buf.width, 400);
+		assert_eq!(buf.height, 500);
+		assert_eq!(buf.data_len, 400 * buf.height as usize * 4);
 		unsafe { crate::decode::free_decode_buf(Box::into_raw(buf)) };
+	}
+
+	#[test]
+	fn garbage_is_refused() {
+		let junk = vec![0u8; 4096];
+		assert!(decode_frame(&junk, 0).is_none());
+	}
+
+	/// The synchronous thumbnail generator takes JXL bytes by hint 2. Pins the
+	/// whole decoded → downscaled → WebP-encoded chain with no Dart pixel loop.
+	#[test]
+	fn thumb_webp_from_jxl_image_in_one_call() {
+		let data = test_read("jxl/4x-IMG_20250716_002259_095.jxl");
+		let prefix = data[..8].to_vec();
+		let buf = unsafe {
+			crate::rcrm_generate_thumb_webp_from_image(data.as_ptr(), data.len(), 400, 82, 2)
+		};
+		assert!(!buf.is_null(), "decode + encode must succeed");
+		let webp = unsafe { &*buf };
+		let bytes = unsafe { std::slice::from_raw_parts(webp.data, webp.data_len) };
+		assert_eq!(&bytes[0..4], b"RIFF");
+		assert_eq!(&bytes[8..12], b"WEBP");
+		let (rgba, w, h) = zenwebp::oneshot::decode_rgba(bytes).expect("decode back");
+		assert_eq!(w, 400);
+		assert_eq!(rgba.len(), (w * h * 4) as usize);
+		assert_eq!(&data[..8], prefix.as_slice(), "input must stay borrowed");
+		unsafe { crate::webp::free_webp_buf(buf) };
 	}
 }

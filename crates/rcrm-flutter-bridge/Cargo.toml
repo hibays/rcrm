@@ -8,12 +8,12 @@ description = "C-ABI FFI bridge exposing rcrm-core + rcrm-server to Flutter via 
 crate-type = ["cdylib", "staticlib"]
 
 [features]
-# The Rust software-decode path: AVIF (rav1d), JXL (jxl-oxide) and HEIC/HEIF
+# The Rust software-decode path: AVIF (rav1d), JXL (jxl-rs) and HEIC/HEIF
 # (heic) stills. NOT default: Android/iOS builds enable it explicitly
 # (`cargo ndk ... build -p rcrm-flutter-bridge --features mobile-decode`), and
 # desktop builds must omit it (AGENTS.md) — they decode with Flutter's engine.
 # Host tests:   cargo test -p rcrm-flutter-bridge --features mobile-decode
-mobile-decode = ["dep:rav1d", "dep:jxl-oxide", "dep:jxl-render", "dep:heic"]
+mobile-decode = ["dep:rav1d", "dep:jxl", "dep:rayon", "dep:heic"]
 
 # Direct libmpv poster path: load the process's libmpv at runtime, seek with
 # `absolute+keyframes` first for large sources (falling back to `absolute+exact`
@@ -47,8 +47,15 @@ rcgen = { version = "0.14", default-features = false, features = [
 # Use git version to aviod asm build error (v1.1.0) on android.
 # Android/iOS (ARM .S via -Bsymbolic for .so)
 rav1d = { git = "https://github.com/memorysafety/rav1d", rev = "2e7216c20ac2a75de204d6c8d7268b75a45959b4", optional = true }
-jxl-oxide = { version = "0.12", optional = true }
-jxl-render = { version = "0.12", optional = true }
+# jxl-rs (crate `jxl`): pure-Rust JPEG XL decoder used by Chrome/Firefox.
+# 0.8 writes directly into a caller-supplied RGBA8 buffer, so the decoded
+# pixels go straight into `DecodeBuf` with no planar/interleaved intermediate.
+# Its `all-simd` default (MSRV 1.89) cross-compiles to Android/iOS without C++.
+jxl = { version = "0.8", optional = true }
+# The bounded `JxlParallelRunner`: jxl-rs is sequential without one. Optional so
+# desktop builds keep compiling without rayon; heic's `parallel` already pulls
+# it in whenever `mobile-decode` is on.
+rayon = { version = "1", optional = true }
 # HEIC/HEIF stills (AGPL-3.0-only OR Imazen commercial — rcrm is open-source,
 # same family as zenwebp above; HEVC/HEIF is patent-encumbered, see the crate's
 # patent notice). `backend-rust` is the pure-Rust HEVC decoder — no platform

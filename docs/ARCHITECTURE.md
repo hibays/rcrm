@@ -45,7 +45,7 @@ crates/
 ├── rcrm-flutter-bridge/ C-ABI FFI shim (cdylib)
 │   └── src/
 │       ├── avif/       AVIF decode (ISOBMFF + rav1d)     ─┐
-│       ├── jxl/        JXL decode (jxl-oxide)             ├ mobile-decode
+│       ├── jxl/        JXL decode (jxl-rs)                ├ mobile-decode
 │       ├── heic/       HEIC/HEIF decode (heic crate)     ─┘
 │       ├── decode.rs   DecodeBuf + shared downscaling
 │       ├── webp.rs     WebP encoding (zenwebp)
@@ -576,7 +576,7 @@ grid cell → DiskThumbImage(url, width)
           → toByteData(rawRgba) → ThumbWebpWorker.encodeRgba
               → rcrm_encode_thumb_webp (one copy into native memory)
           (a decoder's refusal is not the network's answer: the engine reads
-           files our `heic`/`rav1d`/`jxl-oxide` build refuses, so the original is
+           files our `heic`/`rav1d`/`jxl-rs` build refuses, so the original is
            fetched again only on this path — otherwise such a file would show in
            the viewer and stay blank in the grid)
   → ThumbCache.write (small WebP only)
@@ -754,7 +754,7 @@ All images load through `AuthImage` ImageProvider (or `DiskThumbImage` when the 
 
 Flutter's engine cannot decode AVIF/JXL everywhere, and on desktop (Impeller)
 not even HEIC — so mobile builds compile tri-format decoders into the bridge
-(`mobile-decode`: `rav1d`, `jxl-oxide`, `heic`) and route those formats through
+(`mobile-decode`: `rav1d`, `jxl-rs`, `heic`) and route those formats through
 them. Colour handling, downscaling and orientation therefore stay consistent
 across the grid, the viewer and the thumbnail cache. Desktop keeps the engine
 path and omits the feature (smaller binary, no AGPL/patent-encumbered codecs).

@@ -1,6 +1,7 @@
 // jxl/mod.rs
-// Self-contained JXL decoder using jxl-oxide.
-// Reads directly from planar colour channels — no interleaved float allocation.
+// Self-contained JXL decoder using jxl-rs (the `jxl` crate).
+// The decoder writes straight into the final RGBA buffer — no planar float
+// allocation on the way out.
 
 mod decode;
 

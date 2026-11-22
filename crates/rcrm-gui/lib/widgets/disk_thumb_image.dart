@@ -114,7 +114,7 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
     // `fetchAnswered` rules out. "Rust produced no thumbnail from bytes it did
     // receive" is a different answer, and it is not final: the pixel path below
     // decodes with Flutter's engine, a *different* decoder that reads what our
-    // `heic`/`rav1d`/`jxl-oxide` builds refuse (an AV1- or uncompressed-HEIF
+    // `heic`/`rav1d`/`jxl-rs` builds refuse (an AV1- or uncompressed-HEIF
     // file, a `.heic` that is really a JPEG, a frame past the shared 64 MP
     // ceiling). `AuthImage._load` falls back to that same engine for exactly this
     // reason, so a file the viewer displays must not lose its thumbnail. The

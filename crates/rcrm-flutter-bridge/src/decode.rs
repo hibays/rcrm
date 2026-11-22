@@ -162,9 +162,9 @@ pub unsafe fn free_decode_buf(ptr: *mut DecodeBuf) {
 /// `.0` = lower tap, `.1` = upper tap (equal to `.0` at the edge), `.2` = weight
 /// of the upper tap.
 ///
-/// This is the one place the mapping lives. `downscale_rgba_bilinear` below and
-/// the JXL path's `sample_bilin` both use it, so a scaled thumbnail has the same
-/// geometry whichever decoder produced it.
+/// This is the one place the mapping lives: `downscale_rgba_bilinear` uses it
+/// for every decoder that returns a finished RGBA frame (HEIC and JXL now both
+/// go through it), so a scaled thumbnail has the same geometry everywhere.
 #[inline]
 pub fn bilinear_tap(d: u32, dst_len: u32, src_len: u32) -> (usize, usize, f64) {
 	let (src, dst) = (src_len as f64, dst_len as f64);
@@ -173,8 +173,7 @@ pub fn bilinear_tap(d: u32, dst_len: u32, src_len: u32) -> (usize, usize, f64) {
 }
 
 /// The tap half of [`bilinear_tap`], for callers that computed the source
-/// coordinate themselves (JXL maps it through the container's orientation
-/// first). `s` must already be inside `0 ..= src_len - 1`.
+/// coordinate themselves. `s` must already be inside `0 ..= src_len - 1`.
 #[inline]
 pub fn bilinear_taps_at(s: f64, src_len: u32) -> (usize, usize, f64) {
 	let i0 = s.floor();
@@ -184,12 +183,11 @@ pub fn bilinear_taps_at(s: f64, src_len: u32) -> (usize, usize, f64) {
 
 /// Bilinear downscale of an already-decoded, already-oriented RGBA8 image.
 ///
-/// Same sampling maths as the JXL path (`planar_sample_downscale`), through the
-/// shared [`bilinear_tap`]: the target pixel centre is mapped back into the
-/// source and the four neighbours are blended. Used by the HEIC decoder, which
-/// returns a finished RGBA frame and has no scaler of its own; the result is
-/// allocated *exactly* so it can be freed as a plain `Vec` like every other
-/// decode buffer.
+/// Shared [`bilinear_tap`] maths: the target pixel centre is mapped back into
+/// the source and the four neighbours are blended. Used by the HEIC and JXL
+/// decoders, which return finished RGBA frames and have no scaler of their own;
+/// the result is allocated *exactly* so it can be freed as a plain `Vec` like
+/// every other decode buffer.
 #[cfg(feature = "mobile-decode")]
 pub fn downscale_rgba_bilinear(
 	src: &[u8],
