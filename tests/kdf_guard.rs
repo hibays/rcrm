@@ -49,6 +49,21 @@ fn derivation_is_deterministic() {
 	assert_eq!(derived_key_hex(&a), derived_key_hex(&b));
 }
 
+/// The derived key for a fixed (password, calibration) is part of the on-disk
+/// format: every file's header commits to `BLAKE2b(derived_key ‖ …)`. The
+/// canary fixture below only proves a file made by THIS build still opens, so
+/// it cannot catch a KDF change made in the same commit that minted it. This
+/// golden value does: any change to the salt derivation, the Argon2id
+/// parameters, or the byte layout fails here. It pins the value verified by
+/// the canary fixture, so the two together freeze the derived key.
+#[test]
+fn derived_key_matches_the_historical_value() {
+	assert_eq!(
+		derived_key_hex(&manager_with(Some(TEST_PASSWORD))),
+		"7a0b7c1b0525dc9261724a2f04006806691ab59964e56eca85663c86e0dd45de"
+	);
+}
+
 /// Different passwords must not collide.
 #[test]
 fn different_passwords_derive_different_keys() {
@@ -162,4 +177,40 @@ fn key_index_is_the_identity_of_a_registered_key() {
 	// taken, an unrelated one is not.
 	assert!(manager.has_key_index(key_index(TEST_PASSWORD)));
 	assert!(!manager.has_key_index(key_index(b"a different password")));
+}
+
+/// Regression: real passwords that collide under the old CRC32 key_index
+/// (found by scanning rockyou.txt — 23,029 collisions, first at #123288)
+/// MUST get distinct indices now. Otherwise the bridge's `has_key_index`
+/// dedup silently skips the second password, leaving its files undecryptable.
+/// Also covers a BLAKE2b-32 collision pair (same low 4 bytes) to pin the
+/// reason the fingerprint is 64-bit, not 32-bit.
+#[test]
+fn real_password_collisions_get_distinct_indices() {
+	let pairs: &[(&[u8], &[u8])] = &[
+		(b"01051989", b"lukejames"),   // CRC32 both 0xA8F76781
+		(b"152003", b"treavon"),       // CRC32 both 0x09FAC002
+		(b"lawrence13", b"cheesy123"), // CRC32 both 0xDE1220A3
+		(b"291087", b"schmetterling"), // BLAKE2b low-32 both 0xEEE4B827
+		(b"anabel1", b"emotional1"),   // BLAKE2b low-32 both 0xBAC23410
+	];
+	for &(a, b) in pairs {
+		assert_ne!(
+			key_index(a),
+			key_index(b),
+			"passwords {:?} and {:?} must not share an index",
+			a,
+			b
+		);
+	}
+
+	// And both can be registered in one keyring without a panic or a skip.
+	let mut manager = manager_with(None);
+	let ia = manager.use_added_key(b"01051989");
+	let ib = manager.use_added_key(b"lukejames");
+	assert_ne!(
+		ia, ib,
+		"both colliding passwords must occupy distinct slots"
+	);
+	assert!(manager.has_key_index(ia) && manager.has_key_index(ib));
 }

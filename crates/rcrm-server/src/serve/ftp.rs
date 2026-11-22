@@ -647,6 +647,13 @@ impl FtpSession {
 		)
 	}
 
+	/// Whether a passive data connection's peer is the control connection's
+	/// host (RFC 2577). IPv4-mapped IPv6 addresses of the same host compare
+	/// equal after canonicalisation, so a dual-stack client is not rejected.
+	fn data_peer_matches(peer: SocketAddr, control: SocketAddr) -> bool {
+		peer.ip().to_canonical() == control.ip().to_canonical()
+	}
+
 	/// Accept the pending data connection (from PASV/EPSV). Applies a 30s
 	/// timeout. Wraps in TLS if `data_tls` is set.
 	fn accept_data(&mut self) -> io::Result<Stream> {
@@ -659,7 +666,19 @@ impl FtpSession {
 		let deadline = Instant::now() + Duration::from_secs(30);
 		let tcp = loop {
 			match listener.accept() {
-				Ok((s, _)) => break s,
+				Ok((s, peer)) => {
+					// Reject a data peer from a different host (RFC 2577).
+					if !Self::data_peer_matches(peer, self.addr) {
+						rcrm_core::log_info!(
+							"[ftp:{}] rejected data connection from {} (control peer {})",
+							self.addr,
+							peer,
+							self.addr
+						);
+						continue;
+					}
+					break s;
+				}
 				Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
 					if Instant::now() >= deadline {
 						return Err(io::Error::new(
@@ -1320,7 +1339,32 @@ fn _silence_unused_import() -> bool {
 
 #[cfg(test)]
 mod tests {
-	use super::redact_arg;
+	use std::net::SocketAddr;
+
+	use super::{FtpSession, redact_arg};
+
+	/// Regression (RFC 2577): a PASV data connection from a different host
+	/// than the control connection must be refused, even if the source port
+	/// happens to match. Same host on a different port is fine.
+	#[test]
+	fn data_peer_check_only_accepts_the_control_host() {
+		let control: SocketAddr = "127.0.0.1:50000".parse().unwrap();
+		let same_host_other_port: SocketAddr = "127.0.0.1:51000".parse().unwrap();
+		let other_host_same_port: SocketAddr = "127.0.0.2:50000".parse().unwrap();
+		let other_host_other_port: SocketAddr = "127.0.0.2:51000".parse().unwrap();
+		let mapped: SocketAddr = "[::ffff:127.0.0.1]:51000".parse().unwrap();
+
+		assert!(FtpSession::data_peer_matches(same_host_other_port, control));
+		assert!(FtpSession::data_peer_matches(mapped, control));
+		assert!(!FtpSession::data_peer_matches(
+			other_host_same_port,
+			control
+		));
+		assert!(!FtpSession::data_peer_matches(
+			other_host_other_port,
+			control
+		));
+	}
 
 	#[test]
 	fn password_argument_is_masked() {

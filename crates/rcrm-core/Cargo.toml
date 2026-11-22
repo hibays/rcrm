@@ -16,7 +16,6 @@ argon2 = { version = "0.6", default-features = false, features = [
 	"parallel",
 ] }
 rand = "0.10"
-crc32fast = "1.5"
 chacha20 = "0.10"
 mime_guess = "2"
 zeroize = { version = "1.8.2", features = ["simd"] }

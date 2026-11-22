@@ -10,7 +10,7 @@
 //   3. SessionKey encrypt/decrypt round-trips and the ciphertext differs
 //      from the plaintext.
 
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::PathBuf;
 
 use rcrm::{Manager, ProjectedFile, SessionKey, is_supported_file, key_index};
@@ -548,14 +548,26 @@ fn lazy_head_defers_part2_read_until_head_access() {
 	assert_eq!(n, 100);
 	assert_eq!(&buf[..], &original[40_000..40_100]);
 
-	// Head-overlapping reads now fail on the deferred part2 read.
+	// Head-overlapping reads now fail on the deferred part2 read, and the
+	// returned error must carry the REAL cause (UnexpectedEof from read_exact)
+	// instead of a generic "head is unavailable" — callers need an actionable
+	// error (the WebDAV layer turns this into an HTTP 500 body).
 	let mut head_buf = vec![0u8; 100];
+	let err = pf
+		.read_at(100, &mut head_buf, &session_key)
+		.expect_err("head read should fail on truncated part2");
+	assert_eq!(
+		err.kind(),
+		io::ErrorKind::UnexpectedEof,
+		"the real deferred-read error kind must be preserved: {err}"
+	);
 	assert!(
-		pf.read_at(100, &mut head_buf, &session_key).is_err(),
-		"head read should fail on truncated part2"
+		!err.to_string().contains("head is unavailable"),
+		"the generic placeholder must not mask the real error: {err}"
 	);
 
-	// And the failure is cached: a second head read fails the same way.
+	// Nothing bad is cached — a second head read re-attempts and fails the
+	// same way (the file is still truncated).
 	assert!(pf.read_at(100, &mut head_buf, &session_key).is_err());
 
 	std::fs::remove_dir_all(&dir).unwrap();

@@ -643,12 +643,18 @@ fn segment_is_safe(seg: &str) -> bool {
 	!seg.contains('\\') && !seg.contains(':')
 }
 
-/// Append virtual path segments to a mount root.
+/// Append virtual path segments to a mount root, refusing symlink escapes.
 ///
 /// `..` pops one level but never past the root; a segment carrying a
-/// separator or drive prefix is rejected (see [`segment_is_safe`]).
+/// separator or drive prefix is rejected (see [`segment_is_safe`]). Lexical
+/// checks alone are not enough: a symlink inside the mount pointing outside
+/// it would be followed by `File::open`, exposing any file the process can
+/// read. Each component is therefore resolved and required to stay within the
+/// canonical mount root (complete mediation). A dangling symlink resolves to
+/// an error and is refused too.
 fn append_segments(root: &Path, segments: &[&str]) -> io::Result<PathBuf> {
 	let mut disk = root.to_path_buf();
+	let canon_root = std::fs::canonicalize(root).ok();
 	for seg in segments {
 		if seg.is_empty() || *seg == "." {
 			continue;
@@ -666,6 +672,19 @@ fn append_segments(root: &Path, segments: &[&str]) -> io::Result<PathBuf> {
 			));
 		}
 		disk.push(seg);
+		// symlink_metadata checks only the last component.
+		if let Some(ref canon_root) = canon_root
+			&& let Ok(meta) = std::fs::symlink_metadata(&disk)
+			&& meta.file_type().is_symlink()
+		{
+			let target = std::fs::canonicalize(&disk)?;
+			if !target.starts_with(canon_root) {
+				return Err(io::Error::new(
+					io::ErrorKind::PermissionDenied,
+					"path escapes mount root via symlink",
+				));
+			}
+		}
 	}
 	Ok(disk)
 }

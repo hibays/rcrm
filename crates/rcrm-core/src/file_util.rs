@@ -3,11 +3,35 @@
 // Copyleft (©) 2024-2025 hibays
 
 use std::{
+	collections::HashSet,
 	fs,
 	path::{Path, PathBuf},
 };
 
 use crate::base72::b72_decode_rust as b72decode;
+
+// Directory identity for symlink-cycle detection. Unix uses dev+ino from
+// metadata already read; other platforms fall back to the canonical path.
+#[cfg(unix)]
+type DirId = (u64, u64);
+#[cfg(not(unix))]
+type DirId = PathBuf;
+
+/// Derive a directory's identity from its path and already-fetched metadata.
+///
+/// Unix uses `(dev, ino)` from `meta` — the same metadata the caller read to
+/// learn the entry type, so this is free. Other platforms ignore `meta` and
+/// canonicalise the path, since a stable file index is not generally available.
+#[cfg(unix)]
+fn dir_id(_path: &Path, meta: &fs::Metadata) -> Option<DirId> {
+	use std::os::unix::fs::MetadataExt;
+	Some((meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn dir_id(path: &Path, _meta: &fs::Metadata) -> Option<DirId> {
+	fs::canonicalize(path).ok()
+}
 
 // =======================
 // MIME 类型判断（简化版）
@@ -64,20 +88,63 @@ pub fn is_valid_encrypted_file_name(name: &str) -> bool {
 // Helper: 递归获取目录下的所有视频文件/加密文件
 // =======================
 
-pub fn resolve_ne_path_from_dir(path: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
-	let mut nor_videos = Vec::new();
-	let mut enc_videos = Vec::new();
-	let mut queue: Vec<PathBuf> = Vec::new();
+/// Classify a directory entry, returning what the walker should do with it.
+enum Step {
+	Push(PathBuf),               // real directory — always walk
+	PushSymlink(PathBuf, DirId), // symlinked directory — walk once by identity
+	File(PathBuf),               // regular file (or symlink to one) — classify
+	Skip,
+}
 
-	// The root may itself be a file — keep the old behaviour of accepting
-	// it, then walk it as a directory.
-	match fs::metadata(path).map(|m| m.is_file()) {
-		Ok(true) => {
-			classify_file(path, &mut nor_videos, &mut enc_videos);
-			return (nor_videos, enc_videos);
+fn classify(entry: &fs::DirEntry) -> Step {
+	let path = entry.path();
+	let Ok(ft) = entry.file_type() else {
+		return Step::Skip;
+	};
+	if !ft.is_symlink() {
+		return if ft.is_dir() {
+			Step::Push(path)
+		} else if ft.is_file() {
+			Step::File(path)
+		} else {
+			Step::Skip
+		};
+	}
+	let Ok(meta) = fs::metadata(&path) else {
+		return Step::Skip;
+	};
+	let target = meta.file_type();
+	if target.is_dir() {
+		match dir_id(&path, &meta) {
+			Some(id) => Step::PushSymlink(path, id),
+			None => Step::Skip,
 		}
-		Ok(false) => queue.push(path.to_path_buf()),
-		Err(_) => return (nor_videos, enc_videos),
+	} else if target.is_file() {
+		Step::File(path)
+	} else {
+		Step::Skip
+	}
+}
+
+/// `on_entry` runs per entry (for progress); `on_file` per file to classify.
+fn walk(path: &Path, mut on_entry: impl FnMut(), mut on_file: impl FnMut(&Path)) {
+	let mut queue: Vec<PathBuf> = Vec::new();
+	let mut visited: HashSet<DirId> = HashSet::new();
+
+	match fs::metadata(path) {
+		Ok(m) if m.is_file() => {
+			on_entry();
+			on_file(path);
+			return;
+		}
+		Ok(m) => {
+			// Include root so a symlink back to it is refused.
+			if let Some(id) = dir_id(path, &m) {
+				visited.insert(id);
+			}
+			queue.push(path.to_path_buf());
+		}
+		Err(_) => return,
 	}
 
 	while let Some(dir) = queue.pop() {
@@ -85,21 +152,29 @@ pub fn resolve_ne_path_from_dir(path: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
 			continue;
 		};
 		for entry in rd.flatten() {
-			let p = entry.path();
-			// `file_type()` reuses the type the OS reported with the
-			// directory entry; `is_file()` + `is_dir()` cost two stats per
-			// entry, and on Windows each one opens the file.
-			let Ok(ft) = entry.file_type() else {
-				continue;
-			};
-			if ft.is_dir() {
-				queue.push(p);
-			} else if ft.is_file() {
-				classify_file(&p, &mut nor_videos, &mut enc_videos);
+			on_entry();
+			match classify(&entry) {
+				Step::Push(p) => queue.push(p),
+				Step::PushSymlink(p, id) => {
+					if visited.insert(id) {
+						queue.push(p);
+					}
+				}
+				Step::File(p) => on_file(&p),
+				Step::Skip => {}
 			}
 		}
 	}
+}
 
+pub fn resolve_ne_path_from_dir(path: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+	let mut nor_videos = Vec::new();
+	let mut enc_videos = Vec::new();
+	walk(
+		path,
+		|| {},
+		|p| classify_file(p, &mut nor_videos, &mut enc_videos),
+	);
 	(nor_videos, enc_videos)
 }
 
@@ -124,39 +199,14 @@ pub fn resolve_ne_path_from_dir_with_progress(
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
 	let mut nor_videos = Vec::new();
 	let mut enc_videos = Vec::new();
-	let mut scanned_count = 0;
-	let mut queue: Vec<PathBuf> = Vec::new();
-
-	match fs::metadata(path).map(|m| m.is_file()) {
-		Ok(true) => {
-			scanned_count += 1;
-			progress_cb(scanned_count);
-			classify_file(path, &mut nor_videos, &mut enc_videos);
-			return (nor_videos, enc_videos);
-		}
-		Ok(false) => queue.push(path.to_path_buf()),
-		Err(_) => return (nor_videos, enc_videos),
-	}
-
-	while let Some(dir) = queue.pop() {
-		let Ok(rd) = fs::read_dir(&dir) else {
-			continue;
-		};
-		for entry in rd.flatten() {
-			let p = entry.path();
-			scanned_count += 1;
-			progress_cb(scanned_count);
-
-			let Ok(ft) = entry.file_type() else {
-				continue;
-			};
-			if ft.is_dir() {
-				queue.push(p);
-			} else if ft.is_file() {
-				classify_file(&p, &mut nor_videos, &mut enc_videos);
-			}
-		}
-	}
-
+	let mut scanned = 0;
+	walk(
+		path,
+		|| {
+			scanned += 1;
+			progress_cb(scanned);
+		},
+		|p| classify_file(p, &mut nor_videos, &mut enc_videos),
+	);
 	(nor_videos, enc_videos)
 }

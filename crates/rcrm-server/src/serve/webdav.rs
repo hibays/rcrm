@@ -359,6 +359,24 @@ impl HttpConn {
 		// A malformed framing MUST be an unrecoverable error (400 + close),
 		// never a silently ignored header: unread bytes would be parsed as the
 		// next request on a keep-alive connection (request smuggling).
+		// Reject duplicate framing fields (CL.CL / TE.TE smuggling); find() below
+		// would only see the first.
+		if headers
+			.iter()
+			.filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+			.count()
+			> 1
+			|| headers
+				.iter()
+				.filter(|(k, _)| k.eq_ignore_ascii_case("transfer-encoding"))
+				.count()
+				> 1
+		{
+			return Err(io::Error::new(
+				io::ErrorKind::InvalidData,
+				"duplicate Content-Length or Transfer-Encoding",
+			));
+		}
 		let cl = headers
 			.iter()
 			.find(|(k, _)| k.eq_ignore_ascii_case("content-length"));
@@ -1176,13 +1194,19 @@ fn format_size(bytes: u64) -> String {
 // Stream file body (projected or plain)
 // =======================
 
+/// Stream `length` bytes, returning how many were actually written.
+///
+/// The count is returned rather than discarded so [Responder::respond_stream]
+/// can close the connection when a file is truncated between the metadata
+/// probe and the read: a body shorter than its `Content-Length` desynchronises
+/// keep-alive framing (RFC 9112 §6.3).
 fn stream_body(
 	resolved: &Resolved,
 	offset: u64,
 	length: u64,
 	ctx: &ServerContext,
 	stream: &mut dyn ReadWrite,
-) -> io::Result<()> {
+) -> io::Result<u64> {
 	let mut buf = vec![0u8; 64 * 1024];
 	let mut sent = 0u64;
 	match resolved {
@@ -1219,7 +1243,7 @@ fn stream_body(
 		_ => {}
 	}
 	stream.flush()?;
-	Ok(())
+	Ok(sent)
 }
 
 // =======================
@@ -1366,20 +1390,26 @@ impl<'a> Responder<'a> {
 		self.stream.flush()
 	}
 
-	/// Same rule for a representation that must be streamed: a projected file
-	/// can be gigabytes, so it is never materialised into a `Vec`. `emit`
-	/// writes exactly `content_length` bytes and is skipped entirely for HEAD.
+	/// `emit` returns bytes written; skipped for HEAD. A short body closes the connection.
 	fn respond_stream(
 		&mut self,
 		status: u16,
 		reason: &str,
 		headers: &[(&str, &str)],
 		content_length: u64,
-		emit: impl FnOnce(&mut dyn ReadWrite) -> io::Result<()>,
+		emit: impl FnOnce(&mut dyn ReadWrite) -> io::Result<u64>,
 	) -> io::Result<()> {
 		self.write_head(status, reason, headers, content_length)?;
 		if !self.head_only {
-			emit(self.stream)?;
+			let written = emit(self.stream)?;
+			if written != content_length {
+				// The body is shorter than the declared Content-Length (the
+				// file was truncated/rotated mid-transfer). Reusing this
+				// connection would make the client parse the remaining body
+				// bytes as the next response — close it so the framing error
+				// is contained to this one response (RFC 9112 §6.3).
+				self.close_after = true;
+			}
 		}
 		self.stream.flush()
 	}

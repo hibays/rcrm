@@ -1305,3 +1305,60 @@ fn read_http_over_tls(
 	}
 	(status_line, headers, body)
 }
+
+// =======================
+// Regressions: path confinement, framing, short bodies
+// =======================
+
+/// A symlink inside the mount pointing OUT of it must not expose the target:
+/// path resolution resolves each component and refuses anything that leaves
+/// the canonical mount root (complete mediation).
+#[test]
+#[cfg(windows)]
+fn webdav_symlink_outside_mount_is_refused() {
+	let base = std::env::temp_dir().join("rcrm_webdav_symlink_escape");
+	let _ = std::fs::remove_dir_all(&base);
+	let mount = base.join("mount");
+	std::fs::create_dir_all(&mount).unwrap();
+	std::fs::write(base.join("outside.mp4"), b"SECRET-OUTSIDE").unwrap();
+	let link = mount.join("leak.mp4");
+	if std::os::windows::fs::symlink_file(base.join("outside.mp4"), &link).is_err() {
+		eprintln!("skipping: no privilege to create a symlink here");
+		return;
+	}
+	let key = deterministic_content(32, 53);
+	let fixture = start_webdav_server(mount, &key, false);
+	let resp = http_request(
+		fixture.addr,
+		"GET /leak.mp4 HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+	);
+	assert!(
+		!resp.contains("SECRET-OUTSIDE"),
+		"a symlink must not expose a file outside the mount: {resp}"
+	);
+	let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Two `Content-Length` or two `Transfer-Encoding` field lines are the CL.CL /
+/// TE.TE smuggling shapes; RFC 9112 §6.3 requires 400 + close, not framing on
+/// the first value.
+#[test]
+fn webdav_duplicate_framing_headers_are_rejected() {
+	let fixture = spec_fixture("rcrm_webdav_dup_framing");
+	let cases: &[&str] = &[
+		"Content-Length: 1\r\nContent-Length: 2\r\n",
+		"Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n",
+	];
+	for hdr in cases {
+		let (line, headers, _) = http_response_raw(
+			fixture.addr,
+			&format!("GET /data.bin HTTP/1.1\r\nHost: localhost\r\n{hdr}Connection: close\r\n\r\n"),
+		);
+		assert!(line.contains("400"), "duplicate framing {hdr:?}: {line}");
+		assert_eq!(
+			header_value(&headers, "connection"),
+			Some("close"),
+			"duplicate framing {hdr:?} must close"
+		);
+	}
+}

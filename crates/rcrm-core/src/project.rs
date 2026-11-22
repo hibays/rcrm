@@ -108,7 +108,7 @@ impl ProjectedFile {
 	/// registered in `manager`), and (for partial files) read the part of
 	/// the head adjacent to the header. The second head fragment on disk
 	/// and the head decryption itself are deferred to the first read that
-	/// overlaps the head region (see [`Self::init_head`]). Returns
+	/// overlaps the head region (see `init_head`). Returns
 	/// `Err(InvalidData)` if no key matches.
 	pub fn open(path: &Path, manager: &Manager, _session_key: &SessionKey) -> io::Result<Self> {
 		let file = OpenOptions::new().read(true).open(path)?;
@@ -153,14 +153,7 @@ impl ProjectedFile {
 		})
 	}
 
-	/// Lazily materialize the decrypted head: read the second head
-	/// fragment (the last `header_len` ciphertext bytes, stored at disk
-	/// offset `file_size`), decrypt the assembled head with the file key,
-	/// then re-encrypt it with the session key for in-memory storage.
-	///
-	/// Called at most once per `ProjectedFile` (via `OnceLock`); on
-	/// failure the error is cached so later reads fail consistently
-	/// instead of re-reading the disk.
+	/// Materialize the decrypted head, cached only on success.
 	fn init_head(
 		&self,
 		file: &mut File,
@@ -296,14 +289,15 @@ impl ProjectedFile {
 					if head.get().is_none() {
 						match self.init_head(file, session_key) {
 							Ok(v) => {
+								// Cache only on success so a transient failure
+								// can be retried by a later read.
 								let _ = head.set(v);
 							}
 							Err(e) => {
-								// The head is cached only on success so a transient
-								// failure can be retried; the original error is
-								// discarded here, but surface it for diagnostics
-								// rather than letting it vanish.
-								crate::log_error!("init_head failed (head will be retried): {e}");
+								// Another reader may have set it meanwhile; else surface the real error.
+								if head.get().is_none() {
+									return Err(e);
+								}
 							}
 						}
 					}
