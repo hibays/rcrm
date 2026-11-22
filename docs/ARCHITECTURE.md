@@ -675,9 +675,11 @@ Every byte that reaches Rust has to live in native memory, so the pipeline is
 built to put it there exactly once:
 
 - `services/native_bytes.dart` streams an HTTP response **straight into a
-  `calloc` buffer** (sized from `Content-Length`, or a fixed head) and hands the
-  pointer over. The naive shape — fetch a Dart `Uint8List`, then `calloc` +
-  `setAll` — copies the whole payload for nothing.
+  Rust-allocated buffer** (`rcrm_alloc_bytes`, sized from `Content-Length`, or a
+  fixed head). The naive shape — fetch a Dart `Uint8List`, then copy it — would
+  copy the whole payload for nothing. `NativeBytes` carries the matched
+  deallocator and an explicit `rustAllocated` flag; allocation and free both
+  happen in Rust, so the global allocator can be swapped with no FFI change.
 - Decode **takes ownership** of that buffer (freed by Rust when the decode
   ends); the RGBA comes back as native memory Dart reads in place.
 - Thumbnails for software-decoded formats never materialise pixels at all: Rust

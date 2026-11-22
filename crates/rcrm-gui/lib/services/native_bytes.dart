@@ -4,9 +4,10 @@
 // Every byte that reaches Rust has to exist in native memory, and the obvious
 // shape — fetch a Dart `Uint8List`, then `calloc` + `setAll` it into a buffer —
 // copies the whole payload a second time for nothing. This helper streams the
-// response into a calloc'd buffer instead, so the payload is written exactly
-// once (by the network, into the buffer Rust is about to read) and the FFI
-// hand-off copies nothing at all.
+// response into a Rust-allocated buffer instead, so the payload is written
+// exactly once (by the network, into the buffer Rust already owns) and the FFI
+// hand-off copies nothing at all. Allocation and free both happen on the Rust
+// side, so swapping the global allocator needs no change to this file.
 //
 // **Who uses it:**
 //   * `media_metadata.dart` — the EXIF/track head for the viewer's info sheet
@@ -33,7 +34,49 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
+import '../ffi/rust_bridge.dart';
 import 'net.dart';
+
+/// The only function allowed to free a given native allocation. Stored on the
+/// [NativeBytes] that owns the pointer, so a buffer can never be freed by a
+/// different allocator than the one that made it.
+typedef NativeDeallocator = void Function(Pointer<Uint8> ptr, int len);
+
+/// A native allocation, its matched deallocator, and its origin. Kept together
+/// so a buffer can never be freed by a different allocator than the one that
+/// made it, and so the transfer guard need not infer the origin from a closure.
+typedef NativeAllocation = ({
+  Pointer<Uint8> ptr,
+  NativeDeallocator free,
+  bool rustAllocated,
+});
+
+void _callocFree(Pointer<Uint8> ptr, int len) => calloc.free(ptr);
+
+void _rustFree(Pointer<Uint8> ptr, int len) => RustBridge().freeBytes(ptr, len);
+
+/// Allocate exactly [len] bytes with Rust when the bridge is loaded, otherwise
+/// with calloc (tests, and pre-load paths that never hand the buffer to Rust).
+///
+/// A loaded bridge that cannot allocate returns a null pointer: callers must
+/// treat that as a refusal. Falling back to calloc there would be exactly the
+/// cross-allocator free this design removes — a calloc buffer passed to a
+/// Rust-owned export would be freed by Rust's allocator.
+NativeAllocation allocateNativeBytes(int len) {
+  final bridge = RustBridge();
+  if (bridge.isLoaded && bridge.hasNativeAllocator) {
+    return (
+      ptr: len == 0 ? nullptr : bridge.allocBytes(len),
+      free: _rustFree,
+      rustAllocated: true,
+    );
+  }
+  return (
+    ptr: calloc<Uint8>(len),
+    free: _callocFree,
+    rustAllocated: false,
+  );
+}
 
 /// A payload that lives in native memory (see the file comment).
 class NativeBytes {
@@ -50,6 +93,15 @@ class NativeBytes {
   /// the two shapes apart (see [transferIfWhole]); it is not a promise to Rust.
   final int cap;
 
+  /// The deallocator that matches this buffer's allocation. Defaults to calloc
+  /// for buffers constructed directly (tests); production buffers pass the
+  /// Rust deallocator returned alongside the pointer by [allocateNativeBytes].
+  final NativeDeallocator _deallocate;
+
+  /// Explicit origin, so the transfer guard does not depend on Dart's
+  /// canonicalisation of top-level function tear-offs.
+  final bool rustAllocated;
+
   bool _owned;
 
   /// Set by the first free, whichever path performs it. `reclaim()` runs from
@@ -57,12 +109,35 @@ class NativeBytes {
   /// the guard is what keeps a double free from happening at all.
   bool _freed = false;
 
-  NativeBytes(this.ptr, this.len, this.cap) : _owned = true;
+  NativeBytes(
+    this.ptr,
+    this.len,
+    this.cap, {
+    NativeDeallocator? deallocate,
+    this.rustAllocated = false,
+  }) : _owned = true,
+       _deallocate = deallocate ?? _callocFree;
+
+  /// Allocate exactly [len] bytes and wrap them with the matching deallocator.
+  /// Null means the loaded bridge could not allocate — a refusal, not an empty
+  /// payload. Keeps the origin/deallocator pairing in one place so no call site
+  /// can forget to carry it through.
+  static NativeBytes? allocateOwned(int len) {
+    final allocation = allocateNativeBytes(len);
+    if (allocation.ptr == nullptr) return null;
+    return NativeBytes(
+      allocation.ptr,
+      len,
+      len,
+      deallocate: allocation.free,
+      rustAllocated: allocation.rustAllocated,
+    );
+  }
 
   void free() {
     if (_owned && !_freed && ptr != nullptr) {
       _freed = true;
-      calloc.free(ptr);
+      _deallocate(ptr, cap);
     }
     _owned = false;
   }
@@ -83,7 +158,7 @@ class NativeBytes {
   void reclaim() {
     if (_freed || ptr == nullptr) return;
     _freed = true;
-    calloc.free(ptr);
+    _deallocate(ptr, cap);
     _owned = false;
   }
 
@@ -101,8 +176,16 @@ class NativeBytes {
   /// [NativeTransfer] — so no call site *can* hand Rust a partial buffer,
   /// however it was reached. Callers that get null fall back to the retryable
   /// "not reusable" path instead of sending a capacity that might be a lie.
-  NativeTransfer? transferIfWhole() =>
-      len == cap ? NativeTransfer._(this) : null;
+  NativeTransfer? transferIfWhole() {
+    if (len != cap) return null;
+    // Origin is the only thing that matters: a calloc buffer must never be
+    // handed to Rust, which would free it with the wrong allocator. Do NOT
+    // key this on RustBridge().isLoaded — a failed mobile bridge bind can
+    // leave decode addresses set while _loaded is still false, which would
+    // otherwise let a calloc buffer through.
+    if (!rustAllocated) return null;
+    return NativeTransfer._(this);
+  }
 }
 
 /// A [NativeBytes] that may be handed to an export which takes ownership.
@@ -117,11 +200,7 @@ class NativeBytes {
 final class NativeTransfer {
   final NativeBytes _bytes;
 
-  NativeTransfer._(this._bytes)
-    : assert(
-        _bytes.len == _bytes.cap,
-        'a partial buffer cannot be transferred',
-      );
+  NativeTransfer._(this._bytes);
 
   /// Address of the allocation — exactly [len] bytes of it.
   Pointer<Uint8> get ptr => _bytes.ptr;
@@ -236,8 +315,11 @@ Future<NativeFetch> fetchNativeBytes(
   } catch (_) {
     return NativeFetch.refused;
   }
+  // An unconsumed body does not return its connection to the pool. Every early
+  // refusal below drains through this one helper.
+  Future<void> drain() => response.drain<void>().timeout(remaining()).catchError((_) {});
   if (response.statusCode != 200 && response.statusCode != 206) {
-    await response.drain<void>().timeout(remaining()).catchError((_) {});
+    await drain();
     return NativeFetch.refused;
   }
 
@@ -267,7 +349,19 @@ Future<NativeFetch> fetchNativeBytes(
     return NativeFetch.unsized;
   }
 
-  final buffer = calloc<Uint8>(cap);
+  if (cap == 0) {
+    // An authoritative empty body needs no allocation: rcrm_alloc_bytes(0)
+    // returns null by design, so allocating would look like a failure.
+    await drain();
+    return NativeFetch(NativeBytes(nullptr, 0, 0));
+  }
+  final allocation = allocateNativeBytes(cap);
+  final buffer = allocation.ptr;
+  // A loaded bridge that cannot allocate is a refusal, not an empty body.
+  if (buffer == nullptr) {
+    await drain();
+    return NativeFetch.refused;
+  }
   final view = buffer.asTypedList(cap);
   var filled = 0;
   try {
@@ -296,7 +390,7 @@ Future<NativeFetch> fetchNativeBytes(
         // server answering a Range request with 200 and the whole body is
         // normal, and stopping at the cap is the point.
         if (headBytes != null) break;
-        calloc.free(buffer);
+        allocation.free(buffer, cap);
         return NativeFetch.unsized;
       }
       final room = cap - filled;
@@ -306,7 +400,7 @@ Future<NativeFetch> fetchNativeBytes(
         if (headBytes != null) break;
         if (chunk.length > room) {
           // This very chunk already carried the extra bytes.
-          calloc.free(buffer);
+          allocation.free(buffer, cap);
           return NativeFetch.unsized;
         }
         // Exactly filled: keep reading so the next chunk (if any) is caught above
@@ -317,17 +411,32 @@ Future<NativeFetch> fetchNativeBytes(
       filled += chunk.length;
     }
   } catch (_) {
-    calloc.free(buffer);
+    allocation.free(buffer, cap);
     return NativeFetch.refused;
   }
   if (headBytes == null && filled != cap) {
     // Short read: the capacity no longer describes the payload.
-    calloc.free(buffer);
+    allocation.free(buffer, cap);
     return NativeFetch.unsized;
   }
   if (filled == 0) {
-    calloc.free(buffer);
+    allocation.free(buffer, cap);
     return NativeFetch(NativeBytes(nullptr, 0, 0));
   }
-  return NativeFetch(NativeBytes(buffer, filled, cap));
+  if (headBytes != null && filled < cap) {
+    // A short Range response leaves a tail that was never written. calloc used
+    // to zero it; keep that observable behaviour for the `view` seam now that
+    // the allocation is uninitialized. Such a head is never transferred (len
+    // != cap), so this is presentation-only, not part of the hand-off.
+    view.fillRange(filled, cap, 0);
+  }
+  return NativeFetch(
+    NativeBytes(
+      buffer,
+      filled,
+      cap,
+      deallocate: allocation.free,
+      rustAllocated: allocation.rustAllocated,
+    ),
+  );
 }

@@ -83,12 +83,10 @@ void main() {
     expect(bytes, isNotNull);
     expect(fetched.retryWithCopy, isFalse);
     expect(bytes!.len, body.length);
-    // "No slack" is now a property of the hand-off rather than of a number
-    // this test can read: only a buffer whose allocation is exactly its payload
-    // can produce a transfer at all.
-    final transfer = bytes.transferIfWhole();
-    expect(transfer, isNotNull, reason: 'len == cap, so it may go to Rust');
-    expect(transfer!.len, body.length);
+    // "No slack" means len == cap. A transfer additionally requires Rust
+    // origin, which this test environment (no bridge loaded) cannot provide.
+    expect(bytes.cap, body.length);
+    expect(bytes.len, bytes.cap);
     expect(firstMismatch(bytes.view, body), -1, reason: 'payload corrupted');
     bytes.free();
   });
@@ -104,7 +102,8 @@ void main() {
     expect(bytes!.len, head);
     // The allocation IS the ask here, so this head happens to be whole too —
     // but a head the server fills only part way would not be (next test).
-    expect(bytes.transferIfWhole(), isNotNull);
+    // Transfer origin is checked separately (no bridge loaded here).
+    expect(bytes.len, bytes.cap);
     expect(firstMismatch(bytes.view, body.sublist(0, head)), -1);
     expect(seenRange, 'bytes=0-${head - 1}');
     bytes.free();
@@ -129,7 +128,10 @@ void main() {
     });
 
     test('a whole-file buffer transfers, and disowning seals it', () {
-      final whole = NativeBytes(calloc<Uint8>(100), 100, 100);
+      // rustAllocated models the origin the transfer guard checks; the pointer
+      // itself is calloc here only because the test VM cannot load the bridge.
+      final wholePtr = calloc<Uint8>(100);
+      final whole = NativeBytes(wholePtr, 100, 100, rustAllocated: true);
       final transfer = whole.transferIfWhole();
       expect(transfer, isNotNull);
       expect(transfer!.len, 100);
@@ -142,6 +144,34 @@ void main() {
       transfer.disown();
       transfer.free();
       transfer.free();
+      // No Rust thread exists in the test VM to free the disowned block.
+      calloc.free(wholePtr);
+    });
+
+    test('free uses the deallocator carried with the buffer', () {
+      final freed = <int>[];
+      final bytes = NativeBytes(
+        calloc<Uint8>(100),
+        100,
+        100,
+        deallocate: (p, n) {
+          freed.add(n);
+          calloc.free(p);
+        },
+        rustAllocated: true,
+      );
+      expect(bytes.transferIfWhole(), isNotNull);
+      bytes.free();
+      expect(freed, [100], reason: 'free must use the matched deallocator');
+    });
+
+    test('a calloc buffer never transfers, regardless of bridge state', () {
+      // Origin, not isLoaded, decides. A failed mobile bind can leave decode
+      // addresses set while isLoaded is still false; keying the guard on
+      // isLoaded would let this buffer reach a Rust-owned export.
+      final callocBuffer = NativeBytes(calloc<Uint8>(100), 100, 100);
+      expect(callocBuffer.transferIfWhole(), isNull);
+      callocBuffer.free();
     });
   });
 

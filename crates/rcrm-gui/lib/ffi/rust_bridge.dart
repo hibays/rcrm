@@ -82,6 +82,14 @@ typedef RcrmCryptFolderDart = int Function(
 typedef RcrmFreeStringC = Void Function(Pointer<Utf8> ptr);
 typedef RcrmFreeStringDart = void Function(Pointer<Utf8> ptr);
 
+/// Native byte buffers are allocated AND freed by Rust (`rcrm_alloc_bytes` /
+/// `rcrm_free_bytes`). Ownership never crosses the ABI as a free, so the global
+/// allocator can be swapped without touching this bridge.
+typedef RcrmAllocBytesC = Pointer<Uint8> Function(IntPtr len);
+typedef RcrmAllocBytesDart = Pointer<Uint8> Function(int len);
+typedef RcrmFreeBytesC = Void Function(Pointer<Uint8> ptr, IntPtr len);
+typedef RcrmFreeBytesDart = void Function(Pointer<Uint8> ptr, int len);
+
 typedef RcrmLastErrorC = Pointer<Utf8> Function();
 typedef RcrmLastErrorDart = Pointer<Utf8> Function();
 
@@ -330,6 +338,15 @@ class RustBridge {
   late RcrmCryptFolderDart cryptFolder;
   late RcrmGetAuthCredentialsDart getAuthCredentials;
   late RcrmFreeStringDart freeString;
+  late RcrmAllocBytesDart allocBytes;
+  late RcrmFreeBytesDart freeBytes;
+
+  /// Whether the loaded bridge exports the allocator pair. An older bridge
+  /// without them still loads: callers fall back to calloc and must not hand
+  /// those buffers to ownership-taking exports.
+  bool _hasNativeAllocator = false;
+  bool get hasNativeAllocator => _hasNativeAllocator;
+
   late RcrmLastErrorDart lastError;
   late RcrmVersionDart version;
   late RcrmSetLogLevelDart _setLogLevelFfi;
@@ -440,6 +457,20 @@ class RustBridge {
     freeString = _lib!.lookupFunction<RcrmFreeStringC, RcrmFreeStringDart>(
       'rcrm_free_string',
     );
+    // Unlike the core exports, this pair is new: a stale native library may
+    // lack it. Degrade to "no native allocator" instead of failing to load —
+    // the caller then uses calloc and refuses to transfer ownership to Rust.
+    try {
+      allocBytes = _lib!.lookupFunction<RcrmAllocBytesC, RcrmAllocBytesDart>(
+        'rcrm_alloc_bytes',
+      );
+      freeBytes = _lib!.lookupFunction<RcrmFreeBytesC, RcrmFreeBytesDart>(
+        'rcrm_free_bytes',
+      );
+      _hasNativeAllocator = true;
+    } catch (_) {
+      _hasNativeAllocator = false;
+    }
     getAuthCredentials = _lib!
         .lookupFunction<RcrmGetAuthCredentialsC, RcrmGetAuthCredentialsDart>(
           'rcrm_get_auth_credentials',

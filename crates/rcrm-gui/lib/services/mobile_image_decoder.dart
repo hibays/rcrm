@@ -16,7 +16,6 @@ import 'dart:ffi';
 import 'dart:typed_data' show Uint8List;
 import 'dart:ui' as ui;
 
-import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import '../ffi/rust_bridge.dart';
@@ -85,13 +84,14 @@ class MobileImageDecoder {
     final addr = _addrFor(format ?? _fmt(url));
     if (addr == 0) return null;
 
-    // The decode ABI rebuilds its `Vec` from the length alone, so the buffer
-    // must be exactly the payload: allocate it that way and copy once. Callers
-    // that can fetch straight into native memory (see [fetchForDecode]) skip
-    // even this copy.
-    final buffer = calloc<Uint8>(bytes.length);
-    buffer.asTypedList(bytes.length).setAll(0, bytes);
-    return _dispatch(addr, buffer, bytes.length, targetWidth);
+    // The decode ABI rebuilds its `Box<[u8]>` from the length alone, so the
+    // buffer must be exactly the payload. Callers that fetch straight into
+    // native memory (see [fetchForDecode]) skip this copy. [_dispatchOwned]
+    // routes through the one ownership guard.
+    final owned = NativeBytes.allocateOwned(bytes.length);
+    if (owned == null) return null;
+    owned.view.setAll(0, bytes);
+    return _dispatchOwned(owned, addr, targetWidth);
   }
 
   /// Decodes a payload that already lives in **native memory**, so the
@@ -110,12 +110,25 @@ class MobileImageDecoder {
     String? format,
   }) async {
     final addr = _addrFor(format ?? _fmt(url));
-    // `len == 0` is decided before the transfer on purpose: a zero-length
-    // allocation counts as "whole" (0 == 0), and a transfer built from it would
-    // carry a pointer that may be null.
-    final transfer = addr == 0 || head.len == 0 ? null : head.transferIfWhole();
-    if (transfer == null) {
+    // A zero-length allocation counts as "whole" (0 == 0) but may carry a null
+    // pointer, so decide before the transfer.
+    if (addr == 0 || head.len == 0) {
       head.free();
+      return null;
+    }
+    return _dispatchOwned(head, addr, targetWidth);
+  }
+
+  /// The one path that hands a buffer to an ownership-taking Rust export:
+  /// every outcome leaves [owned] either with Rust or freed.
+  static Future<ui.Codec?> _dispatchOwned(
+    NativeBytes owned,
+    int addr,
+    int targetWidth,
+  ) async {
+    final transfer = owned.transferIfWhole();
+    if (transfer == null) {
+      owned.free();
       return null;
     }
     transfer.disown(); // Rust owns it from here on

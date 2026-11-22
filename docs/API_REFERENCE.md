@@ -17,26 +17,59 @@ Five shapes exist; picking the wrong one is a leak, a double free or worse.
 | **Returned string** | Rust (`str_to_cstring`) | Dart, via `rcrm_free_string` | `rcrm_get_server_url`, `rcrm_last_error`, `rcrm_version`, `rcrm_media_metadata_async`'s reply |
 | **Passed string** | Dart | Dart — Rust copies immediately | `rcrm_start_server`'s `dirs_json`/`bind_addr`, `rcrm_crypt_folder` |
 | **Password buffer** | Rust (`rcrm_password_buffer`) | Rust, in `rcrm_start_server` | the password pointer passed to `rcrm_start_server` |
-| **Owned buffer** (`DecodeBuf`) | Dart (`calloc`, or a copy-free native fetch) | **Rust**, when the decode finishes | `rcrm_decode_avif_async` / `_jxl_async` / `_heic_async` |
-| **Borrowed buffer** | Dart | Dart, after the call returns | `rcrm_encode_thumb_webp`, `rcrm_generate_thumb_webp_from_image` |
+| **Owned buffer** (`DecodeBuf`) | Rust (`rcrm_alloc_bytes`, filled by Dart in place) | **Rust**, when the decode finishes | `rcrm_decode_avif_async` / `_jxl_async` / `_heic_async` |
+| **Borrowed buffer** | Rust (`rcrm_alloc_bytes`), or calloc before the bridge loads | Dart via `rcrm_free_bytes` (or calloc), after the call returns | `rcrm_encode_thumb_webp`, `rcrm_generate_thumb_webp_from_image` |
 | **Returned buffer** (`WebpBuf`) | Rust | Dart, via `rcrm_free_webp_buf` (or a `NativeFinalizer`) | every WebP producer, including `rcrm_generate_poster_async`'s callback |
 
 Rules that follow from the table:
 
-- An **owned** buffer must be exactly the payload: the ABI rebuilds its `Vec`
-  from the **length alone**, so Dart either `calloc`s exactly (one copy) or
-  fetches into native memory already sized to the body (`services/native_bytes.dart`
-  — no copy). Never `calloc.free` it, and never touch it after the call — including
-  on the timeout path. No export takes a caller-supplied capacity: a wrong one
-  would free a wrong layout and could not be checked in Rust. Dart enforces the
-  "exactly `len` bytes" half by type instead — `NativeTransfer` can only be
-  obtained from a whole-file `NativeBytes`, and `transferIfWhole()` returns null
-  for a partly filled allocation, which callers treat as retryable.
+- An **owned** buffer is allocated by `rcrm_alloc_bytes(len)` and filled by Dart
+  in place — a `calloc` copy for a Dart list, or straight from the network for a
+  native fetch (`services/native_bytes.dart`, no copy). Rust owns the allocation
+  from the first byte and rebuilds its `Vec` from the **length alone**, so the
+  same global allocator performs both the allocation and the free. This is what
+  makes the global allocator swappable without any FFI change: no buffer is ever
+  allocated on one side and freed on the other. Dart never frees an owned buffer
+  and never touches it after the call — including on the timeout path. No export
+  takes a caller-supplied capacity: a wrong one would free a wrong layout and
+  could not be checked in Rust. Dart enforces the "exactly `len` bytes" half by
+  type — `NativeTransfer` can only be obtained from a whole-file `NativeBytes`,
+  and `transferIfWhole()` returns null for a partly filled allocation, which
+  callers treat as retryable. `NativeBytes` carries its matched deallocator, so a
+  test that constructs a `calloc` buffer directly always frees it with calloc.
 - A **borrowed** buffer stays Dart's: the call only reads it, so a failure costs
   nothing and the caller frees it afterwards.
 - Every buffer Rust hands back (`DecodeBuf`, `WebpBuf`) is read **in place**:
   Dart wraps it with `asTypedList` / an `ImageDescriptor` and frees it through
   the matching `rcrm_free_*` (or a `NativeFinalizer` for `WebpBuf`).
+
+### Verifying the unsafe hand-off
+
+The allocation → Dart fill → `Box<[u8]>` reconstruction path is the only unsafe
+memory contract in the bridge. The ordinary Rust tests cover it; on a host with
+the tooling, validate the layout and initialization invariants under a memory
+checker too:
+
+```bash
+MIRIFLAGS=-Zmiri-permissive-provenance \
+  cargo +nightly miri test -p rcrm-flutter-bridge -- native_buffer_tests metadata_ffi_tests
+valgrind --leak-check=full target/debug/deps/rcrm_flutter_bridge-*
+```
+
+`-Zmiri-permissive-provenance` is required because Dart sends the callback
+`ctx` as an integer request id (Rust passes it back verbatim and never
+dereferences it); the test harness's `Box<Sender>` round-trip through `ctx`
+relies on it too. Strict provenance would flag a pattern that is intentional
+here. Miri found and we fixed two test-harness bugs while validating this path:
+a `&Sender` borrowed through a raw pointer across threads (now an owned
+`Box<Sender>` clone), and a deliberately contract-violating `len == 0` test
+that leaked its original allocation (now reclaimed explicitly).
+
+Valgrind is unavailable on the Windows development host; Miri is available via
+`cargo +nightly miri`, but neither is part of the default build/test gate.
+"whoever allocates, frees" is the rule these checks guard; do not replace the
+Rust-owned buffer with a Dart `calloc` buffer on a path that hands ownership to
+an export.
 
 ## Server Lifecycle
 
@@ -117,7 +150,7 @@ stay silent rather than claim "no camera information" (see
 | `rcrm_free_decode_buf` | `(ptr)` | void |
 
 **Async decode flow**: Dart hands over the buffer (native fetch → no copy, or
-one `calloc` copy), Rust spawns `std::thread::spawn`, decodes at
+one copy into a Rust-allocated buffer), Rust spawns `std::thread::spawn`, decodes at
 `target_width` (0 = full size) and calls `callback(result, ctx)`. Dart uses a
 persistent `NativeCallable.listener`, so the callback lands on the main
 isolate's event loop.

@@ -295,7 +295,9 @@ void main() {
         final head = await MediaMetadataService.fetchHead(url('huge.tif'));
         expect(head, isNotNull);
         expect(head!.len, MediaMetadataService.maxFetchBytes);
-        expect(head.transferIfWhole(), isNotNull);
+        // Transfer also requires Rust origin; this test VM has no bridge, so
+        // check the exact-allocation property directly.
+        expect(head.len, head.cap);
         final landed = head.ptr.asTypedList(head.len);
         expect(firstMismatch(landed, body.sublist(0, head.len)), -1);
         head.free();

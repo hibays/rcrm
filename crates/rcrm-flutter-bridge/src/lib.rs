@@ -13,10 +13,12 @@
 //   2. Inputs that are BORROWED (strings passed to `rcrm_*`, and the raw pixels
 //      passed to the thumbnail encoders) are copied/read immediately — Dart
 //      still owns them and may free them after the call returns.
-//   3. Inputs that are TAKEN (the buffers passed to `rcrm_decode_*_async`) become
-//      Rust-owned: the ABI rebuilds its `Vec` from the length alone, so the
-//      buffer must be EXACTLY `len` bytes, and Rust frees it when the decode
-//      ends. Dart must NEVER free it or touch it again — NOT EVEN ON TIMEOUT.
+//   3. Inputs that are TAKEN (the buffers passed to `rcrm_decode_*_async` and
+//      `rcrm_media_metadata_async`) come from `rcrm_alloc_bytes`: Rust owns the
+//      allocation from the start, Dart fills it in place, and the ABI rebuilds
+//      its `Vec` from the length alone. Allocation and free use the same global
+//      allocator, so swapping it needs no FFI change. Dart must NEVER free the
+//      buffer or touch it again — NOT EVEN ON TIMEOUT.
 //   4. Buffers RETURNED by Rust (`WebpBuf` from the WebP producers, including
 //      `rcrm_generate_poster_async`) are read in place and freed with
 //      `rcrm_free_webp_buf` (or a `NativeFinalizer`).
@@ -70,7 +72,9 @@ mod server;
 mod tls_cert;
 mod webp;
 
+use std::alloc::{Layout, alloc};
 use std::ffi::{CStr, CString};
+use std::mem::MaybeUninit;
 use std::os::raw::c_char;
 
 // =======================
@@ -111,6 +115,155 @@ pub unsafe extern "C" fn rcrm_free_string(ptr: *mut c_char) {
 	}
 	unsafe {
 		drop(CString::from_raw(ptr));
+	}
+}
+
+// =======================
+// Native byte buffers
+// =======================
+
+/// Allocate an uninitialized buffer of exactly `len` bytes for Dart to fill.
+///
+/// Dart writes the payload straight into this allocation (network → native
+/// memory, no copy) and passes the pointer to an ownership-taking export, which
+/// rebuilds a `Box<[u8]>` from it with `len` as the exact layout. Both the
+/// allocation and its free go through the global allocator on this side: no
+/// cross-language free exists, and swapping the allocator needs no change to
+/// the ABI or the Dart bridge.
+///
+/// Returns null when `len` is 0 or the layout would overflow. A null reply for a
+/// non-empty request is an allocation failure — callers must report a refusal,
+/// never substitute a differently allocated buffer. `alloc` is used instead of
+/// `Box::new_uninit_slice` precisely because it reports failure as null rather
+/// than aborting the process on a large allocation under memory pressure.
+#[unsafe(no_mangle)]
+pub extern "C" fn rcrm_alloc_bytes(len: usize) -> *mut u8 {
+	let Ok(layout) = Layout::array::<u8>(len) else {
+		return std::ptr::null_mut();
+	};
+	if layout.size() == 0 {
+		return std::ptr::null_mut();
+	}
+	// SAFETY: `layout` is a valid, non-zero-sized layout derived from `len`.
+	unsafe { alloc(layout) }
+}
+
+/// Rebuild the `Box<[u8]>` that [`rcrm_alloc_bytes`] handed to Dart.
+///
+/// The reconstruction uses `Box<[MaybeUninit<u8>]>` and `assume_init` so the
+/// initialization contract is explicit at the point of use: Dart has written
+/// every byte of this exact-size allocation before handing it back.
+///
+/// # Safety
+/// `data` must be a non-null pointer from `rcrm_alloc_bytes(len)`, not yet freed
+/// or handed over, and all `len` bytes must have been initialized by Dart.
+unsafe fn take_ffi_bytes(data: *const u8, len: usize) -> Vec<u8> {
+	let uninit: Box<[MaybeUninit<u8>]> = unsafe {
+		Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+			data.cast_mut().cast::<MaybeUninit<u8>>(),
+			len,
+		))
+	};
+	// SAFETY: the caller guarantees every byte was written before the hand-off.
+	unsafe { uninit.assume_init() }.into_vec()
+}
+
+/// Free a buffer returned by [`rcrm_alloc_bytes`]. Safe with null.
+///
+/// # Safety
+/// `ptr` must be null or a pointer returned by `rcrm_alloc_bytes(len)` that has
+/// neither been freed nor handed to an ownership-taking export already. `len`
+/// must be the size used for that allocation. The bytes need not be initialized
+/// — a failed fetch is freed without ever having been filled.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rcrm_free_bytes(ptr: *mut u8, len: usize) {
+	if ptr.is_null() || len == 0 {
+		return;
+	}
+	// SAFETY: MaybeUninit<u8> has the same size/alignment as u8, so the layout
+	// matches the alloc(layout) in rcrm_alloc_bytes exactly. The caller upholds
+	// the (ptr, len) pair. Dropping MaybeUninit never reads the bytes, which is
+	// correct for a buffer that was never filled.
+	drop(unsafe {
+		Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+			ptr.cast::<MaybeUninit<u8>>(),
+			len,
+		))
+	});
+}
+
+/// Allocation-hand-off tests for the unsafe FFI buffer path.
+///
+/// These run in the normal suite; to validate the layout and initialization
+/// invariants under a memory checker, run on a host that has the tools:
+///
+/// ```text
+/// MIRIFLAGS=-Zmiri-permissive-provenance \
+///   cargo +nightly miri test -p rcrm-flutter-bridge -- native_buffer_tests metadata_ffi_tests
+/// valgrind --leak-check=full target/debug/deps/rcrm_flutter_bridge-*
+/// ```
+///
+/// The permissive-provenance flag is needed because Dart sends the opaque
+/// callback `ctx` as an integer request id (Rust only passes it back and never
+/// dereferences it); the test harness's `Box<Sender>` round-trip through `ctx`
+/// relies on it too.
+#[cfg(test)]
+mod native_buffer_tests {
+	use super::{rcrm_alloc_bytes, rcrm_free_bytes};
+
+	#[test]
+	fn zero_length_and_overflow_are_refused() {
+		assert!(rcrm_alloc_bytes(0).is_null());
+		assert!(rcrm_alloc_bytes(usize::MAX).is_null());
+	}
+
+	#[test]
+	fn alloc_write_free_round_trip() {
+		const N: usize = 4096;
+		let ptr = rcrm_alloc_bytes(N);
+		assert!(!ptr.is_null(), "allocation failed");
+		// SAFETY: ptr is a non-null allocation of exactly N bytes from rcrm_alloc_bytes.
+		unsafe {
+			std::ptr::write_bytes(ptr, 0xAB, N);
+			assert!(
+				std::slice::from_raw_parts(ptr, N)
+					.iter()
+					.all(|&b| b == 0xAB)
+			);
+			rcrm_free_bytes(ptr, N);
+		}
+	}
+
+	#[test]
+	fn unfilled_buffer_can_be_freed() {
+		const N: usize = 4096;
+		let ptr = rcrm_alloc_bytes(N);
+		assert!(!ptr.is_null(), "allocation failed");
+		// SAFETY: ptr came from rcrm_alloc_bytes(N). No byte was written; the
+		// MaybeUninit reconstruction in rcrm_free_bytes never reads them.
+		unsafe { rcrm_free_bytes(ptr, N) };
+	}
+
+	/// The exact hand-off the ownership-taking exports use: allocate, fill as
+	/// Dart does, rebuild the Box<[u8]>, drop it. This is the test to run under
+	/// Miri / valgrind (see the module docs).
+	#[test]
+	fn filled_buffer_reconstructs_into_vec() {
+		const N: usize = 1024;
+		let ptr = rcrm_alloc_bytes(N);
+		assert!(!ptr.is_null(), "allocation failed");
+		// SAFETY: ptr is a non-null allocation of exactly N bytes.
+		unsafe { std::ptr::write_bytes(ptr, 0x5A, N) };
+		// SAFETY: every byte was written above, and ptr came from rcrm_alloc_bytes(N).
+		let bytes = unsafe { super::take_ffi_bytes(ptr, N) };
+		assert_eq!(bytes.len(), N, "length must match the allocation exactly");
+		assert!(bytes.iter().all(|&b| b == 0x5A), "payload must be intact");
+	}
+
+	#[test]
+	fn freeing_null_is_a_noop() {
+		// SAFETY: rcrm_free_bytes documents null as a no-op.
+		unsafe { rcrm_free_bytes(std::ptr::null_mut(), 4096) };
 	}
 }
 
@@ -315,25 +468,13 @@ pub unsafe extern "C" fn rcrm_decode_avif_async(
 	callback: Option<DecodeCallback>,
 	ctx: *mut std::ffi::c_void,
 ) {
-	// Zero-copy: take ownership of the Dart calloc buffer via from_raw_parts.
-	// Rust's Vec::drop will free it when the spawned thread finishes.
-	// A null/zero-length input is rejected up front — Vec::from_raw_parts
-	// requires a non-null, valid allocation of `len` bytes, and dereferencing
-	// a null (or trusting a length that doesn't match the allocation) is UB.
-	//
-	// ALLOCATOR MATCHING: Dart's `calloc` allocates via the C allocator and
-	// Rust's `Vec::drop` frees through the std System allocator.
-	// - Unix (Android/iOS): std System = libc malloc — match by contract
-	//   (std docs: "malloc on Unix").
-	// - Windows: std System = HeapAlloc/GetProcessHeap, and UCRT calloc/malloc
-	//   also allocate from GetProcessHeap (no private CRT heap, no header
-	//   offset), so cross-freeing works in practice on the platforms this app
-	//   ships to. NOT verified by an in-tree test: there is none, and the
-	//   review that caught this comment was right to distrust it. It is an
-	//   implementation-detail match, not an API guarantee: if UCRT or std ever
-	//   change their backends, copy into a Rust-allocated Vec instead of
-	//   transferring ownership of the Dart buffer (one extra copy on a bounded
-	//   head, which is the safe default if in doubt).
+	// Zero-copy hand-back: Dart filled this buffer in place after rcrm_alloc_bytes
+	// handed it the pointer, so Rust has owned the allocation from the start and
+	// the reconstructed Box frees it through the same global allocator. There is
+	// no cross-language free and no assumption about the C runtime — swapping the
+	// global allocator needs no change here. Null/empty input is rejected before
+	// reconstruction, and Dart only transfers a buffer whose length equals its
+	// allocation (transferIfWhole), so every byte is initialized.
 	if data.is_null() || len == 0 {
 		// Still resolve the Dart completer via the callback with a null result.
 		if let Some(cb) = callback {
@@ -341,7 +482,7 @@ pub unsafe extern "C" fn rcrm_decode_avif_async(
 		}
 		return;
 	}
-	let bytes = unsafe { Vec::from_raw_parts(data as *mut u8, len, len) };
+	let bytes = unsafe { take_ffi_bytes(data, len) };
 	// `ctx` is an opaque integer (request ID) from Dart — never dereferenced,
 	// simply passed through. Cast to usize so the closure is Send.
 	let ctx_raw = ctx as usize;
@@ -399,15 +540,15 @@ pub unsafe extern "C" fn rcrm_decode_jxl_async(
 	callback: Option<DecodeCallback>,
 	ctx: *mut std::ffi::c_void,
 ) {
-	// Zero-copy: same as rcrm_decode_avif_async. Reject null/empty up front
-	// so Vec::from_raw_parts never runs on a null or mismatched allocation.
+	// Zero-copy Rust-owned buffer (see rcrm_decode_avif_async). Reject null/empty
+	// up front so the Box reconstruction never runs on a bad pointer.
 	if data.is_null() || len == 0 {
 		if let Some(cb) = callback {
 			unsafe { cb(std::ptr::null_mut(), ctx) };
 		}
 		return;
 	}
-	let bytes = unsafe { Vec::from_raw_parts(data as *mut u8, len, len) };
+	let bytes = unsafe { take_ffi_bytes(data, len) };
 	let ctx_raw = ctx as usize;
 	// Same shape as `rcrm_decode_avif_async` above: `Builder::spawn` cannot abort
 	// the process, the decode is guarded by `catch_unwind`, and the closure owns
@@ -459,15 +600,15 @@ pub unsafe extern "C" fn rcrm_decode_heic_async(
 	callback: Option<DecodeCallback>,
 	ctx: *mut std::ffi::c_void,
 ) {
-	// Zero-copy: same as rcrm_decode_avif_async. Reject null/empty up front
-	// so Vec::from_raw_parts never runs on a null or mismatched allocation.
+	// Zero-copy Rust-owned buffer (see rcrm_decode_avif_async). Reject null/empty
+	// up front so the Box reconstruction never runs on a bad pointer.
 	if data.is_null() || len == 0 {
 		if let Some(cb) = callback {
 			unsafe { cb(std::ptr::null_mut(), ctx) };
 		}
 		return;
 	}
-	let bytes = unsafe { Vec::from_raw_parts(data as *mut u8, len, len) };
+	let bytes = unsafe { take_ffi_bytes(data, len) };
 	let ctx_raw = ctx as usize;
 	let spawned = std::thread::Builder::new().spawn(move || {
 		let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -598,11 +739,11 @@ type MetadataCallback = unsafe extern "C" fn(*mut c_char, *mut std::ffi::c_void)
 /// `kind_hint` says otherwise (0 = auto, 1 = image, 2 = track). The JSON shape
 /// is documented in `metadata.rs`.
 ///
-/// The hand-off copies nothing: Dart fetches the head **straight into a native
-/// buffer** and passes that pointer, so the bytes travel socket → native
-/// buffer → parser without ever being duplicated. Rust takes ownership of the
-/// buffer and frees it when the parse finishes, so Dart must not touch it after
-/// this call.
+/// The hand-off copies nothing: Dart fetches the head **straight into a
+/// Rust-allocated buffer** and passes that pointer, so the bytes travel socket
+/// → native buffer → parser without ever being duplicated. Rust owns the
+/// allocation from the start and frees it when the parse finishes, so Dart must
+/// not touch it after this call.
 ///
 /// There is deliberately no capacity parameter. The `Vec` is rebuilt from `len`
 /// alone, so the only sound input is a buffer allocated with exactly `len`
@@ -614,11 +755,11 @@ type MetadataCallback = unsafe extern "C" fn(*mut c_char, *mut std::ffi::c_void)
 /// size.
 ///
 /// # Safety
-/// `data` must point to a `calloc`-allocated buffer of **exactly** `len` bytes
-/// (never a partially filled fixed-size buffer), and must not be used again
-/// from Dart. `callback` may be null (no-op). `ctx` is passed through verbatim
-/// and must stay valid for the duration of the spawned thread (it is an opaque
-/// integer id).
+/// `data` must be a pointer returned by `rcrm_alloc_bytes` for **exactly** `len`
+/// bytes (never a partially filled fixed-size buffer), and must not be used
+/// again from Dart. `callback` may be null (no-op). `ctx` is passed through
+/// verbatim and must stay valid for the duration of the spawned thread (it is
+/// an opaque integer id).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rcrm_media_metadata_async(
 	data: *const u8,
@@ -641,24 +782,27 @@ pub unsafe extern "C" fn rcrm_media_metadata_async(
 	if len == 0 {
 		// The caller handed ownership over with the call (Dart disowns before it
 		// returns), so this takes it rather than leak it on a path nobody
-		// expects to happen. The ABI guarantees the allocation is exactly `len`
-		// bytes, so a non-null pointer with `len == 0` describes a zero-sized
-		// allocation and an empty `Vec` frees nothing — correct for that, and at
-		// worst a single bounded leak if a caller ever sends a real allocation
-		// with a zero length (the alternative, freeing a size this side was
-		// never told, is the unsoundness the ABI removed).
-		drop(unsafe { Vec::<u8>::from_raw_parts(data as *mut u8, 0, 0) });
+		// expects to happen. A zero-length Box<[MaybeUninit<u8>]> deallocates
+		// nothing — correct for a zero-sized allocation, and at worst a single
+		// bounded leak if a caller ever sends a real allocation with a zero
+		// length (freeing a size this side was never told is the unsoundness the
+		// ABI removed). Reconstruct as MaybeUninit: no bytes were written here.
+		drop(unsafe {
+			Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+				data.cast_mut().cast::<MaybeUninit<u8>>(),
+				0,
+			))
+		});
 		if let Some(cb) = callback {
 			let json = str_to_cstring(r#"{"kind":"unknown","error":"empty input"}"#);
 			unsafe { cb(json, ctx) };
 		}
 		return;
 	}
-	// Ownership transfer: `len` is both the length and the capacity, which is
-	// exactly what the caller was required to allocate — so `Vec::drop` frees
-	// precisely what calloc made, the same allocator-matching contract the
-	// decode path relies on and documents.
-	let bytes = unsafe { Vec::from_raw_parts(data as *mut u8, len, len) };
+	// Ownership hand-back: rcrm_alloc_bytes made an allocation of exactly `len`
+	// bytes, so the Box reconstruction uses that same layout and frees precisely
+	// that allocation through the same global allocator.
+	let bytes = unsafe { take_ffi_bytes(data, len) };
 	let hint = metadata::KindHint::from_code(kind_hint);
 	let ctx_raw = ctx as usize;
 	let spawned = std::thread::Builder::new().spawn(move || {
@@ -1096,16 +1240,23 @@ mod metadata_ffi_tests {
 	/// `into_ffi_buffer` builds the exact size, and the length it returns IS the
 	/// capacity Dart guaranteed.
 	fn into_ffi_buffer(bytes: &[u8]) -> (*const u8, usize) {
-		let mut v = Vec::with_capacity(bytes.len());
-		v.extend_from_slice(bytes);
-		let len = v.len();
-		let ptr = v.as_ptr();
-		std::mem::forget(v);
-		(ptr, len)
+		if bytes.is_empty() {
+			return (std::ptr::null(), 0);
+		}
+		let ptr = crate::rcrm_alloc_bytes(bytes.len());
+		assert!(!ptr.is_null(), "test allocation failed");
+		// SAFETY: ptr is a non-null allocation of exactly bytes.len() bytes.
+		unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, bytes.len()) };
+		(ptr, bytes.len())
 	}
 
 	/// Mirrors Dart's `_onParsed`: read the JSON, free it with
 	/// `rcrm_free_string`, then deliver it to the waiting test.
+	///
+	/// `ctx` owns a `Box<Sender>` from `ctx_of`. Rebuilding and dropping it here
+	/// keeps the sending half alive until the callback is truly done with it;
+	/// borrowing the test's `&Sender` through a raw pointer let the test drop it
+	/// while the callback thread was still using it (a real data race).
 	unsafe extern "C" fn on_json(json: *mut std::ffi::c_char, ctx: *mut std::ffi::c_void) {
 		let text = if json.is_null() {
 			String::new()
@@ -1116,12 +1267,15 @@ mod metadata_ffi_tests {
 			unsafe { crate::rcrm_free_string(json) };
 			s
 		};
-		let tx = unsafe { &*(ctx as *const mpsc::Sender<String>) };
+		// SAFETY: ctx came from ctx_of's Box::into_raw; the export calls the
+		// callback exactly once, so this rebuild is the sole owner of the clone.
+		let tx = unsafe { Box::from_raw(ctx.cast::<mpsc::Sender<String>>()) };
 		let _ = tx.send(text);
 	}
 
 	fn ctx_of(tx: &mpsc::Sender<String>) -> *mut std::ffi::c_void {
-		tx as *const mpsc::Sender<String> as *mut std::ffi::c_void
+		// The callback owns this clone; the test's `tx` is only used to receive.
+		Box::into_raw(Box::new(tx.clone())).cast()
 	}
 
 	#[test]
@@ -1164,11 +1318,12 @@ mod metadata_ffi_tests {
 		assert!(json.contains("no buffer"), "{json}");
 	}
 
-	/// The transfer itself: `len == 0` with a real, non-null allocation. The
-	/// caller handed ownership over with the call (Dart disowns before it
-	/// returns), so Rust must take it — leaving it to the caller would leak on a
-	/// path nobody expects to be taken. Nothing here frees the buffer
-	/// afterwards: doing so would be a double free, which is the point.
+	/// The defensive path: `len == 0` with a real, non-null allocation. Rust
+	/// takes ownership and reconstructs a zero-length `Box<[MaybeUninit<u8>]>`,
+	/// which deliberately deallocates nothing — freeing a size this side was
+	/// never told is the unsoundness the ABI removed. This test sends that
+	/// contract-violating shape on purpose, then reclaims the original 4096-byte
+	/// allocation itself so Miri's leak check stays clean.
 	#[test]
 	fn an_empty_payload_still_transfers_ownership() {
 		let v: Vec<u8> = Vec::with_capacity(4096);
@@ -1182,5 +1337,8 @@ mod metadata_ffi_tests {
 			.recv_timeout(Duration::from_secs(5))
 			.expect("callback must fire for an empty payload");
 		assert!(json.contains("empty input"), "{json}");
+		// SAFETY: the zero-length Box dropped inside the FFI deallocated
+		// nothing, so this exact (ptr, capacity) pair is still live.
+		unsafe { drop(Vec::from_raw_parts(ptr.cast_mut(), 0, 4096)) };
 	}
 }

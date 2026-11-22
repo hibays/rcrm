@@ -17,7 +17,7 @@
 //     → `rcrm_generate_thumb_webp_from_image`, which decodes, downscales and
 //     encodes inside Rust. Mobile only; no pixels enter Dart at all.
 //
-//   main:   calloc(rgba) → send [token, op, ptr, …]      (ints, zero-copy)
+//   main:   Rust alloc(rgba) → send [token, op, ptr, …] (ints, zero-copy)
 //   worker: view the SAME native buffer via Pointer.fromAddress, encode
 //           → reply [token, outPtr, outLen]              (ints, zero-copy)
 //   main:   wrap the output in a NativeFinalizer view
@@ -30,14 +30,13 @@
 // anything earlier races a killed worker into freed memory, and letting both
 // sides free the same pointer double-frees it.
 //
-// Copy budget: one memcpy into calloc for [encodeRgba], ZERO for
+// Copy budget: one memcpy into the Rust buffer for [encodeRgba], ZERO for
 // [generateThumbFromImage]. The encoded output is never copied either way.
 
 import 'dart:async';
 import 'dart:ffi';
 import 'dart:isolate';
 
-import 'package:ffi/ffi.dart';
 import 'package:flutter/foundation.dart';
 
 import '../ffi/rust_bridge.dart';
@@ -166,11 +165,8 @@ class ThumbWebpWorker {
       // No worker at all: the one copy happens inside [_encodeSync].
       return _encodeSync(rgba, w, h, quality: quality);
     }
-    final owned = NativeBytes(
-      calloc<Uint8>(rgba.length),
-      rgba.length,
-      rgba.length,
-    );
+    final owned = NativeBytes.allocateOwned(rgba.length);
+    if (owned == null) return null;
     owned.view.setAll(0, rgba);
     Uint8List? out;
     try {
@@ -453,9 +449,11 @@ class ThumbWebpWorker {
   }) {
     final bridge = _loadedBridge();
     if (bridge == null) return null;
-    final owned =
-        reuse ??
-        NativeBytes(calloc<Uint8>(rgba.length), rgba.length, rgba.length);
+    NativeBytes? owned = reuse;
+    if (owned == null) {
+      owned = NativeBytes.allocateOwned(rgba.length);
+      if (owned == null) return null;
+    }
     if (reuse == null) owned.view.setAll(0, rgba);
     final ptr = bridge.encodeThumbWebp(owned.ptr, rgba.length, w, h, quality);
     if (reuse == null) owned.free();
