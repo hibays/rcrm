@@ -1,9 +1,9 @@
 // test/image_load_gate_test.dart
 // The image decode gate is a LIFO stack: newest served first, a repeat request
-// raised to the top, and a waiting request is never dropped (a dropped token is
-// completed, so its caller decodes outside the concurrency cap and in request
-// order). The last group pins the wiring, asserting the order the server is
-// actually asked in.
+// raised to the top. An abandoned waiting token settles with `false` so its
+// caller skips the decode instead of running it outside the concurrency cap;
+// a granted token settles with `true`. The last group pins the wiring,
+// asserting the order the server is actually asked in.
 
 import 'dart:async';
 import 'dart:io';
@@ -24,10 +24,10 @@ void main() {
 
   /// Every token a test takes, so the singleton is left clean for the next one
   /// (each test file runs in its own isolate, but not each test).
-  final held = <Completer<void>>[];
+  final held = <Completer<bool>>[];
 
   /// Pushes a request and remembers it for the tear-down.
-  Completer<void> push() {
+  Completer<bool> push() {
     final token = gate.acquire();
     held.add(token);
     return token;
@@ -111,19 +111,21 @@ void main() {
       expect(first.isCompleted, isFalse);
     });
 
-    test('a request abandoned before its turn leaves the stack', () {
+    test('a request abandoned before its turn leaves the stack', () async {
       final running = [for (var i = 0; i < slots; i++) push()];
       final oldest = push();
       final abandoned = push();
       final newest = push();
 
       // The cell scrolled off before its slot came up (PooledImage._teardown).
+      // The caller is unblocked, but with "skip", never with a slot.
       gate.done(abandoned);
-      expect(abandoned.isCompleted, isTrue, reason: 'its caller would hang');
+      expect(await abandoned.future, isFalse, reason: 'caller must skip decode');
       expect(gate.waitingCount, 2);
+      expect(gate.runningCount, slots, reason: 'no slot was granted');
 
       gate.done(running.first);
-      expect(newest.isCompleted, isTrue);
+      expect(await newest.future, isTrue);
       expect(oldest.isCompleted, isFalse);
     });
 
@@ -133,10 +135,8 @@ void main() {
       }
       final stacked = [for (var i = 0; i < 30; i++) push()];
 
-      // A dropped token is completed, and both callers read completion as "a
-      // slot is yours": the oldest (top-of-folder) requests would then decode
-      // outside the concurrency cap, in request order — the FIFO behaviour the
-      // stack replaced. Waiting must leave every future open.
+      // An abandoned token settles with "skip" only for that one caller; it
+      // never grants a slot. Waiting must leave every future open.
       expect(gate.waitingCount, 30);
       expect(stacked.any((token) => token.isCompleted), isFalse);
 

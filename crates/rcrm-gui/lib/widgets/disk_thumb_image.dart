@@ -39,7 +39,7 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
 
   /// Gate token of a generation still waiting for a slot, by disk key; read only
   /// by [resolveStreamForKey].
-  static final Map<String, Completer<void>> _waitingTokens = {};
+  static final Map<String, Completer<bool>> _waitingTokens = {};
 
   /// Key for the on-disk thumbnail of [url] at [width]: path + width, nothing else.
   /// `ThumbCache.pathId` keeps only the URL path and `ThumbCache._key` hashes the
@@ -77,7 +77,13 @@ class DiskThumbImage extends ImageProvider<DiskThumbImage> {
     _waitingTokens[diskKey] = token; // before the first await, for restack
     Uint8List? thumb;
     try {
-      await token.future;
+      if (!await token.future) {
+        // Defensive: today no caller abandons a *waiting* disk-thumb token
+        // (the only `done()` here runs in this `finally`, after a grant).
+        // Keeping the check means a future abandonment still skips the decode
+        // instead of running it outside the concurrency cap.
+        return null;
+      }
       thumb = await _makeThumb(url, width);
     } finally {
       if (identical(_waitingTokens[diskKey], token)) {

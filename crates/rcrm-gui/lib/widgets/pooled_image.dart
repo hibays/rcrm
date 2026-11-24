@@ -70,7 +70,7 @@ class _PooledImageState extends State<PooledImage> {
   bool _ready = false;
   bool _error = false;
   double? _ratio;
-  Completer<void>? _token;
+  Completer<bool>? _token;
   ImageStream? _stream;
   ImageStreamListener? _listener;
   Object? _key;
@@ -139,7 +139,13 @@ class _PooledImageState extends State<PooledImage> {
     final token = gated ? ImageLoadGate.instance.acquire() : null;
     _token = token;
     if (token != null) {
-      await token.future;
+      final granted = await token.future;
+      if (!granted) {
+        // Abandoned while queued (teardown released it). Do not resolve the
+        // provider: that would decode outside the concurrency cap.
+        if (_token == token) _token = null;
+        return;
+      }
       if (!mounted) {
         // _teardown() may have already released the token via done().
         // Only release if _token still points to us.
