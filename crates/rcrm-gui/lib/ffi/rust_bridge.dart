@@ -43,18 +43,8 @@ typedef RcrmStartServerDart = int Function(
 );
 
 /// Rust → Dart start events. Four plain ints, no heap allocation to free.
-typedef RcrmServerEventC = Void Function(
-  Int32 code,
-  Int32 a,
-  Int32 b,
-  Int32 c,
-);
-typedef RcrmServerEventDart = void Function(
-  int code,
-  int a,
-  int b,
-  int c,
-);
+typedef RcrmServerEventC = Void Function(Int32 code, Int32 a, Int32 b, Int32 c);
+typedef RcrmServerEventDart = void Function(int code, int a, int b, int c);
 typedef RcrmRegisterServerEventC = Void Function(
   Pointer<NativeFunction<RcrmServerEventC>> cb,
 );
@@ -429,17 +419,17 @@ class RustBridge {
   }
 
   void _bindFunctions() {
-    _passwordBuffer = _lib!.lookupFunction<
-      RcrmPasswordBufferC,
-      RcrmPasswordBufferDart
-    >('rcrm_password_buffer');
+    _passwordBuffer = _lib!
+        .lookupFunction<RcrmPasswordBufferC, RcrmPasswordBufferDart>(
+          'rcrm_password_buffer',
+        );
     startServer = _lib!.lookupFunction<RcrmStartServerC, RcrmStartServerDart>(
       'rcrm_start_server',
     );
-    _registerServerEvent = _lib!.lookupFunction<
-      RcrmRegisterServerEventC,
-      RcrmRegisterServerEventDart
-    >('rcrm_register_server_event');
+    _registerServerEvent = _lib!
+        .lookupFunction<RcrmRegisterServerEventC, RcrmRegisterServerEventDart>(
+          'rcrm_register_server_event',
+        );
     _serverEventCallable ??= NativeCallable<RcrmServerEventC>.listener(
       _onServerEvent,
     );
@@ -641,6 +631,9 @@ class RustBridge {
       // free, no Dart-side buffer to leak on a throw.
       final pwLen = utf8ByteLength(password);
       final pwPtr = _passwordBuffer(pwLen);
+      // A null reply from a non-empty request is a native allocation refusal.
+      // Never write through it: that is a process fault, not a failed start.
+      if (pwLen != 0 && pwPtr == nullptr) return -1;
       if (pwLen != 0) {
         writeUtf8Native(password, pwPtr.asTypedList(pwLen));
       }
