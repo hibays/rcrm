@@ -181,13 +181,77 @@ pub fn bilinear_taps_at(s: f64, src_len: u32) -> (usize, usize, f64) {
 	(i0 as usize, i1 as usize, s - i0)
 }
 
+/// The one bilinear resampling core, shared by every decoder that scales a
+/// finished plane. `C` is the bytes-per-pixel (1 for mono Y, 4 for RGBA);
+/// `src_stride` is in bytes (may exceed `sw*C` for padded frame planes).
+///
+/// The target pixel centre is mapped back into the source with [`bilinear_tap`]
+/// and the four neighbours are blended — identical geometry for every caller.
+/// A const generic keeps `C` compile-time, so the channel loop unrolls with no
+/// runtime cost and the mono path does not pay for RGBA's four channels.
+///
+/// `dst` must be empty on entry; after the call its length is exactly `dw*dh*C`,
+/// every byte written once. Both callers pass a fresh `Vec`, so no caller data
+/// is truncated; `DecodeBuf::from_vec` records the exact reserved capacity.
+#[cfg(feature = "mobile-decode")]
+pub(crate) fn bilinear_resample<const C: usize>(
+	src: &[u8],
+	src_stride: usize,
+	dst: &mut Vec<u8>,
+	sw: u32,
+	sh: u32,
+	dw: u32,
+	dh: u32,
+) -> Option<()> {
+	let len = usize::try_from((dw as u64).checked_mul(dh as u64)?.checked_mul(C as u64)?).ok()?;
+	dst.try_reserve_exact(len).ok()?;
+	// x taps depend only on (dx, dw, sw) — compute each ONCE for the whole
+	// image, not once per output pixel (measured 3.4x for mono, 1.35x RGBA).
+	// Collect BEFORE publishing dst's length: this is the only allocation that
+	// can fail/panic, so no uninitialised byte can ever become part of dst.
+	let x_taps: Vec<(usize, usize, f64)> = (0..dw).map(|dx| bilinear_tap(dx, dw, sw)).collect();
+	// SAFETY: dst is empty on entry (documented contract) and len <= spare
+	// capacity from try_reserve_exact. `spare_capacity_mut` gives the uninit
+	// tail; every byte is written through `out` below BEFORE set_len publishes
+	// the length, so no uninitialised byte is ever part of dst — not even if
+	// the loop unwinds via the safe `src[i00+c]` indexing. Raw writes avoid a
+	// memset of len bytes and a bounds check per byte (measured 1.05-1.15x).
+	let out = dst.spare_capacity_mut().as_mut_ptr().cast::<u8>();
+	let mut o = 0usize;
+	for dy in 0..dh {
+		let (y0, y1, wy) = bilinear_tap(dy, dh, sh);
+		let iwy = 1.0 - wy; // constant across the whole row
+		let row0 = y0 * src_stride;
+		let row1 = y1 * src_stride;
+		for &(x0, x1, wx) in &x_taps {
+			let iwx = 1.0 - wx; // constant across all channels of this pixel
+			let i00 = row0 + x0 * C;
+			let i10 = row0 + x1 * C;
+			let i01 = row1 + x0 * C;
+			let i11 = row1 + x1 * C;
+			for c in 0..C {
+				let top = src[i00 + c] as f64 * iwx + src[i10 + c] as f64 * wx;
+				let bot = src[i01 + c] as f64 * iwx + src[i11 + c] as f64 * wx;
+				// SAFETY: o+C <= dh*dw*C == len (o advances by C once per pixel,
+				// dh*dw pixels total), and `out` is valid for len bytes in the
+				// spare capacity from the reserve above. Each slot is written
+				// once before set_len publishes the length.
+				unsafe { *out.add(o + c) = (top * iwy + bot * wy).round() as u8 };
+			}
+			o += C;
+		}
+	}
+	debug_assert_eq!(o, len);
+	// SAFETY: all len bytes in 0..len were written through `out`; len <= capacity.
+	unsafe { dst.set_len(len) };
+	Some(())
+}
+
 /// Bilinear downscale of an already-decoded, already-oriented RGBA8 image.
 ///
-/// Shared [`bilinear_tap`] maths: the target pixel centre is mapped back into
-/// the source and the four neighbours are blended. Used by the HEIC and JXL
-/// decoders, which return finished RGBA frames and have no scaler of their own;
-/// the result is allocated *exactly* so it can be freed as a plain `Vec` like
-/// every other decode buffer.
+/// Used by the HEIC and JXL decoders, which return finished RGBA frames and
+/// have no scaler of their own; the result is allocated *exactly* so it can be
+/// freed as a plain `Vec` like every other decode buffer.
 #[cfg(feature = "mobile-decode")]
 pub fn downscale_rgba_bilinear(
 	src: &[u8],
@@ -204,23 +268,7 @@ pub fn downscale_rgba_bilinear(
 		return None;
 	}
 	let mut out = Vec::new();
-	out.try_reserve_exact((dw as usize) * (dh as usize) * 4)
-		.ok()?;
-	for dy in 0..dh {
-		let (y0, y1, wy) = bilinear_tap(dy, dh, sh);
-		for dx in 0..dw {
-			let (x0, x1, wx) = bilinear_tap(dx, dw, sw);
-			let i00 = (y0 * sw as usize + x0) * 4;
-			let i10 = (y0 * sw as usize + x1) * 4;
-			let i01 = (y1 * sw as usize + x0) * 4;
-			let i11 = (y1 * sw as usize + x1) * 4;
-			for c in 0..4 {
-				let top = src[i00 + c] as f64 * (1.0 - wx) + src[i10 + c] as f64 * wx;
-				let bot = src[i01 + c] as f64 * (1.0 - wx) + src[i11 + c] as f64 * wx;
-				out.push((top * (1.0 - wy) + bot * wy).round() as u8);
-			}
-		}
-	}
+	bilinear_resample::<4>(src, sw as usize * 4, &mut out, sw, sh, dw, dh)?;
 	Some(DecodeBuf::from_vec(out, dw, dh))
 }
 
@@ -247,6 +295,231 @@ mod tests {
 
 	fn test_read(p: &str) -> Vec<u8> {
 		std::fs::read(format!("tests/testdata/{p}")).expect("read test file")
+	}
+
+	/// libavif fixtures are per-machine (gitignored); skip rather than panic.
+	fn libavif_fixture(name: &str) -> Option<Vec<u8>> {
+		std::fs::read(format!("tests/testdata/avif/libavif/{name}")).ok()
+	}
+
+	/// Mean absolute error over one channel between our RGBA and a reference.
+	fn channel_mae(ours: &[u8], reference: &[u8], pixels: usize, channel: usize) -> f64 {
+		let n = pixels.min(ours.len() / 4).min(reference.len() / 4);
+		if n == 0 {
+			return f64::INFINITY;
+		}
+		let sum: u64 = (0..n)
+			.map(|i| {
+				(ours[i * 4 + channel] as i32 - reference[i * 4 + channel] as i32).unsigned_abs()
+					as u64
+			})
+			.sum();
+		sum as f64 / n as f64
+	}
+
+	/// Full-corpus reference comparison. `manifest.tsv` is generated by
+	/// `tests/gen_avif_reference.py` from two independent references (avifdec /
+	/// ffmpeg); only fixtures where they agree are listed. Missing fixtures or
+	/// manifest skip the test, so a clean checkout stays green.
+	#[test]
+	fn avif_reference_corpus_matches_ffmpeg() {
+		let manifest_path = "tests/testdata/avif/libavif/ref/manifest.tsv";
+		let Ok(manifest) = std::fs::read_to_string(manifest_path) else {
+			eprintln!("skipping: no AVIF reference manifest (run tests/gen_avif_reference.py)");
+			return;
+		};
+		let mut checked = 0usize;
+		for line in manifest.lines() {
+			let cols: Vec<&str> = line.split('\t').collect();
+			if cols.len() != 4 {
+				continue;
+			}
+			let name = cols[0];
+			let pixels: usize = cols[1].parse().expect("manifest pixels");
+			let rgb_tol: f64 = cols[2].parse().expect("manifest rgb tolerance");
+			let alpha_tol: f64 = cols[3].parse().expect("manifest alpha tolerance");
+			let Some(data) = libavif_fixture(name) else {
+				continue; // per-machine fixture absent
+			};
+			let Ok(reference) =
+				std::fs::read(format!("tests/testdata/avif/libavif/ref/{name}.raw"))
+			else {
+				continue;
+			};
+			let buf = decode_avif(&data, 0).unwrap_or_else(|| panic!("{name}: ours returned NULL"));
+			assert_eq!(
+				buf.width as usize * buf.height as usize,
+				pixels,
+				"{name}: pixel count mismatch"
+			);
+			let ours = unsafe { std::slice::from_raw_parts(buf.data, buf.data_len) };
+			// Average over RGB (the same metric used in the three-way audit):
+			// a 12-bit fixture can have a consistent +/-3 rounding in one
+			// channel, which the average absorbs but a per-channel max rejects.
+			let rgb = (channel_mae(ours, &reference, pixels, 0)
+				+ channel_mae(ours, &reference, pixels, 1)
+				+ channel_mae(ours, &reference, pixels, 2))
+				/ 3.0;
+			let alpha = channel_mae(ours, &reference, pixels, 3);
+			unsafe { free_decode_buf(Box::into_raw(buf)) };
+			assert!(rgb <= rgb_tol, "{name}: RGB MAE {rgb:.2} > {rgb_tol}");
+			assert!(
+				alpha <= alpha_tol,
+				"{name}: alpha MAE {alpha:.2} > {alpha_tol}"
+			);
+			checked += 1;
+		}
+		eprintln!("AVIF reference corpus: checked {checked} fixtures");
+	}
+
+	#[test]
+	fn mono_and_high_bitdepth_avif_decode() {
+		// I400 (monochrome) and 10-bit AV1 use different plane layouts from the
+		// common 8-bit 420 path. Both must decode at full size with correct dims.
+		let mono = std::fs::read("tests/testdata/avif/libavif/gradmono.avif");
+		let hbd = std::fs::read("tests/testdata/avif/libavif/grad10.avif");
+		if let Ok(data) = mono {
+			let buf = decode_avif(&data, 0).expect("I400 AVIF must decode");
+			assert_eq!((buf.width, buf.height), (256, 256));
+			unsafe { free_decode_buf(Box::into_raw(buf)) };
+			// A monochrome AVIF must also produce a thumbnail when scaled below
+			// its native width (mobile thumbnail path). Previously the I400
+			// fast path required dw==sw, so it fell through to the chroma path
+			// (which derefs null u/v) and returned NULL.
+			let small = decode_avif(&data, 64).expect("I400 AVIF must downscale");
+			assert_eq!((small.width, small.height), (64, 64));
+			unsafe { free_decode_buf(Box::into_raw(small)) };
+		}
+		if let Ok(data) = hbd {
+			let buf = decode_avif(&data, 0).expect("10-bit AVIF must decode");
+			assert_eq!((buf.width, buf.height), (256, 256));
+			unsafe { free_decode_buf(Box::into_raw(buf)) };
+		}
+	}
+
+	/// 10/12-bit monochrome (I400) AVIF: only the Y plane exists (u/v are null),
+	/// so it fell through to the chroma path and returned NULL even though
+	/// avifdec decodes it. Both full- and limited-range conversions must be
+	/// byte-exact with libavif (full: round(val>>shift); limited: ×256 rounding).
+	#[test]
+	fn mono10_avif_matches_libavif() {
+		let Some(data) = libavif_fixture("mono10_grad.avif") else {
+			eprintln!("skipping: no 10-bit mono fixture");
+			return;
+		};
+		let Some(reference) =
+			std::fs::read("tests/testdata/avif/libavif/ref/mono10_grad.avif.raw").ok()
+		else {
+			eprintln!("skipping: no 10-bit mono reference");
+			return;
+		};
+		let buf = decode_avif(&data, 0).expect("10-bit I400 AVIF must decode");
+		assert_eq!((buf.width, buf.height), (128, 128));
+		let ours = unsafe { std::slice::from_raw_parts(buf.data, buf.data_len) };
+		assert_eq!(
+			ours,
+			&reference[..ours.len().min(reference.len())],
+			"10-bit mono RGBA must match avifdec byte-for-byte"
+		);
+		// A 10-bit mono thumbnail must also be produced (downscale path).
+		let small = decode_avif(&data, 64).expect("10-bit I400 must downscale");
+		assert_eq!((small.width, small.height), (64, 64));
+		unsafe {
+			free_decode_buf(Box::into_raw(buf));
+			free_decode_buf(Box::into_raw(small));
+		}
+	}
+
+	/// Limited-range 10-bit mono: libavif scales Y by 256 with half-up rounding,
+	/// not ×255 truncation (a 765/1024-value error in a full ramp). Verified
+	/// byte-exact against avifdec over the complete 0..1023 limited Y ramp.
+	#[test]
+	fn mono10_limited_range_matches_libavif() {
+		let Some(data) = libavif_fixture("mono10_limited_ramp.avif") else {
+			eprintln!("skipping: no limited mono fixture");
+			return;
+		};
+		let Some(reference) =
+			std::fs::read("tests/testdata/avif/libavif/ref/mono10_limited_ramp.avif.raw").ok()
+		else {
+			eprintln!("skipping: no limited mono reference");
+			return;
+		};
+		let buf = decode_avif(&data, 0).expect("limited 10-bit mono must decode");
+		assert_eq!((buf.width, buf.height), (1024, 1));
+		let ours = unsafe { std::slice::from_raw_parts(buf.data, buf.data_len) };
+		assert_eq!(
+			ours,
+			&reference[..ours.len().min(reference.len())],
+			"limited mono RGBA must match avifdec byte-for-byte"
+		);
+		unsafe { free_decode_buf(Box::into_raw(buf)) };
+	}
+
+	#[test]
+	fn idat_items_decode() {
+		let Some(data) = libavif_fixture("draw_points_idat.avif") else {
+			eprintln!("skipping: no libavif idat fixture");
+			return;
+		};
+		let buf = decode_avif(&data, 0).expect("idat construction_method=1 must decode");
+		assert_eq!((buf.width, buf.height), (33, 11));
+		unsafe { free_decode_buf(Box::into_raw(buf)) };
+	}
+
+	#[test]
+	fn grid_items_decode() {
+		let Some(data) = libavif_fixture("sofa_grid1x5_420.avif") else {
+			eprintln!("skipping: no libavif grid fixture");
+			return;
+		};
+		let buf = decode_avif(&data, 0).expect("grid-derived image must decode");
+		assert_eq!((buf.width, buf.height), (1024, 770));
+		unsafe { free_decode_buf(Box::into_raw(buf)) };
+	}
+
+	#[test]
+	fn grid_with_alpha_decodes() {
+		let Some(data) = libavif_fixture("color_grid_alpha_nogrid.avif") else {
+			eprintln!("skipping: no libavif grid+alpha fixture");
+			return;
+		};
+		let buf = decode_avif(&data, 0).expect("grid with alpha tiles must decode");
+		assert_eq!((buf.width, buf.height), (80, 80));
+		unsafe { free_decode_buf(Box::into_raw(buf)) };
+	}
+
+	#[test]
+	fn grid_tiles_are_stacked_at_native_size_then_cropped() {
+		let Some(data) = libavif_fixture("color_grid_alpha_nogrid.avif") else {
+			eprintln!("skipping: no libavif grid+alpha fixture");
+			return;
+		};
+		let buf = decode_avif(&data, 0).expect("decode");
+		let px = unsafe { std::slice::from_raw_parts(buf.data, buf.data_len) };
+		// Reference: avifdec -r and ffmpeg (libdav1d) agree to within 1 on all
+		// of these. Cropping each 80x64 tile to its 80x40 cell instead of
+		// stacking the two full tiles then cropping the canvas fails every
+		// pixel below row 40.
+		let expect = [
+			(5, 40, 0, 0, 0),
+			(20, 20, 162, 211, 120),
+			(25, 40, 116, 201, 35),
+			(39, 40, 254, 254, 254),
+			(40, 20, 115, 197, 34),
+			(50, 10, 109, 194, 31),
+			(60, 60, 79, 155, 5),
+			(70, 40, 53, 104, 3),
+			(79, 40, 0, 0, 0),
+		];
+		for (y, x, r, g, b) in expect {
+			let p = &px[(y * 80 + x) * 4..(y * 80 + x) * 4 + 4];
+			assert!(
+				p[0].abs_diff(r) <= 4 && p[1].abs_diff(g) <= 4 && p[2].abs_diff(b) <= 4,
+				"pixel ({x},{y}): got {p:?}, want ({r},{g},{b})"
+			);
+		}
+		unsafe { free_decode_buf(Box::into_raw(buf)) };
 	}
 
 	#[test]

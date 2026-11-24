@@ -18,7 +18,7 @@ use crate::decode::{DecodeBuf, Limit, downscale_rgba_bilinear};
 /// fixtures that is 2–5x slower than the old decoder and loses the speed win.
 /// Cap the count like the poster renderer: min(cores, 8), 4 on Android. Sharing
 /// one pool also stops several concurrent decodes from multiplying threads.
-fn decoder_threads() -> usize {
+fn decoder_threads_uncached() -> usize {
 	let available = std::thread::available_parallelism()
 		.map(|n| n.get())
 		.unwrap_or(2);
@@ -32,9 +32,13 @@ fn decoder_threads() -> usize {
 	}
 }
 
+// jxl-rs calls num_threads()/run() many times per frame; available_parallelism()
+// can be a syscall. Probe once and reuse — same value for the pool and runner.
+static DECODER_THREADS: LazyLock<usize> = LazyLock::new(decoder_threads_uncached);
+
 static JXL_POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
 	rayon::ThreadPoolBuilder::new()
-		.num_threads(decoder_threads())
+		.num_threads(*DECODER_THREADS)
 		.thread_name(|i| format!("jxl-decode-{i}"))
 		.build()
 		.expect("bounded jxl thread pool")
@@ -44,7 +48,7 @@ struct JxlRunner;
 
 impl JxlParallelRunner for JxlRunner {
 	fn run(&mut self, num: usize, fun: &JxlParallelRunnerFun<'_>) -> JxlResult<()> {
-		if decoder_threads() <= 1 {
+		if *DECODER_THREADS <= 1 {
 			for i in 0..num {
 				fun(i)?;
 			}
@@ -56,7 +60,7 @@ impl JxlParallelRunner for JxlRunner {
 	}
 
 	fn num_threads(&self) -> usize {
-		decoder_threads()
+		*DECODER_THREADS
 	}
 }
 

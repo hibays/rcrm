@@ -13,7 +13,7 @@ crate-type = ["cdylib", "staticlib"]
 # (`cargo ndk ... build -p rcrm-flutter-bridge --features mobile-decode`), and
 # desktop builds must omit it (AGENTS.md) — they decode with Flutter's engine.
 # Host tests:   cargo test -p rcrm-flutter-bridge --features mobile-decode
-mobile-decode = ["dep:rav1d", "dep:jxl", "dep:rayon", "dep:heic"]
+mobile-decode = ["dep:rav1d", "dep:jxl", "dep:rayon", "dep:heic", "dep:yuv"]
 
 # Direct libmpv poster path: load the process's libmpv at runtime, seek with
 # `absolute+keyframes` first for large sources (falling back to `absolute+exact`
@@ -34,6 +34,13 @@ zeroize = { version = "1.8.2", features = ["simd"] }
 dunce = "1.0.5"
 rand = "0.10"
 zune-jpeg = "0.5"
+# SIMD YUV->RGBA conversion (AVX2/NEON runtime dispatch). Writes straight into
+# the DecodeBuf with no intermediate copy; 3-6x faster than the scalar loop it
+# replaces for full-size 8-bit frames. Used only for the no-downscale path;
+# the fused scalar convert stays for target-width downscale and high bitdepth.
+# yuv 0.8 is a NEW direct dependency. zenyuv's copy is only a dev-dependency
+# and never reaches this crate's build graph; there is no duplicate build.
+yuv = { version = "0.8", optional = true }
 # EXIF + video/audio track metadata (pure Rust, no ffmpeg/libexif). Parses from
 # an in-memory buffer, so the viewer's decrypted bytes never touch disk.
 nom-exif = { version = "3.8", default-features = false }
