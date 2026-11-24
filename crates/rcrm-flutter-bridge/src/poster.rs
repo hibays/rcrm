@@ -53,9 +53,18 @@ pub fn rotate_bgra_clockwise(src: &[u8], width: u32, height: u32, degrees: u32) 
 	// A quarter turn swaps the axes; a half turn does not. Only the result's
 	// WIDTH is needed to index it — its height follows from the same length.
 	let dst_width = if angle % 180 == 90 { height } else { width } as usize;
-	let mut dst = vec![0u8; src.len()];
+	let mut dst = Vec::new();
+	dst.try_reserve_exact(src.len()).ok()?;
+	// Rotation is a permutation of the source pixels: every 4-byte slot is
+	// written exactly once below, so a memset of the whole surface is wasted.
+	// Fill the uninitialised tail and publish the length only once it is all
+	// initialised. A panic on the safe `src` indexes leaves dst empty.
+	let out = dst.spare_capacity_mut().as_mut_ptr().cast::<u8>();
 	if angle == 0 {
-		dst.copy_from_slice(src);
+		// SAFETY: out has src.len() reserved bytes, non-overlapping with src.
+		unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), out, src.len()) };
+		// SAFETY: all src.len() bytes were written above.
+		unsafe { dst.set_len(src.len()) };
 		return Some(dst);
 	}
 	let width = width as usize;
@@ -78,9 +87,15 @@ pub fn rotate_bgra_clockwise(src: &[u8], width: u32, height: u32, degrees: u32) 
 		for x in 0..width {
 			let from = (y * width + x) * 4;
 			let to = (to_x0 as isize + to_stride * x as isize) as usize;
-			dst[to..to + 4].copy_from_slice(&src[from..from + 4]);
+			// SAFETY: the three affine maps above are rotations of the pixel
+			// grid, so `to` is always one of the src.len()/4 slots and each
+			// slot is written exactly once. `from` is in bounds by the length
+			// check at entry. The two ranges are disjoint (`dst` is fresh).
+			unsafe { std::ptr::copy_nonoverlapping(src.as_ptr().add(from), out.add(to), 4) };
 		}
 	}
+	// SAFETY: every 4-byte slot was written once by the rotation loops.
+	unsafe { dst.set_len(src.len()) };
 	Some(dst)
 }
 

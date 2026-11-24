@@ -9,6 +9,7 @@
 
 use crate::decode::{DecodeBuf, Limit};
 use std::alloc::{Layout, alloc, dealloc};
+use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
 use rav1d::include::dav1d::data::Dav1dData;
@@ -422,6 +423,44 @@ fn fill_mono_gray(
 	}
 }
 
+/// Build a limited-range u16→gray LUT of `L` entries on the stack and fill RGBA
+/// through it. `L` is the source depth's sample count (1024 for 10-bit, 4096 for
+/// 12-bit), i.e. `1 << (8 + shift)`; the caller dispatches on it as a const
+/// generic so both the range constants and the index mask are compile-time
+/// values: one AND with no bounds check instead of a runtime `min(lut_len - 1)`
+/// (cmp+cmov plus a retained bounds check), and a multiply-by-reciprocal instead
+/// of a hardware divide in the LUT loop. Any u16, including hostile out-of-range
+/// samples, masks into 0..L and cannot panic.
+///
+/// The table is `MaybeUninit` and written entry-by-entry: no zero pre-fill of a
+/// fixed 4 KB buffer, so a 10-bit frame only ever touches its 1 KB.
+fn fill_mono_lut<const L: usize>(
+	y16: &[u16],
+	ys: usize,
+	out: &mut [u8],
+	sw: u32,
+	sh: u32,
+	dw: u32,
+	dh: u32,
+) {
+	let shift = L.trailing_zeros() - 8;
+	let (lo, span) = (16u32 << shift, 219u32 << shift);
+	let mut lut = MaybeUninit::<[u8; L]>::uninit();
+	let p = lut.as_mut_ptr().cast::<u8>();
+	for i in 0..L {
+		let val = i as u32;
+		// libavif scales by 256 and rounds half-up (byte-exact vs avifdec).
+		let v = val.saturating_sub(lo) * 256 + span / 2;
+		// SAFETY: p has room for L bytes; each i in 0..L is written exactly once.
+		unsafe { p.add(i).write((v / span).min(255) as u8) };
+	}
+	// SAFETY: all L bytes were written above.
+	let lut = unsafe { std::slice::from_raw_parts(p, L) };
+	fill_mono_gray(y16, ys, out, sw, sh, dw, dh, |val: u16| {
+		lut[(val as usize) & (L - 1)]
+	});
+}
+
 fn planes_to_rgba(pic: &Dav1dPicture, target_width: u32) -> Option<Box<DecodeBuf>> {
 	let (sw, sh) = dims(pic);
 	let dw = if target_width > 0 && target_width < sw {
@@ -531,27 +570,29 @@ fn planes_to_rgba(pic: &Dav1dPicture, target_width: u32) -> Option<Box<DecodeBuf
 		// plane allocation. `data` is alloc_buf(n), n=dw*dh*4, filled exactly.
 		let y16 = unsafe { std::slice::from_raw_parts(y.as_ptr().cast::<u16>(), ys * sh as usize) };
 		let out = unsafe { std::slice::from_raw_parts_mut(data, n) };
-		let (lo, span) = (16u32 << shift, 219u32 << shift);
 		// Limited-range conversion has a per-pixel integer divide, so a small
 		// LUT (1 KB / 4 KB, L1-resident) pays for itself (measured ~2x). Full
 		// range is only an add+shift — no divide to eliminate — and a LUT was
 		// measured ~0.54x there, so keep the plain arithmetic for full range.
 		// Both use the exact original formula, so results are byte-identical.
-		// The LUT index is clamped so hostile out-of-range samples cannot panic.
+		// The LUT index is masked into range so hostile out-of-range samples
+		// cannot panic (see fill_mono_lut).
 		// Monomorphized per branch (no virtual call in the pixel loop): limited
 		// uses a small LUT, full range uses plain add+shift. Both formulas are
 		// byte-identical to libavif. sx is precomputed only when downscaling.
 		if limited {
-			let lut_len = 1usize << (8 + shift);
-			let mut lut = vec![0u8; lut_len];
-			for (i, slot) in lut.iter_mut().enumerate() {
-				let val = i as u32;
-				// libavif scales by 256 and rounds half-up (byte-exact vs avifdec).
-				let v = val.saturating_sub(lo) * 256 + span / 2;
-				*slot = (v / span).min(255) as u8;
+			// AV1 defines 8/10/12-bit, so shift is 2 or 4 here. Dispatching on
+			// the sample count as a const generic makes both the index mask
+			// (one AND, no bounds check) and the LUT's range constants — hence
+			// its divide — compile-time values.
+			match shift {
+				2 => fill_mono_lut::<1024>(y16, ys, out, sw, sh, dw, dh),
+				4 => fill_mono_lut::<4096>(y16, ys, out, sw, sh, dw, dh),
+				_ => {
+					free_buf(data, n);
+					return None;
+				}
 			}
-			let to_gray = |val: u16| lut[(val as usize).min(lut_len - 1)];
-			fill_mono_gray(y16, ys, out, sw, sh, dw, dh, to_gray);
 		} else {
 			let half = 1u32 << shift.saturating_sub(1);
 			let to_gray = |val: u16| (((val as u32) + half) >> shift).min(255) as u8;

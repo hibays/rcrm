@@ -469,7 +469,8 @@ fn parse_iloc_layout(
 	{
 		return None;
 	}
-	let mut out = Vec::with_capacity(count);
+	let mut out = Vec::new();
+	out.try_reserve_exact(count).ok()?;
 	for _ in 0..count {
 		let id = if version < 2 {
 			u16at(d, pos)? as u32
@@ -510,7 +511,8 @@ fn parse_iloc_layout(
 		if ext_bytes > d.len().saturating_sub(pos) {
 			return None;
 		}
-		let mut ext = Vec::with_capacity(extents);
+		let mut ext = Vec::new();
+		ext.try_reserve_exact(extents).ok()?;
 		for _ in 0..extents {
 			// ISO/IEC 14496-12 8.11.3.1 / libavif read.c:2062: for v1/v2 with
 			// index_size>0, item_reference_index comes BEFORE extent_offset /
@@ -590,7 +592,8 @@ fn locate(d: &[u8], locations: &[ItemLocation], id: u32) -> Option<ItemData> {
 	}
 	// Segmented item: validate every extent, bounding the merged total by the
 	// file size before any reservation.
-	let mut windows = Vec::with_capacity(loc.extents.len());
+	let mut windows = Vec::new();
+	windows.try_reserve_exact(loc.extents.len()).ok()?;
 	let mut total = 0u64;
 	for &(off, len) in &loc.extents {
 		let (start, len) = window_for(off, len)?;
@@ -767,7 +770,8 @@ fn parse_grid(
 		.map(|id| locate(data, locations, *id))
 		.collect::<Option<Vec<_>>>()?;
 	let alpha_tiles = {
-		let mut ats = Vec::with_capacity(tiles.len());
+		let mut ats = Vec::new();
+		ats.try_reserve_exact(tiles.len()).ok()?;
 		for id in &tile_ids {
 			// libavif read.c:5492 applies avifDecoderItemIsAlphaAux to each
 			// grid tile's aux item: it must carry an alpha URN. Without this

@@ -815,7 +815,13 @@ impl Surface {
 			.and_then(|len| len.checked_add(SURFACE_ALIGN))
 			.filter(|len| *len <= MAX_SURFACE_BYTES)
 			.ok_or_else(out_of_bounds)?;
-		let storage = vec![0u8; len];
+		// Fallible: a 32 MB surface must fail this job, never reach rust_oom and
+		// abort the whole process (which would take the Flutter UI with it).
+		let mut storage = Vec::new();
+		if storage.try_reserve_exact(len).is_err() {
+			return Err(out_of_bounds());
+		}
+		storage.resize(len, 0);
 		let base = storage.as_ptr() as usize;
 		let offset = (SURFACE_ALIGN - base % SURFACE_ALIGN) % SURFACE_ALIGN;
 		Ok(Self {

@@ -94,14 +94,19 @@ pub fn decode_qr_luma(
 	row_stride: usize,
 	data: &[u8],
 ) -> Option<String> {
-	if width == 0 || height == 0 || row_stride < width {
+	if width == 0 || height == 0 || width > 8192 || height > 8192 || row_stride < width {
 		return None;
 	}
 	// Last row needs only `width` bytes; rows before it need full strides.
 	if data.len() < row_stride * (height - 1) + width {
 		return None;
 	}
-	let mut tight = Vec::with_capacity(width * height);
+	// Fallible: a camera frame must be droppable when memory is tight; an
+	// infallible allocation here would reach rust_oom and abort the process.
+	// The 8192 cap above bounds width*height below u32::MAX, so the product
+	// cannot wrap even on 32-bit ARMv7 — no checked_mul branch is needed.
+	let mut tight = Vec::new();
+	tight.try_reserve_exact(width * height).ok()?;
 	for y in 0..height {
 		tight.extend_from_slice(&data[y * row_stride..y * row_stride + width]);
 	}
@@ -124,15 +129,24 @@ fn decode_luma(
 		return None;
 	}
 	let len = width * height;
-	let mut luma = vec![0u8; len];
+	let mut luma = Vec::new();
+	luma.try_reserve_exact(len).ok()?;
+	// Write the uninitialised tail directly — every slot is filled by the
+	// loops below, so `resize(len, 0)` would be a wasted memset. Length is
+	// published only after the last write; a panic in `fill` leaves the Vec
+	// empty, so no uninitialised byte is ever observable.
+	let out = luma.spare_capacity_mut().as_mut_ptr().cast::<u8>();
 	let mut o = 0usize;
 	for y in 0..height {
 		for x in 0..width {
-			luma[o] = fill(x, y);
+			// SAFETY: o < len <= reserved capacity, written exactly once.
+			unsafe { out.add(o).write(fill(x, y)) };
 			o += 1;
 		}
 	}
 	debug_assert_eq!(o, len);
+	// SAFETY: all `len` slots were written above before publishing the length.
+	unsafe { luma.set_len(len) };
 	zxing_decode(width, height, luma)
 }
 

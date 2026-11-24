@@ -277,7 +277,9 @@ impl Drop for KeyringGuard {
 fn canonical_dirs(dirs_json: &str) -> Result<Vec<PathBuf>, String> {
 	let dirs: Vec<String> =
 		serde_json::from_str(dirs_json).map_err(|e| format!("Invalid dirs JSON: {e}"))?;
-	let mut out = Vec::with_capacity(dirs.len());
+	let mut out = Vec::new();
+	out.try_reserve_exact(dirs.len())
+		.map_err(|_| "not enough memory to hold the directory list".to_string())?;
 	for d in dirs {
 		let path = dunce::canonicalize(&d).unwrap_or_else(|_| PathBuf::from(&d));
 		if !path.exists() {
