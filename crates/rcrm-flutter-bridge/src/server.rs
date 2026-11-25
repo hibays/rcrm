@@ -181,6 +181,14 @@ fn finish(code: i32) {
 	emit_event(code, 0, 0, 0);
 }
 
+/// The FFI panic barrier's `on_panic` hook for the start export. A panic in
+/// the synchronous part of `start()` would otherwise return the -1 handle
+/// without a terminal verdict; Dart checks the handle, but emitting the event
+/// keeps the event-channel contract intact for any listener that is waiting.
+pub(crate) fn emit_error_event() {
+	finish(event::ERROR);
+}
+
 /// The locked verdict carries the three counts the setup screen needs to
 /// choose its message.
 fn finish_locked() {
@@ -484,18 +492,15 @@ fn start_body(
 		run_start(&mut keyring, password, dirs, bind_addr, port);
 	}));
 	if let Err(payload) = outcome {
-		// The panic text that can realistically reach here is
-		// "Index (...) of key exists!" from a duplicate key index.
-		let detail = if let Some(s) = payload.downcast_ref::<&str>() {
-			(*s).to_string()
-		} else if let Some(s) = payload.downcast_ref::<String>() {
-			s.clone()
-		} else {
-			"unknown panic".to_string()
-		};
-		set_error(format!(
-			"Internal error while starting the server: {detail}"
-		));
+		// Same reporter as the sync exports, so a startup panic carries the
+		// payload AND the captured backtrace. The realistic case here is a
+		// duplicate key index panicking inside the manager.
+		// The reporter must not kill this thread: the verdict is the only
+		// signal Dart waits on, so it has to be emitted even if recording a
+		// panic fails (e.g. a failure writing to stderr).
+		let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+			crate::record_ffi_panic("rcrm_startup", payload.as_ref());
+		}));
 		keyring.verdict(event::ERROR);
 	}
 }
