@@ -1583,6 +1583,7 @@ dependencies = [
  "heic",
  "jpeg-encoder",
  "jxl",
+ "libc",
  "libloading",
  "nom-exif",
  "parking_lot",

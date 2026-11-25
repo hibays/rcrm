@@ -17,6 +17,8 @@ use parking_lot::Mutex;
 use std::sync::LazyLock as Lazy;
 
 use rcrm_core::Manager;
+
+use crate::locked::LockedPassword;
 use rcrm_server::serve::{
 	AuthConfig, FileCache, Protocol, Server, ServerContext, generate_mount_names,
 };
@@ -106,19 +108,40 @@ impl Session {
 static SESSION: Lazy<Mutex<Session>> = Lazy::new(|| Mutex::new(Session::new()));
 static LAST_ERROR: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 
-/// A password buffer Rust allocated and Dart writes into. The address is the
-/// opaque identity handed across the ABI; the bytes and their exact length
-/// never leave this module.
-struct PasswordBuffer {
-	addr: usize,
-	bytes: Zeroizing<Vec<u8>>,
+/// The one pending password: a page-locked allocation (never in the ordinary
+/// heap, never swapped to disk) plus the length Dart actually wrote. No address
+/// is stored — identity comes from the allocation's own pointer. Moving the
+/// struct copies no plaintext, and `LockedKey::drop` zeroizes + unlocks.
+///
+/// There is deliberately NO heap fallback. The core already needs mlock for
+/// every derived key and the session key, so a host that cannot lock one page
+/// cannot start the server at all; falling back would only put plaintext in
+/// the ordinary heap on a path that is doomed anyway.
+const MAX_PASSWORD_LEN: usize = 1024;
+
+struct Password {
+	bytes: LockedPassword,
 }
 
-/// The single outstanding password buffer. Allocating a new one replaces (and
-/// zeroizes) any previous buffer, so a buffer orphaned by a Dart-side throw
-/// cannot accumulate. Only the address crosses the ABI — no length, and no
-/// `Vec::from_raw_parts` on a caller-supplied size.
-static PENDING_PASSWORD: Lazy<Mutex<Option<PasswordBuffer>>> = Lazy::new(|| Mutex::new(None));
+impl Password {
+	/// Stable address Dart writes into — the locked page is already allocated.
+	fn as_mut_ptr(&mut self) -> *mut u8 {
+		self.bytes.as_mut_ptr()
+	}
+
+	fn raw_ptr(&self) -> *const u8 {
+		self.bytes.as_bytes().as_ptr()
+	}
+}
+
+impl std::ops::Deref for Password {
+	type Target = [u8];
+	fn deref(&self) -> &[u8] {
+		self.bytes.as_bytes()
+	}
+}
+
+static PENDING_PASSWORD: Lazy<Mutex<Option<Password>>> = Lazy::new(|| Mutex::new(None));
 
 /// Codes pushed to Dart through the registered server-event listener. The
 /// `PROGRESS` is feedback-only and never ends a start attempt.
@@ -186,34 +209,53 @@ pub fn last_error() -> *mut c_char {
 	}
 }
 
-/// Allocate a zeroed buffer of exactly `len` bytes for Dart to write the
-/// password into. Rust keeps the allocation and its length; `start()` looks it
-/// up by address and takes ownership back. No length crosses the ABI, so a
-/// mismatched `len` cannot cause an out-of-bounds zeroize or free. Returns
-/// null only when `len == 0` (empty password).
+/// Hand Dart the address of a page-locked buffer to write `len` bytes into.
+/// The allocation is fallible (no OOM abort), unique while live, never in the
+/// ordinary heap or swap, and freed + zeroized on drop. A stale pointer from a
+/// consumed attempt cannot match a later allocation.
 pub fn password_buffer(len: usize) -> *mut u8 {
-	if len == 0 {
+	if len == 0 || len > MAX_PASSWORD_LEN {
+		if len > MAX_PASSWORD_LEN {
+			set_error("password is too long");
+		}
 		return std::ptr::null_mut();
 	}
-	let mut bytes = Zeroizing::new(vec![0u8; len]);
-	let addr = bytes.as_mut_ptr() as usize;
-	// Replacing the entry drops the old buffer, zeroizing any orphan left by a
-	// previously failed start.
-	*PENDING_PASSWORD.lock() = Some(PasswordBuffer { addr, bytes });
-	addr as *mut u8
+	// Dropping the old value zeroizes/unlocks it.
+	let mut pending = PENDING_PASSWORD.lock();
+	*pending = None;
+	let bytes = match LockedPassword::zeroed(len) {
+		Ok(bytes) => bytes,
+		Err(e) => {
+			// No heap fallback: the core needs mlock for every derived key and
+			// the session key too, so a host that cannot lock this page cannot
+			// start the server at all. Refuse with a precise, actionable error
+			// rather than leak plaintext into the ordinary heap.
+			set_error(format!(
+				"cannot lock password memory ({e}); raise the locked-memory limit (ulimit -l) or grant CAP_IPC_LOCK"
+			));
+			return std::ptr::null_mut();
+		}
+	};
+	let mut password = Password { bytes };
+	let ptr = password.as_mut_ptr();
+	*pending = Some(password);
+	ptr as usize as *mut u8
 }
 
-/// Take back the buffer Dart wrote into. `None` means it was never allocated
-/// (or was already consumed) — a contract violation, surfaced as an error.
-fn take_password(ptr: *const u8) -> Option<Zeroizing<Vec<u8>>> {
-	let mut pending = PENDING_PASSWORD.lock();
+/// Claim the pending password for the startup thread. The pointer must equal
+/// the live allocation's own address — no separate stored address to drift.
+fn take_password(ptr: *const u8) -> Option<Password> {
 	if ptr.is_null() {
 		return None;
 	}
-	if pending.as_ref().is_none_or(|buf| buf.addr != ptr as usize) {
+	let mut pending = PENDING_PASSWORD.lock();
+	if pending
+		.as_ref()
+		.is_none_or(|p| !std::ptr::eq(p.raw_ptr(), ptr))
+	{
 		return None;
 	}
-	pending.take().map(|buf| buf.bytes)
+	pending.take()
 }
 
 fn random_string(len: usize) -> String {
@@ -305,9 +347,10 @@ pub fn start(dirs_json: &str, password: *const u8, bind_addr: &str, port: u16) -
 	// leaves no prior server or in-flight attempt behind.
 	let dirs = canonical_dirs(dirs_json);
 	let password = if password.is_null() {
-		Ok(Zeroizing::new(Vec::new())) // plaintext folders
+		Ok(None) // plaintext folders
 	} else {
 		take_password(password)
+			.map(Some)
 			.ok_or_else(|| "password buffer was not allocated by password_buffer()".to_string())
 	};
 	let bind_addr_owned = bind_addr.to_string();
@@ -432,7 +475,7 @@ pub fn start(dirs_json: &str, password: *const u8, bind_addr: &str, port: u16) -
 /// attempt's subscriber, and no second cancel handle is needed.
 fn start_body(
 	mut keyring: KeyringGuard,
-	password: Zeroizing<Vec<u8>>,
+	password: Option<Password>,
 	dirs: Vec<PathBuf>,
 	bind_addr: &str,
 	port: u16,
@@ -462,7 +505,7 @@ fn start_body(
 /// to bind and serve.
 fn run_start(
 	keyring: &mut KeyringGuard,
-	password: Zeroizing<Vec<u8>>,
+	password: Option<Password>,
 	dirs: Vec<PathBuf>,
 	bind_addr: &str,
 	port: u16,
@@ -509,14 +552,14 @@ fn run_start(
 	// adding the Nth password costs one Argon2id, never N. A repeated password
 	// is skipped by index instead of panicking inside `Manager`.
 	let manager = keyring.manager.get_or_insert_with(new_keyring);
-	if !password.is_empty() {
-		let idx = rcrm_core::key_index(password.as_slice());
+	if let Some(password) = password.as_ref().filter(|p| !p.is_empty()) {
+		let idx = rcrm_core::key_index(password);
 		if !manager.has_key_index(idx) {
-			manager.use_added_key(password.as_slice());
+			manager.use_added_key(password);
 		}
 	}
-	// The plaintext is no longer needed: wipe it now rather than keeping it
-	// alive through the whole scan + verification phase.
+	// Wipe the claim now rather than holding the slot lock through the whole
+	// scan + verification phase. Dropping it zeroes the bytes in place.
 	drop(password);
 
 	// On first call, the locked set starts empty — move all files there.

@@ -626,9 +626,8 @@ class RustBridge {
       dirsPtr = jsonEncode(directories).toNativeUtf8();
       bindPtr = bindAddress.toNativeUtf8();
 
-      // Rust allocates the exact-size buffer and frees it with the same
-      // allocator in start(); Dart only writes UTF-8 into it. No cross-allocator
-      // free, no Dart-side buffer to leak on a throw.
+      // Rust hands us a page-locked buffer; Dart writes UTF-8 straight into
+      // it. No copy, and the bytes never enter the ordinary heap or swap.
       final pwLen = utf8ByteLength(password);
       final pwPtr = _passwordBuffer(pwLen);
       // A null reply from a non-empty request is a native allocation refusal.
@@ -641,7 +640,7 @@ class RustBridge {
     } finally {
       if (dirsPtr != null) calloc.free(dirsPtr);
       if (bindPtr != null) calloc.free(bindPtr);
-      // pwPtr is Rust-owned from allocation; this side never frees it.
+      // pwPtr points into Rust's page-locked buffer; this side never frees it.
     }
   }
 

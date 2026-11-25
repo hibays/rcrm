@@ -2,7 +2,7 @@
 // Page-aligned, mlock'd memory for sensitive keys.
 // On drop: zeroized, unlocked, freed.
 //
-// Linux/macOS: mmap(ANON|PRIVATE) + mlock
+// Linux/macOS: mmap(ANON|PRIVATE) + mlock (+ MADV_DONTDUMP on Linux)
 // Windows:     VirtualAlloc(MEM_COMMIT|RESERVE) + VirtualLock
 
 use std::io;
@@ -35,6 +35,12 @@ mod imp {
 			let e = io::Error::last_os_error();
 			unsafe { libc::munmap(ptr, len) };
 			return Err(e);
+		}
+		// Keep the key out of core dumps, like OpenSSL's secure heap. Failure
+		// is non-fatal: the memory is still locked and zeroized on drop.
+		#[cfg(target_os = "linux")]
+		unsafe {
+			libc::madvise(ptr, len, libc::MADV_DONTDUMP);
 		}
 		Ok((ptr as *mut u8, len))
 	}
@@ -100,7 +106,8 @@ mod imp {
 ///
 /// The memory is allocated on a private, anonymous page, locked with
 /// `mlock` (Unix) or `VirtualLock` (Windows) so it cannot be paged to
-/// swap. On drop the contents are zeroized and the page released.
+/// swap (and `MADV_DONTDUMP` on Linux keeps it out of core dumps). On drop
+/// the contents are zeroized and the page released.
 pub struct LockedKey<const N: usize> {
 	ptr: *mut u8,
 	page_len: usize,

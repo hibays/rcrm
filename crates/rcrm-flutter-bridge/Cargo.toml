@@ -86,6 +86,11 @@ zxing-cpp = { version = "0.5.3", features = ["bundled"] }
 # against it at build time.
 libloading = { version = "0.9", optional = true }
 
+# The bridge's private page-locked password buffer (mlock + MADV_DONTDUMP),
+# local so rcrm-core's LockedKey stays private to that crate.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 jpeg-encoder = "0.7.1"
 qrcode = { version = "0.14.1", default-features = false }

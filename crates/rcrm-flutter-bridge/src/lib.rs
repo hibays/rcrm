@@ -65,6 +65,7 @@ mod libmpv;
 mod libmpv_poster;
 
 mod crypt_ops;
+mod locked;
 mod metadata;
 mod qr_gen;
 mod qr_scan;
