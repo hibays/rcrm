@@ -430,9 +430,12 @@ mod tests {
 		}
 	}
 
-	/// Limited-range 10-bit mono: libavif scales Y by 256 with half-up rounding,
-	/// not ×255 truncation (a 765/1024-value error in a full ramp). Verified
-	/// byte-exact against avifdec over the complete 0..1023 limited Y ramp.
+	/// Limited-range 10-bit mono: the reference corpus's avifdec path uses
+	/// `-r` (raw-color), whose un-premultiplied Y→gray scale is ×256 with
+	/// half-up rounding; ffmpeg/libdav1d agrees. Without `-r`, avifdec's
+	/// premultiplied path uses ×255 and differs by 1 LSB on 435/1024 pixels —
+	/// that is not the path our reference corpus is built with. Verified
+	/// byte-exact against avifdec `-r` over the full 0..1023 limited Y ramp.
 	#[test]
 	fn mono10_limited_range_matches_libavif() {
 		let Some(data) = libavif_fixture("mono10_limited_ramp.avif") else {
@@ -440,7 +443,7 @@ mod tests {
 			return;
 		};
 		let Some(reference) =
-			std::fs::read("tests/testdata/avif/libavif/ref/mono10_limited_ramp.avif.raw").ok()
+			std::fs::read("tests/testdata/avif/libavif/ref_dec/mono10_limited_ramp.avif.raw").ok()
 		else {
 			eprintln!("skipping: no limited mono reference");
 			return;

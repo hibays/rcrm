@@ -428,9 +428,9 @@ fn fill_mono_gray(
 /// 12-bit), i.e. `1 << (8 + shift)`; the caller dispatches on it as a const
 /// generic so both the range constants and the index mask are compile-time
 /// values: one AND with no bounds check instead of a runtime `min(lut_len - 1)`
-/// (cmp+cmov plus a retained bounds check), and a multiply-by-reciprocal instead
-/// of a hardware divide in the LUT loop. Any u16, including hostile out-of-range
-/// samples, masks into 0..L and cannot panic.
+/// (cmp+cmov plus a retained bounds check), and a constant divisor LLVM folds
+/// into a multiply. Any u16, including hostile out-of-range samples, masks into
+/// 0..L and cannot panic.
 ///
 /// The table is `MaybeUninit` and written entry-by-entry: no zero pre-fill of a
 /// fixed 4 KB buffer, so a 10-bit frame only ever touches its 1 KB.
@@ -449,7 +449,12 @@ fn fill_mono_lut<const L: usize>(
 	let p = lut.as_mut_ptr().cast::<u8>();
 	for i in 0..L {
 		let val = i as u32;
-		// libavif scales by 256 and rounds half-up (byte-exact vs avifdec).
+		// Scale by 256 with round-half-up. Verified byte-for-byte against BOTH
+		// references the corpus generator uses: `avifdec -r` (the --raw-color
+		// path, 1.4.2) and ffmpeg/libdav1d agree on all 1024 pixels of the
+		// limited-range ramp. WITHOUT `-r`, avifdec's premultiplied path uses
+		// x255 and differs by 1 LSB on 435/1024 pixels — that is not the path
+		// our reference corpus is built with, so x256 is the exact form here.
 		let v = val.saturating_sub(lo) * 256 + span / 2;
 		// SAFETY: p has room for L bytes; each i in 0..L is written exactly once.
 		unsafe { p.add(i).write((v / span).min(255) as u8) };
