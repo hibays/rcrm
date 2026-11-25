@@ -46,7 +46,7 @@ void main() {
   ) async {
     await _pump(tester);
 
-    expect(find.text('Thumbnail cache'), findsOneWidget);
+    expect(find.text('Manage Cache'), findsOneWidget);
     expect(
       find.text('Delete all'),
       findsNothing,
@@ -68,7 +68,7 @@ void main() {
     tester,
   ) async {
     await _pump(tester);
-    await tester.tap(find.text('Thumbnail cache'));
+    await tester.tap(find.text('Manage Cache'));
     await tester.pumpAndSettle();
 
     expect(find.text('Auto trim'), findsOneWidget);
@@ -81,7 +81,7 @@ void main() {
 
   testWidgets('both choices are real targets, not decoration', (tester) async {
     await _pump(tester);
-    await tester.tap(find.text('Thumbnail cache'));
+    await tester.tap(find.text('Manage Cache'));
     await tester.pumpAndSettle();
 
     // What is asserted here is that each choice RUNS something. Following the

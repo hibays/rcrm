@@ -222,7 +222,7 @@ class _ThumbCacheDialogState extends State<ThumbCacheDialog> {
                 SimpleDialogOption(
                   onPressed: nothing
                       ? null
-                      : () => SmartDialog.dismiss(result: AutoTrim(_limitMb)),
+                      : () => SmartDialog.dismiss(status: SmartStatus.dialog, result: AutoTrim(_limitMb)),
                   child: _Option(
                     icon: const Icon(Icons.auto_delete),
                     title: 'Auto trim',
@@ -235,7 +235,7 @@ class _ThumbCacheDialogState extends State<ThumbCacheDialog> {
                 SimpleDialogOption(
                   onPressed: nothing
                       ? null
-                      : () => SmartDialog.dismiss(result: const ClearAll()),
+                      : () => SmartDialog.dismiss(status: SmartStatus.dialog, result: const ClearAll()),
                   child: _Option(
                     icon: Icon(Icons.delete_sweep),
                     title: 'Delete all',
@@ -313,7 +313,7 @@ class _ThumbCacheDialogState extends State<ThumbCacheDialog> {
         icon: const Icon(Icons.delete_outline),
         tooltip: 'Delete the $label tier',
         color: scheme.error,
-        onPressed: () => SmartDialog.dismiss(result: DeleteTiers({tier})),
+        onPressed: () => SmartDialog.dismiss(status: SmartStatus.dialog, result: DeleteTiers({tier})),
       ),
     );
   }

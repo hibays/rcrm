@@ -75,10 +75,7 @@ void main() {
     container = ProviderContainer();
     addTearDown(container.dispose);
     container.read(serverProvider.notifier).state = ServerState(
-      phase: ServerRunning(
-        url: 'http://127.0.0.1:18443',
-        client: client,
-      ),
+      phase: ServerRunning(url: 'http://127.0.0.1:18443', client: client),
     );
   });
 

@@ -106,6 +106,29 @@ void main() {
       expect(find.textContaining('No '), findsNothing);
     });
 
+    // An errored parse may still carry a half-filled track object. Those
+    // values are not facts — the image sheet suppresses them unless `parsed`,
+    // and the video sheet must not present them as truth either.
+    testWidgets('an errored parse shows no container rows even if it carries '
+        'a track', (tester) async {
+      const errored =
+          '{"kind":"track","error":"moov atom truncated","parsed":false,'
+          '"track":{"make":"Apple","model":"iPhone 15",'
+          '"author":"Ada","createdAt":"2025-01-02 03:04:05"}}';
+      await _pump(
+        tester,
+        VideoInfoSheet(
+          item: _item(),
+          metadata: Future.value(MediaMetadata.fromJsonString(errored)),
+        ),
+      );
+
+      expect(find.text('clip.mp4'), findsOneWidget);
+      expect(find.text('Created'), findsNothing);
+      expect(find.text('Author'), findsNothing);
+      expect(find.text('Device'), findsNothing);
+    });
+
     testWidgets('falls back to the scanner\'s resolution when the container '
         'has none', (tester) async {
       await _pump(tester, VideoInfoSheet(item: _item(resolution: '1280x720')));

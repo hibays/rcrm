@@ -13,7 +13,11 @@ void main() {
     void expectMatchesUtf8Encode(String s) {
       final expected = utf8.encode(s);
       final len = utf8ByteLength(s);
-      expect(len, expected.length, reason: 'byte length for ${s.runes.toList()}');
+      expect(
+        len,
+        expected.length,
+        reason: 'byte length for ${s.runes.toList()}',
+      );
       final out = List<int>.filled(len, 0);
       final written = writeUtf8Native(s, out);
       expect(written, len);

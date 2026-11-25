@@ -40,6 +40,24 @@ void main() {
 
   const finder = ValueKey('keyword-relevance-slider');
 
+  // A pop mid-drag means Slider never fires onChangeEnd. The preview's short
+  // fallback timer must still persist the value so it survives a restart.
+  testWidgets('a preview is persisted even if the gesture never ends', (
+    tester,
+  ) async {
+    final c = ProviderContainer();
+    addTearDown(c.dispose);
+    await pumpSettings(tester, container: c);
+    c.read(uiSettingsProvider.notifier).previewKeywordRelevance(77);
+    expect(await SettingsService().getKeywordRelevance(), kKeywordRelevanceDefault);
+
+    // Advance the fake clock so the 250ms fallback timer fires.
+    await tester.pump(const Duration(milliseconds: 350));
+    await tester.pumpAndSettle();
+    expect(await SettingsService().getKeywordRelevance(), 77);
+    expect(c.read(uiSettingsProvider).keywordRelevance, 77);
+  });
+
   testWidgets(
     'the slider shows the current weight and writes a change through',
     (tester) async {
@@ -57,6 +75,7 @@ void main() {
       expect(find.text('$kKeywordRelevanceDefault'), findsOneWidget);
 
       slider.onChanged!(82);
+      slider.onChangeEnd!(82); // commit on release
       await tester.pump();
 
       expect(c.read(uiSettingsProvider).keywordRelevance, 82);
@@ -64,6 +83,29 @@ void main() {
       expect(find.text('82'), findsOneWidget);
     },
   );
+
+  testWidgets('a drag previews live but persists only when released', (
+    tester,
+  ) async {
+    final c = await pumpSettings(tester);
+    final slider = tester.widget<Slider>(find.byKey(finder));
+
+    // Several frames of one gesture: state tracks the finger, disk does not.
+    for (final v in [62, 68, 75, 82]) {
+      slider.onChanged!(v.toDouble());
+      await tester.pump();
+      expect(
+        await SettingsService().getKeywordRelevance(),
+        kKeywordRelevanceDefault,
+        reason: 'no SharedPreferences write mid-drag',
+      );
+    }
+    expect(c.read(uiSettingsProvider).keywordRelevance, 82);
+
+    slider.onChangeEnd!(82);
+    await tester.pump();
+    expect(await SettingsService().getKeywordRelevance(), 82);
+  });
 
   testWidgets('a stored weight is restored into the slider at launch', (
     tester,

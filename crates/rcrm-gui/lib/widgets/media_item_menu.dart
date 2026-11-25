@@ -24,7 +24,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../services/item_cache_limit.dart';
 import '../services/media_metadata.dart';
@@ -32,6 +31,7 @@ import '../utils/menu_placement.dart';
 import 'image_info_sheet.dart';
 import 'smart_popup_menu.dart';
 import 'video_info_sheet.dart';
+import '../config/theme.dart';
 
 /// What a row of an item's menu does.
 enum MediaItemMenuAction { open, details, reveal, copyName, copyPath }
@@ -195,8 +195,11 @@ void _showDetails(
       alignment: Alignment.bottomCenter,
       maskColor: Colors.black.withValues(alpha: 0.35),
       clickMaskDismiss: true,
-      builder: (_) => SizedBox(
-        width: double.infinity,
+      builder: (_) => ConstrainedBox(
+        // A bottom sheet is a reading panel, not a full-width banner: in
+        // landscape an infinity-width sheet reads as a stretched strip with a
+        // long empty right side. The cap never binds on a phone (screen < cap).
+        constraints: const BoxConstraints(maxWidth: RCrmLayout.infoSheetMaxWidth),
         child: isVideo
             ? VideoInfoSheet(
                 item: item,

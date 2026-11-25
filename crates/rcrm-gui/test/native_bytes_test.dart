@@ -74,22 +74,25 @@ void main() {
 
   String url(String name) => 'http://127.0.0.1:${server.port}/$name';
 
-  test('a declared length sizes the buffer exactly — no copy, no slack', () async {
-    final body = List<int>.generate(256 * 1024, (i) => i % 251);
-    serve(body, chunks: 6);
+  test(
+    'a declared length sizes the buffer exactly — no copy, no slack',
+    () async {
+      final body = List<int>.generate(256 * 1024, (i) => i % 251);
+      serve(body, chunks: 6);
 
-    final fetched = await fetchNativeBytes(url('whole.avif'));
-    final bytes = fetched.bytes;
-    expect(bytes, isNotNull);
-    expect(fetched.retryWithCopy, isFalse);
-    expect(bytes!.len, body.length);
-    // "No slack" means len == cap. A transfer additionally requires Rust
-    // origin, which this test environment (no bridge loaded) cannot provide.
-    expect(bytes.cap, body.length);
-    expect(bytes.len, bytes.cap);
-    expect(firstMismatch(bytes.view, body), -1, reason: 'payload corrupted');
-    bytes.free();
-  });
+      final fetched = await fetchNativeBytes(url('whole.avif'));
+      final bytes = fetched.bytes;
+      expect(bytes, isNotNull);
+      expect(fetched.retryWithCopy, isFalse);
+      expect(bytes!.len, body.length);
+      // "No slack" means len == cap. A transfer additionally requires Rust
+      // origin, which this test environment (no bridge loaded) cannot provide.
+      expect(bytes.cap, body.length);
+      expect(bytes.len, bytes.cap);
+      expect(firstMismatch(bytes.view, body), -1, reason: 'payload corrupted');
+      bytes.free();
+    },
+  );
 
   test('a head is capped at what was asked for', () async {
     final body = List<int>.generate(200 * 1024, (i) => i % 253);

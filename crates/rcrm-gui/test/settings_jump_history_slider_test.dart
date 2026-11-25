@@ -65,12 +65,36 @@ void main() {
     // of the 49 the track resolves, and the point here is the wiring, not the
     // gesture arithmetic (the drag itself is covered below).
     slider.onChanged!(30);
+    slider.onChangeEnd!(30); // commit on release
     await tester.pump();
 
     expect(c.read(uiSettingsProvider).videoJumpHistoryLimit, 30);
     expect(await SettingsService().getVideoJumpHistoryLimit(), 30);
     expect(find.text('30'), findsOneWidget);
     expect(find.text('$kVideoJumpHistoryDefault'), findsNothing);
+  });
+
+  testWidgets('a drag previews live but persists only when released', (
+    tester,
+  ) async {
+    final c = await pumpSettings(tester);
+    final finder = find.byKey(const ValueKey('jump-history-slider'));
+    final slider = tester.widget<Slider>(finder);
+
+    for (final v in [14, 21, 28, 35]) {
+      slider.onChanged!(v.toDouble());
+      await tester.pump();
+      expect(
+        await SettingsService().getVideoJumpHistoryLimit(),
+        kVideoJumpHistoryDefault,
+        reason: 'no SharedPreferences write mid-drag',
+      );
+    }
+    expect(c.read(uiSettingsProvider).videoJumpHistoryLimit, 35);
+
+    slider.onChangeEnd!(35);
+    await tester.pump();
+    expect(await SettingsService().getVideoJumpHistoryLimit(), 35);
   });
 
   testWidgets('dragging the slider moves the limit and persists it', (

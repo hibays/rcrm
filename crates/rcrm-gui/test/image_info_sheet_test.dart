@@ -10,6 +10,7 @@ import 'package:rcrm_gui/config/theme.dart';
 import 'package:rcrm_gui/models/media_item.dart';
 import 'package:rcrm_gui/services/media_metadata.dart';
 import 'package:rcrm_gui/widgets/image_info_sheet.dart';
+import 'package:rcrm_gui/widgets/info_rows.dart';
 
 /// What the Rust parser replies for a phone photo with a full EXIF block.
 const _exifJson =
@@ -62,7 +63,82 @@ Future<void> _pump(
 }
 
 void main() {
+  // The grabber must sit OUTSIDE the scrolling body: inside it, the scroll
+  // view's recognizer wins the vertical-drag arena and the handle never gets
+  // onVerticalDragUpdate (the same trap two_finger_pinch documents).
+  testWidgets('the grabber is outside the sheet scroll view', (tester) async {
+    await _pump(
+      tester,
+      ImageInfoSheet(
+        item: _item(),
+        index: 1,
+        total: 2,
+        metadata: Future.value(MediaMetadata.fromJsonString(_exifJson)),
+      ),
+    );
+    expect(
+      find.ancestor(
+        of: find.byType(InfoGrabber),
+        matching: find.byType(SingleChildScrollView),
+      ),
+      findsNothing,
+      reason: 'a drag on the handle must not be stolen by the scroll view',
+    );
+  });
+
+  // The grabber LOOKS like a swipe-to-dismiss handle, so it must actually act
+  // for slow drags and taps too, not only a fast flick.
+  testWidgets('the sheet grabber is a real drag and tap target', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(home: Scaffold(body: InfoGrabber())),
+    );
+    final gd = tester.widget<GestureDetector>(
+      find.descendant(
+        of: find.byType(InfoGrabber),
+        matching: find.byType(GestureDetector),
+      ),
+    );
+    expect(gd.onVerticalDragStart, isNotNull);
+    expect(gd.onVerticalDragUpdate, isNotNull);
+    expect(gd.onVerticalDragEnd, isNotNull);
+    expect(gd.onTap, isNotNull, reason: 'tapping the handle must dismiss too');
+    expect(
+      tester.getRect(find.byType(InfoGrabber)).height,
+      greaterThanOrEqualTo(44),
+      reason: 'the handle hit area meets the platform touch minimum',
+    );
+  });
+
   group('ImageInfoSheet', () {
+    // A bottom sheet is a reading panel, not a landscape-wide banner. The cap
+    // never binds on a phone (screen narrower than it) but must hold on a wide
+    // window — otherwise the facts stretch into an 800dp strip with a dead right.
+    testWidgets('in landscape the sheet is a capped reading column, not full '
+        'width', (tester) async {
+      await _pump(
+        tester,
+        ImageInfoSheet(
+          item: _item(),
+          index: 1,
+          total: 2,
+          metadata: Future.value(MediaMetadata.fromJsonString(_exifJson)),
+        ),
+        size: const Size(800, 360),
+      );
+
+      final rect = tester.getRect(find.byType(ImageInfoSheet));
+      expect(
+        rect.width,
+        lessThanOrEqualTo(RCrmLayout.infoSheetMaxWidth),
+        reason: 'a landscape sheet must not stretch to the whole window',
+      );
+      expect(
+        rect.center.dx,
+        closeTo(400, 2),
+        reason: 'the capped panel stays centred in the window',
+      );
+    });
+
     testWidgets('leads with the date and the file name', (tester) async {
       await _pump(
         tester,
@@ -241,7 +317,10 @@ void main() {
         ImageInfoSheet(item: _item(), index: 1, total: 2, animated: true),
       );
       expect(find.text('Animated'), findsOneWidget);
-      expect(find.text('Plays on long-press'), findsOneWidget);
+      // Not "Plays on long-press": that gesture exists only on mobile; on
+      // desktop the viewer's motion badge plays it. State the fact, not a
+      // platform-specific promise.
+      expect(find.text('Motion photo'), findsOneWidget);
 
       await _pump(tester, ImageInfoSheet(item: _item(), index: 1, total: 2));
       expect(find.text('Animated'), findsNothing);
@@ -399,6 +478,60 @@ void main() {
       expect(find.text('No camera information'), findsNothing);
       expect(find.text('No location information'), findsNothing);
       // The headline still falls back to the file timestamp.
+      expect(find.text('Sep 30, 2026 · 2:24 AM'), findsOneWidget);
+    });
+
+    // An errored parse of a VIDEO container can still carry a half-filled
+    // track object. The parsed gate must come before the track branch or the
+    // camera block presents those half-facts as truth (same contract as the
+    // video sheet).
+    testWidgets('an errored track with half facts shows no camera block', (
+      tester,
+    ) async {
+      const erroredTrack =
+          '{"kind":"track","error":"moov truncated","parsed":false,'
+          '"track":{"make":"Apple","model":"iPhone 15",'
+          '"author":"Ada","width":1920,"height":1080}}';
+      await _pump(
+        tester,
+        ImageInfoSheet(
+          item: _item(),
+          index: 1,
+          total: 2,
+          metadata: Future.value(
+            MediaMetadata.fromJsonString(erroredTrack),
+          ),
+        ),
+      );
+      expect(find.text('Apple iPhone 15'), findsNothing);
+      expect(find.text('No camera information'), findsNothing);
+      expect(find.text('1920 × 1080'), findsNothing);
+    });
+
+    // A failed image parse can carry a half-filled EXIF block. Every exif-
+    // derived fact — GPS coordinates, capture date, pixel size — must be
+    // suppressed, not only the camera block. Privacy matters for coordinates.
+    testWidgets('an errored exif shows no coordinates or forged capture date', (
+      tester,
+    ) async {
+      const erroredExif =
+          '{"kind":"image","error":"bad exif","exif":{'
+          '"make":"Apple","model":"iPhone 15","capturedAt":"2020-01-01 00:00:00",'
+          '"gps":{"lat":22.5,"lon":114.05},"pixelWidth":1920,"pixelHeight":1080}}';
+      await _pump(
+        tester,
+        ImageInfoSheet(
+          item: _item(),
+          index: 1,
+          total: 2,
+          metadata: Future.value(MediaMetadata.fromJsonString(erroredExif)),
+        ),
+      );
+      expect(find.textContaining('22.5000'), findsNothing);
+      expect(find.textContaining('114.0500'), findsNothing);
+      expect(find.text('Jan 1, 2020 · 12:00 AM'), findsNothing);
+      expect(find.text('1920 × 1080'), findsNothing);
+      // The file's own timestamp is still an honest anchor.
       expect(find.text('Sep 30, 2026 · 2:24 AM'), findsOneWidget);
     });
 

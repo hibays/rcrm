@@ -69,6 +69,7 @@ class ImageInfoSheet extends StatelessWidget {
       // Never taller than the screen: the body scrolls if a huge text scale
       // ever makes it so.
       constraints: BoxConstraints(
+        maxWidth: RCrmLayout.infoSheetMaxWidth,
         maxHeight: MediaQuery.sizeOf(context).height * 0.9,
       ),
       child: SafeArea(
@@ -94,119 +95,127 @@ class ImageInfoSheet extends StatelessWidget {
   }
 
   Widget _body(MediaMetadata meta, {required bool pending}) {
-    final exif = meta.exif;
+    // A failed parse may still carry a half-filled exif block. Treat it as
+    // absent EVERYWHERE (headline capture date, GPS line, technical line,
+    // camera block) — gating only the camera block left coordinates and a
+    // forged capture time on screen as facts.
+    final exif = meta.parsed ? meta.exif : null;
     // EXIF knows when the picture was taken; the WebDAV timestamp only knows
     // when the file was last written. An RFC 1123 header parses to UTC, so the
     // fallback is converted for display — while `capturedAt` is deliberately
     // left alone: EXIF stores the camera's wall clock, and shifting it would
     // show a time the photographer never saw.
     final captured = exif?.capturedAt ?? item.modified?.toLocal();
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Center(
-            child: Container(
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: RCrmColors.textFaint,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-          const SizedBox(height: RCrmSpacing.md),
-
-          // ── The anchor: when the picture is from ──────────────
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Text(
-                  captured == null ? item.name : formatStamp(captured),
-                  style: TextStyle(
-                    color: RCrmColors.textPrimary,
-                    fontSize: captured == null ? 18 : 21,
-                    fontWeight: FontWeight.w600,
-                    height: 1.2,
-                  ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+    // The grabber MUST be a sibling ABOVE the scroll view, not a child inside
+    // it: a vertical drag on a child loses the gesture arena to the ancestor
+    // SingleChildScrollView's recognizer (same failure two_finger_pinch works
+    // around with a raw Listener). Out here the handle owns its own drag.
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const InfoGrabber(),
+        Flexible(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // ── The anchor: when the picture is from ──────────────
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        captured == null ? item.name : formatStamp(captured),
+                        style: TextStyle(
+                          color: RCrmColors.textPrimary,
+                          fontSize: captured == null ? 18 : 21,
+                          fontWeight: FontWeight.w600,
+                          height: 1.2,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (onActualSize != null) ...[
+                      const SizedBox(width: RCrmSpacing.sm),
+                      _Chip(label: '1:1', onTap: onActualSize!),
+                    ],
+                  ],
                 ),
-              ),
-              if (onActualSize != null) ...[
-                const SizedBox(width: RCrmSpacing.sm),
-                _Chip(label: '1:1', onTap: onActualSize!),
+                if (captured != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    item.name,
+                    style: TextStyle(
+                      color: RCrmColors.textSecondary,
+                      fontSize: 13,
+                      height: 1.35,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+
+                const SizedBox(height: 10),
+                // While the parse is in flight: a skeleton instead of "No location
+                // information" / "No camera information". It occupies the same slot
+                // as the lines it is standing in for, so
+                // the answer lands without a jump and without ever having claimed an
+                // absence the app had not established.
+                if (pending)
+                  const _MetaSkeleton()
+                else ...[
+                  _LocationLine(exif: exif, known: meta.parsed),
+                  const InfoRule(),
+                  ..._cameraBlock(meta),
+                ],
+                Text(
+                  _technicalLine(exif),
+                  style: TextStyle(
+                    color: RCrmColors.textSecondary,
+                    fontSize: 13,
+                    height: 1.4,
+                  ),
+                ),
+                const InfoRule(),
+
+                InfoRow(icon: Icons.folder_outlined, label: _folderLabel()),
+                InfoRow(
+                  icon: Icons.photo_library_outlined,
+                  label: 'Image $index of $total',
+                ),
+                if (animated)
+                  // "Long-press" is only true on mobile; on desktop the viewer plays
+                  // from its motion badge. State the fact, not a platform-specific
+                  // gesture the sheet cannot promise.
+                  const InfoRow(
+                    icon: Icons.motion_photos_on_outlined,
+                    label: 'Animated',
+                    value: 'Motion photo',
+                  ),
               ],
-            ],
-          ),
-          if (captured != null) ...[
-            const SizedBox(height: 6),
-            Text(
-              item.name,
-              style: TextStyle(
-                color: RCrmColors.textSecondary,
-                fontSize: 13,
-                height: 1.35,
-              ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-
-          const SizedBox(height: 10),
-          // While the parse is in flight: a skeleton instead of "No location
-          // information" / "No camera information". It occupies the same slot
-          // as the lines it is standing in for, so
-          // the answer lands without a jump and without ever having claimed an
-          // absence the app had not established.
-          if (pending)
-            const _MetaSkeleton()
-          else ...[
-            _LocationLine(exif: exif, known: meta.parsed),
-            const InfoRule(),
-            ..._cameraBlock(meta),
-          ],
-          Text(
-            _technicalLine(exif),
-            style: TextStyle(
-              color: RCrmColors.textSecondary,
-              fontSize: 13,
-              height: 1.4,
             ),
           ),
-          const InfoRule(),
-
-          InfoRow(icon: Icons.folder_outlined, label: _folderLabel()),
-          InfoRow(
-            icon: Icons.photo_library_outlined,
-            label: 'Image $index of $total',
-          ),
-          if (animated)
-            const InfoRow(
-              icon: Icons.motion_photos_on_outlined,
-              label: 'Animated',
-              value: 'Plays on long-press',
-            ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
   /// Camera name, lens and exposure — or the honest admission that the file
   /// has none (the state every phone-saved picture is in).
   List<Widget> _cameraBlock(MediaMetadata meta) {
+    // A parse that failed (corrupt EXIF, an unreadable container) or a fetch
+    // that never produced bytes is NOT the same fact as "this file has no
+    // camera": stay silent rather than assert an absence that was never
+    // established. This gate MUST come before the track branch — an errored
+    // reply can still carry a half-filled track object.
+    if (!meta.parsed) return const [];
     final exif = meta.exif;
     if (meta.isTrack) {
       return meta.track == null ? const [] : _trackBlock(meta.track!);
     }
-    // A parse that failed (corrupt EXIF, an unreadable container) or a fetch
-    // that never produced bytes is NOT the same fact as "this file has no
-    // camera": stay silent rather than assert an absence that was never
-    // established.
-    if (!meta.parsed) return const [];
     if (exif == null || !exif.hasCamera) {
       return [
         Text(
@@ -475,14 +484,22 @@ class _Chip extends StatelessWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(RCrmRadii.sm + 2),
         onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: RCrmColors.primary,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
+        // Keep the painted pill small, but give the tap target the platform
+        // minimum (the player's mode-chip pattern): a 13sp chip with 7dp
+        // vertical padding is only ~30dp tall, below iOS's 44pt.
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 44),
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text(
+                label,
+                style: TextStyle(
+                  color: RCrmColors.primary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ),
           ),
         ),

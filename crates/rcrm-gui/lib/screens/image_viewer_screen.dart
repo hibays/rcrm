@@ -13,7 +13,6 @@ import 'package:flutter/services.dart';
 
 import 'dart:io' show Platform;
 
-import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../widgets/image_wall_strip.dart';
 
@@ -32,6 +31,7 @@ import '../widgets/pooled_image.dart';
 import '../widgets/viewer_zoom.dart';
 import '../widgets/image_info_sheet.dart';
 import '../utils/viewer_gesture.dart';
+import '../config/theme.dart';
 
 enum _ViewerMode { still, animation, live }
 
@@ -221,8 +221,10 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
       // Light scrim: the photo stays the subject, the sheet is a layer over it.
       maskColor: Colors.black.withValues(alpha: 0.35),
       clickMaskDismiss: true,
-      builder: (_) => SizedBox(
-        width: double.infinity,
+      builder: (_) => ConstrainedBox(
+        // A reading panel, not a full-width banner: cap in landscape; on a
+        // phone the screen is narrower than the cap so nothing changes.
+        constraints: const BoxConstraints(maxWidth: RCrmLayout.infoSheetMaxWidth),
         child: ImageInfoSheet(
           item: item,
           index: index + 1,
@@ -234,7 +236,7 @@ class _ImageViewerScreenState extends State<ImageViewerScreen>
           animated: item.isAnimated || _animatedPages.contains(index),
           onActualSize: viewport != null && viewport.canShowActualSize
               ? () {
-                  SmartDialog.dismiss();
+                  SmartDialog.dismiss(status: SmartStatus.dialog);
                   viewport.zoomToActualSize();
                 }
               : null,

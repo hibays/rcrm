@@ -341,6 +341,15 @@ abstract final class RCrmSpacing {
   static const lg = 24.0;
 }
 
+/// Layout caps shared by surfaces that must stay a readable column rather
+/// than stretch across a wide window.
+abstract final class RCrmLayout {
+  /// Bottom sheets (image/video info) never grow past this width: on a phone
+  /// the cap never binds (the sheet equals screen width), but in landscape a
+  /// full-width sheet reads as a stretched banner with a long empty right side.
+  static const infoSheetMaxWidth = 560.0;
+}
+
 /// Theme builder — the app's single source of ThemeData.
 abstract final class RCrmTheme {
   /// The original Night world. Kept as the test fixture for the whole suite.

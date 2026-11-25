@@ -120,7 +120,11 @@ void main() {
       // The cell scrolled off before its slot came up (PooledImage._teardown).
       // The caller is unblocked, but with "skip", never with a slot.
       gate.done(abandoned);
-      expect(await abandoned.future, isFalse, reason: 'caller must skip decode');
+      expect(
+        await abandoned.future,
+        isFalse,
+        reason: 'caller must skip decode',
+      );
       expect(gate.waitingCount, 2);
       expect(gate.runningCount, slots, reason: 'no slot was granted');
 

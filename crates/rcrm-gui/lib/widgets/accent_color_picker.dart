@@ -13,8 +13,8 @@ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:flutter/material.dart' as fm;
 import 'package:flutter/widgets.dart' as fw;
 import 'package:material_ui/material_ui.dart';
-
 import '../config/theme.dart';
+
 
 Color _opaque(Color c) => Color.fromARGB(
   255,
@@ -114,11 +114,11 @@ Future<Color?> showAccentColorPicker({
         ),
         actions: [
           TextButton(
-            onPressed: () => SmartDialog.dismiss(),
+            onPressed: () => SmartDialog.dismiss(status: SmartStatus.dialog),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () => SmartDialog.dismiss(result: picked),
+            onPressed: () => SmartDialog.dismiss(status: SmartStatus.dialog, result: picked),
             child: const Text('Use this colour'),
           ),
         ],

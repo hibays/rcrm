@@ -3,11 +3,11 @@ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../config/theme.dart';
 import '../models/server_config.dart';
 import '../providers/server_provider.dart';
 import '../services/net.dart';
 import '../widgets/double_back_exit.dart';
+import '../config/theme.dart';
 
 // A getter, not a const: the hint must follow the current appearance's ink.
 TextStyle get _hintSilver => TextStyle(color: RCrmColors.textSecondary);
@@ -150,11 +150,11 @@ class _CloudSetupScreenState extends ConsumerState<CloudSetupScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => SmartDialog.dismiss(result: false),
+            onPressed: () => SmartDialog.dismiss(status: SmartStatus.dialog, result: false),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () => SmartDialog.dismiss(result: true),
+            onPressed: () => SmartDialog.dismiss(status: SmartStatus.dialog, result: true),
             child: const Text('Trust & Continue'),
           ),
         ],

@@ -28,7 +28,8 @@ void main() {
     });
 
     test('an Android SAF content URI is kept as the native string', () {
-      const raw = 'content://com.android.externalstorage.documents/tree/'
+      const raw =
+          'content://com.android.externalstorage.documents/tree/'
           'primary%3ADCIM';
       expect(directoryUriToString(Uri.parse(raw)), raw);
     });

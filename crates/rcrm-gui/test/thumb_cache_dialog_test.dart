@@ -66,7 +66,7 @@ Future<ThumbCacheIntent? Function()> _open(
             child: ElevatedButton(
               onPressed: () async {
                 result = await SmartDialog.show<ThumbCacheIntent>(
-                  builder: (_) => ThumbCacheDialog(
+                              builder: (_) => ThumbCacheDialog(
                     plan: plan ?? _plan(),
                     initialLimitMb: initialLimitMb,
                     clock: () => _now,

@@ -180,4 +180,58 @@ void main() {
     expect(calls, 0);
     expect(find.byType(SmartPopupMenuItem<String>), findsNothing);
   });
+
+  // A visible "copied" toast must not eat the first tap on a menu row:
+  // smart_dialog checks its notify queue BEFORE its dialog queue, so an
+  // untagged `dismiss` used to close the toast instead of the menu and the
+  // row's action never ran (desktop: Copy path, then Details within 2.5s).
+  testWidgets('a visible notify does not swallow the first menu tap', (
+    tester,
+  ) async {
+    String? selected;
+    await tester.binding.setSurfaceSize(const Size(800, 600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        navigatorObservers: [FlutterSmartDialog.observer],
+        builder: FlutterSmartDialog.init(),
+        home: Scaffold(
+          body: Center(
+            child: SmartPopupMenu<String>(
+              onSelected: (v) => selected = v,
+              items: [
+                SmartPopupMenuItem<String>(
+                  value: 'details',
+                  child: const Text('Details'),
+                ),
+              ],
+              child: const SizedBox(
+                width: 40,
+                height: 40,
+                child: Center(child: Text('open')),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+
+    SmartDialog.showNotify(msg: 'Path copied', notifyType: NotifyType.success);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Details'));
+    await tester.pumpAndSettle();
+    expect(
+      selected,
+      'details',
+      reason: 'first tap selects, not dismiss the notify',
+    );
+
+    // Drain the notify's own auto-dismiss timer before the tree is torn down.
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+  });
 }

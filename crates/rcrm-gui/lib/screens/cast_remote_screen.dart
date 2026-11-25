@@ -14,7 +14,6 @@ import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../config/theme.dart';
 import '../models/media_item.dart';
 import '../providers/server_provider.dart';
 import '../providers/settings_provider.dart';
@@ -29,6 +28,7 @@ import '../widgets/smart_popup_menu.dart';
 import '../widgets/pooled_image.dart';
 import '../widgets/video_card.dart';
 import 'cast_scan_screen.dart';
+import '../config/theme.dart';
 
 class CastRemoteScreen extends ConsumerStatefulWidget {
   final CastRemote remote;
@@ -608,11 +608,11 @@ class _State extends ConsumerState<CastRemoteScreen>
         ),
         actions: [
           TextButton(
-            onPressed: () => SmartDialog.dismiss(result: false),
+            onPressed: () => SmartDialog.dismiss(status: SmartStatus.dialog, result: false),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () => SmartDialog.dismiss(result: true),
+            onPressed: () => SmartDialog.dismiss(status: SmartStatus.dialog, result: true),
             child: const Text('Exit cast'),
           ),
         ],

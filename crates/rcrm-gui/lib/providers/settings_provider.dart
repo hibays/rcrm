@@ -211,6 +211,10 @@ class SettingsNotifier extends Notifier<SettingsState> {
   /// lands on the same values, so the seed never visibly changes.
   @override
   SettingsState build() {
+    ref.onDispose(() {
+      _jumpCommitFallback?.cancel();
+      _keywordCommitFallback?.cancel();
+    });
     final primed = SettingsService.primedAppearance;
     return const SettingsState().copyWith(
       appearanceMode: primed?.mode ?? 'system',
@@ -220,6 +224,15 @@ class SettingsNotifier extends Notifier<SettingsState> {
   }
 
   SettingsService get _service => ref.read(settingsServiceProvider);
+
+  /// Sliders preview into state on every drag frame and commit on release.
+  /// If the route is popped mid-drag, Slider._endInteraction returns early
+  /// (mounted == false) and onChangeEnd never fires — so a short fallback
+  /// timer persists the last previewed value. commit() cancels it, so there
+  /// is still exactly one write per gesture.
+  Timer? _jumpCommitFallback;
+  Timer? _keywordCommitFallback;
+
 
   Future<void> load() async {
     final imageLayout = await _service.getImageLayout();
@@ -448,10 +461,37 @@ class SettingsNotifier extends Notifier<SettingsState> {
   ///
   /// A pure ranking weight: the Related list and the Home picks read it on
   /// their next build, so no re-scan and no player restart is needed.
+  ///
+  /// The slider previews through [previewKeywordRelevance] on every drag frame
+  /// (state only — no SharedPreferences write) and calls
+  /// [commitKeywordRelevance] once on release. This combined setter stays for
+  /// callers that set the value atomically (tests, restored state).
   Future<void> setKeywordRelevance(int value) async {
+    previewKeywordRelevance(value);
+    await commitKeywordRelevance();
+  }
+
+  /// Live value of a keyword-relevance drag. Clamp and de-dup apply here; no
+  /// disk write happens until [commitKeywordRelevance].
+  void previewKeywordRelevance(int value) {
     final v = value.clamp(kKeywordRelevanceMin, kKeywordRelevanceMax);
+    if (v == state.keywordRelevance) return;
     state = state.copyWith(keywordRelevance: v);
-    await _service.setKeywordRelevance(v);
+    _keywordCommitFallback?.cancel();
+    _keywordCommitFallback = Timer(
+      const Duration(milliseconds: 250),
+      () => commitKeywordRelevance(),
+    );
+  }
+
+  /// Persist whatever the slider currently shows. A release commits once; the
+  /// 250ms fallback only fires if no release arrives (route popped mid-drag),
+  /// and a pause longer than that may commit the same value early — writes are
+  /// idempotent, so an extra one is harmless.
+  Future<void> commitKeywordRelevance() async {
+    _keywordCommitFallback?.cancel();
+    _keywordCommitFallback = null;
+    await _service.setKeywordRelevance(state.keywordRelevance);
   }
 
   /// Video tab's keyword filter row — the Organize menu's toggle. Persisted
@@ -515,14 +555,34 @@ class SettingsNotifier extends Notifier<SettingsState> {
   ///
   /// A drag reports a value per frame: writing every one of them would queue a
   /// platform write per frame, and consecutive frames usually round to the same
-  /// entry anyway, so only a real change is applied and persisted. The stack's
-  /// own re-trim follows from this state change
-  /// (`VideoJumpStackNotifier.build` listens to it).
+  /// entry anyway, so the slider previews through
+  /// [previewVideoJumpHistoryLimit] (state only) and calls
+  /// [commitVideoJumpHistoryLimit] once on release. This combined setter stays
+  /// for callers that set the value atomically (tests, restored state).
   Future<void> setVideoJumpHistoryLimit(int limit) async {
+    previewVideoJumpHistoryLimit(limit);
+    await commitVideoJumpHistoryLimit();
+  }
+
+  /// Live value of a jump-history drag. Clamp and de-dup apply here; the stack's
+  /// own re-trim follows from this state change
+  /// (`VideoJumpStackNotifier.build` listens to it). No disk write yet.
+  void previewVideoJumpHistoryLimit(int limit) {
     final v = limit.clamp(kVideoJumpHistoryMin, kVideoJumpHistoryMax);
     if (v == state.videoJumpHistoryLimit) return;
     state = state.copyWith(videoJumpHistoryLimit: v);
-    await _service.setVideoJumpHistoryLimit(v);
+    _jumpCommitFallback?.cancel();
+    _jumpCommitFallback = Timer(
+      const Duration(milliseconds: 250),
+      () => commitVideoJumpHistoryLimit(),
+    );
+  }
+
+  /// Persist whatever the slider currently shows, exactly once per gesture.
+  Future<void> commitVideoJumpHistoryLimit() async {
+    _jumpCommitFallback?.cancel();
+    _jumpCommitFallback = null;
+    await _service.setVideoJumpHistoryLimit(state.videoJumpHistoryLimit);
   }
 }
 

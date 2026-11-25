@@ -49,15 +49,21 @@ class VideoInfoSheet extends StatelessWidget {
       // Never taller than the screen: the body scrolls if a huge text scale
       // ever makes it so.
       constraints: BoxConstraints(
+        maxWidth: RCrmLayout.infoSheetMaxWidth,
         maxHeight: MediaQuery.sizeOf(context).height * 0.9,
       ),
       child: SafeArea(
         top: false,
         child: FutureBuilder<MediaMetadata>(
           future: metadata,
-          // A failed or unfinished parse simply contributes no rows; the ones
-          // the item already carries are drawn either way.
-          builder: (_, snapshot) => _body(snapshot.data?.track),
+          // A failed, unfinished or errored parse contributes no metadata
+          // rows — the same honesty gate the image sheet uses. A half-parsed
+          // reply must not present Created/Author/Device as fact.
+          builder: (_, snapshot) => _body(
+            snapshot.data != null && snapshot.data!.parsed
+                ? snapshot.data!.track
+                : null,
+          ),
         ),
       ),
     );
@@ -95,68 +101,66 @@ class VideoInfoSheet extends StatelessWidget {
           value: track!.gpsIso6709,
         ),
     ];
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Center(
-            child: Container(
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: RCrmColors.textFaint,
-                borderRadius: BorderRadius.circular(2),
-              ),
+    // The grabber is a sibling ABOVE the scroll view so its drag does not lose
+    // the gesture arena to the scroll view's own vertical recognizer.
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const InfoGrabber(),
+        Flexible(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  item.name,
+                  style: TextStyle(
+                    color: RCrmColors.textPrimary,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                    height: 1.25,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (technical.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    technical,
+                    style: TextStyle(
+                      color: RCrmColors.textSecondary,
+                      fontSize: 13,
+                      height: 1.4,
+                    ),
+                  ),
+                ],
+                const InfoRule(),
+
+                InfoRow(icon: Icons.folder_outlined, label: folder),
+                if (item.durationSeconds != null)
+                  InfoRow(
+                    icon: Icons.schedule,
+                    label: 'Duration',
+                    value: formatMs(item.durationSeconds! * 1000),
+                  ),
+                if (item.modified != null)
+                  InfoRow(
+                    icon: Icons.update,
+                    label: 'Modified',
+                    value: formatStamp(item.modified!.toLocal()),
+                  ),
+                if (keywords.isNotEmpty) ...[
+                  const InfoRule(),
+                  _keywords(keywords.take(8).toList()),
+                ],
+                if (extraRows.isNotEmpty) ...[const InfoRule(), ...extraRows],
+              ],
             ),
           ),
-          const SizedBox(height: RCrmSpacing.md),
-
-          Text(
-            item.name,
-            style: TextStyle(
-              color: RCrmColors.textPrimary,
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-              height: 1.25,
-            ),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          if (technical.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              technical,
-              style: TextStyle(
-                color: RCrmColors.textSecondary,
-                fontSize: 13,
-                height: 1.4,
-              ),
-            ),
-          ],
-          const InfoRule(),
-
-          InfoRow(icon: Icons.folder_outlined, label: folder),
-          if (item.durationSeconds != null)
-            InfoRow(
-              icon: Icons.schedule,
-              label: 'Duration',
-              value: formatMs(item.durationSeconds! * 1000),
-            ),
-          if (item.modified != null)
-            InfoRow(
-              icon: Icons.update,
-              label: 'Modified',
-              value: formatStamp(item.modified!.toLocal()),
-            ),
-          if (keywords.isNotEmpty) ...[
-            const InfoRule(),
-            _keywords(keywords.take(8).toList()),
-          ],
-          if (extraRows.isNotEmpty) ...[const InfoRule(), ...extraRows],
-        ],
-      ),
+        ),
+      ],
     );
   }
 

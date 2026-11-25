@@ -6,10 +6,10 @@ import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../utils/pick_directory.dart';
 
 import '../models/server_config.dart';
-import '../config/theme.dart';
 import '../providers/library_provider.dart';
 import '../providers/server_provider.dart';
 import '../providers/settings_provider.dart';
@@ -24,10 +24,20 @@ import '../utils/library_columns.dart';
 import '../utils/thumb_cache_policy.dart';
 import '../widgets/accent_color_picker.dart';
 import '../widgets/thumb_cache_dialog.dart';
+import '../config/theme.dart';
 
 // A getter, not a `final`: the palette is a runtime snapshot now, and a
 // cached TextStyle would keep yesterday's ink after a Day/Night switch.
 TextStyle get _hintSilver => TextStyle(color: RCrmColors.textSecondary);
+
+/// Width at which a row has room for a ListTile title AND its trailing control.
+///
+/// Below this the row stacks its label over the control instead. 520 was too
+/// low: a three-segment `SegmentedButton` ("Folder/Format/Ungrouped") needs
+/// ~520dp of its own, so at 560–610dp windows `material_ui`'s ListTile threw
+/// "Trailing widget consumes the entire tile width". 620 leaves a real margin
+/// for the longest label (and the slider+value row) at every desktop scale.
+const double kSettingsWideRowMin = 620;
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -80,14 +90,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     if (mounted) setState(() => _cacheBytes = b);
   }
 
-  /// The cache's ONE entry point. Managing it and deleting all of it are two
-  /// answers to the same question, so they are offered at the same moment, in the
-  /// flow the tile opens — and each says what it does to the cache, since the
-  /// difference between them is the whole reason the choice exists.
   /// The cache's ONE entry point: the grading is read first, then the choice is
   /// the user's — which tiers may be spent, or all of it — and only then does
   /// anything run. `preview()` plans without deleting, so what the dialog shows
-  /// and what `manage()` carries out are the same plan.
+  /// and what `manage()` carries out are the same plan. Managing and clearing
+  /// are two answers to one question, offered in the same flow, each saying
+  /// what it does — the difference is the reason the choice exists.
   Future<void> _manageCache() async {
     // The dialog opens FIRST and the grading arrives into it: reading a cache
     // directory is disk work that must not hold a tap hostage — and in a widget
@@ -221,16 +229,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
               Text(
                 info.formattedSha1,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                style: Theme.of(ctx).textTheme.bodySmall
+                    ?.copyWith(fontFamily: 'monospace'),
               ),
               const SizedBox(height: 14),
               Text(
                 'Only this exact certificate will be trusted, and only for '
                 'this session. If the server presents any other certificate, '
                 'the connection will be refused.',
-                style: TextStyle(
+                style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
                   color: Theme.of(ctx).colorScheme.onSurfaceVariant,
-                  fontSize: 12,
                 ),
               ),
             ],
@@ -238,11 +246,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ),
         actions: [
           TextButton(
-            onPressed: () => SmartDialog.dismiss(result: false),
+            onPressed: () => SmartDialog.dismiss(status: SmartStatus.dialog, result: false),
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () => SmartDialog.dismiss(result: true),
+            onPressed: () => SmartDialog.dismiss(status: SmartStatus.dialog, result: true),
             child: const Text('Trust & Continue'),
           ),
         ],
@@ -279,600 +287,814 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final ss = ref.watch(serverProvider);
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          _sectionHeader('Server'),
-          const SizedBox(height: 8),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: SegmentedButton<DeployMode>(
-              segments: const [
-                ButtonSegment(value: DeployMode.local, label: Text('Local')),
-                ButtonSegment(value: DeployMode.cloud, label: Text('Cloud')),
-              ],
-              selected: {_deployMode},
-              onSelectionChanged: (mode) async {
-                setState(() => _deployMode = mode.first);
-                await ref
-                    .read(settingsServiceProvider)
-                    .setDeployMode(mode.first);
-                _loadDeployMode(); // reload cloud fields from persisted config
-              },
-            ),
-          ),
-          const SizedBox(height: 12),
-          if (_deployMode == DeployMode.local) ...[
-            _group([
-              ListTile(
-                leading: Icon(
-                  Icons.circle,
-                  size: 12,
-                  // Running = orange (state indicator, the accent means
-                  // something is happening). Stopped = neutral silver, not
-                  // red — an unstarted server is a normal state, not an error.
-                  color: ss.isRunning
-                      ? RCrmColors.primary
-                      : RCrmColors.textFaint,
-                ),
-                title: Text(ss.isRunning ? 'Running' : 'Stopped'),
-                subtitle: ss.url != null ? Text(ss.url!) : null,
-                trailing: ss.isRunning
-                    ? TextButton(
-                        onPressed: () =>
-                            ref.read(serverProvider.notifier).stop(),
-                        child: const Text('Stop'),
-                      )
-                    : TextButton(
-                        onPressed: () => Navigator.of(ctx)
-                            .pushNamedAndRemoveUntil('/setup', (_) => false),
-                        child: const Text('Start'),
-                      ),
-              ),
-              if (ss.error != null)
+      // A settings list stretched across a 1920px window puts its titles at the
+      // far left and its switches at the far right, with a dead zone between —
+      // the "scaled-up phone" failure mode. Cap the content at a readable width
+      // and centre it; on a phone the cap never binds so full width is kept.
+      // SafeArea keeps the last row clear of the home indicator / gesture area
+      // (Scaffold does NOT inset its body on Flutter 3.50).
+      body: SafeArea(
+        // Scaffold already insets the body below the AppBar; only the bottom
+        // needs guarding here (home indicator / gesture area). Leaving `top`
+        // at its default true added a second status-bar inset — a ~47px blank
+        // band under the AppBar on mobile.
+        top: false,
+        bottom: true,
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+            key: const Key('settings-content-width'),
+            constraints: const BoxConstraints(maxWidth: 840),
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                _sectionHeader('Server'),
+                const SizedBox(height: 8),
                 Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Text(
-                    ss.error!,
-                    style: TextStyle(
-                      color: Theme.of(ctx).colorScheme.error,
-                      fontSize: 12,
-                    ),
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: SegmentedButton<DeployMode>(
+                    segments: const [
+                      ButtonSegment(
+                        value: DeployMode.local,
+                        label: Text(
+                          'Local',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: DeployMode.cloud,
+                        label: Text(
+                          'Cloud',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                    selected: {_deployMode},
+                    onSelectionChanged: (mode) async {
+                      setState(() => _deployMode = mode.first);
+                      await ref
+                          .read(settingsServiceProvider)
+                          .setDeployMode(mode.first);
+                      _loadDeployMode(); // reload cloud fields from persisted config
+                    },
                   ),
                 ),
-              ListTile(
-                leading: const Icon(Icons.folder),
-                title: const Text('Managed Directories'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: _editDirectories,
-              ),
-              // Android-only, because the permission is: a desktop app reads
-              // its folders with the user's own rights. The server opens those
-              // directories by real path, so without this row's permission the
-              // library is empty and nothing here can say why.
-              if (StorageAccess.supported)
-                ValueListenableBuilder<StorageAccessStatus?>(
-                  valueListenable: StorageAccess.state,
-                  builder: (context, status, _) => _storageAccessTile(status),
-                ),
-            ]),
-          ] else ...[
-            _group([
-              // Cloud fields need breathing room — 16px horizontal padding
-              // matches ListTile insets in the local branch; 12px vertical
-              // keeps the card from feeling cramped.
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Label on the left, button right-aligned. On narrow cards (or
-                    // large text scale) the button scales down via FittedBox instead
-                    // of overflowing the card (mirrors cloud_setup_screen).
-                    Row(
-                      children: [
-                        const Text('Protocol'),
-                        const SizedBox(width: 12),
-                        // Expanded (tight) makes the FittedBox fill all remaining
-                        // width, so Alignment.centerRight pushes the button flush
-                        // to the card edge. A loose Flexible would leave the
-                        // FittedBox parked at the left of its slot instead.
-                        Expanded(
-                          child: FittedBox(
-                            fit: BoxFit.scaleDown,
-                            alignment: Alignment.centerRight,
-                            child: SegmentedButton<bool>(
-                              segments: const [
-                                ButtonSegment(
-                                  value: true,
-                                  label: Text('HTTPS'),
+                const SizedBox(height: 12),
+                if (_deployMode == DeployMode.local) ...[
+                  _group([
+                    ListTile(
+                      leading: Icon(
+                        Icons.circle,
+                        size: 12,
+                        // Running = orange (state indicator, the accent means
+                        // something is happening). Stopped = neutral silver, not
+                        // red — an unstarted server is a normal state, not an error.
+                        color: ss.isRunning
+                            ? RCrmColors.primary
+                            : RCrmColors.textFaint,
+                      ),
+                      title: Text(ss.isRunning ? 'Running' : 'Stopped'),
+                      subtitle: ss.url != null ? Text(ss.url!) : null,
+                      trailing: ss.isRunning
+                          ? TextButton(
+                              onPressed: () =>
+                                  ref.read(serverProvider.notifier).stop(),
+                              child: const Text('Stop'),
+                            )
+                          : TextButton(
+                              onPressed: () => Navigator.of(
+                                ctx,
+                              ).pushNamedAndRemoveUntil('/setup', (_) => false),
+                              child: const Text('Start'),
+                            ),
+                    ),
+                    if (ss.error != null)
+                      Padding(
+                        padding: const EdgeInsets.all(12),
+                        // A connection failure arrives asynchronously, after the
+                        // screen is already up — announce it rather than leaving a
+                        // silent red line for a screen-reader user (WCAG 4.1.3).
+                        child: Semantics(
+                          liveRegion: true,
+                          child: Text(
+                            ss.error!,
+                            style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(ctx).colorScheme.error,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ListTile(
+                      leading: const Icon(Icons.folder),
+                      title: const Text('Managed Directories'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: _editDirectories,
+                    ),
+                    // Android-only, because the permission is: a desktop app reads
+                    // its folders with the user's own rights. The server opens those
+                    // directories by real path, so without this row's permission the
+                    // library is empty and nothing here can say why.
+                    if (StorageAccess.supported)
+                      ValueListenableBuilder<StorageAccessStatus?>(
+                        valueListenable: StorageAccess.state,
+                        builder: (context, status, _) =>
+                            _storageAccessTile(status),
+                      ),
+                  ]),
+                ] else ...[
+                  _group([
+                    // Cloud fields need breathing room — 16px horizontal padding
+                    // matches ListTile insets in the local branch; 12px vertical
+                    // keeps the card from feeling cramped.
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // Protocol label + HTTPS/HTTP button. On wide cards the label
+                          // sits left and the button hugs the right edge; on narrow ones
+                          // the button takes its own full-width row. The button is NEVER
+                          // wrapped in FittedBox(scaleDown): on a 320dp card that scaled
+                          // its 48dp tap target down to ~25dp — below the 44pt/48dp
+                          // minimum — while the test measured the unscaled RenderBox and
+                          // passed falsely. Restructure instead of scaling.
+                          LayoutBuilder(
+                            builder: (context, c) {
+                              final button = SegmentedButton<bool>(
+                                segments: const [
+                                  ButtonSegment(
+                                    value: true,
+                                    label: Text(
+                                      'HTTPS',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  ButtonSegment(
+                                    value: false,
+                                    label: Text(
+                                      'HTTP',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                                selected: {_cloudHttps},
+                                onSelectionChanged: ss.isRunning
+                                    ? null
+                                    : (v) {
+                                        setState(() {
+                                          _cloudHttps = v.first;
+                                          if (_portCtrl.text.isEmpty ||
+                                              _portCtrl.text ==
+                                                  (_cloudHttps
+                                                      ? '80'
+                                                      : '443')) {
+                                            _portCtrl.text = _cloudHttps
+                                                ? '443'
+                                                : '80';
+                                          }
+                                        });
+                                      },
+                              );
+                              // Only a genuinely wide card can hold the label AND
+                              // the button's intrinsic ~249dp on one line. At 300-
+                              // 414dp (mainstream phones) the Row squeezed the
+                              // button and folded HTTPS/HTTP into a 76-141dp block;
+                              // phones must take the full-row Column below. The
+                              // 2-segment HTTPS/HTTP button is shorter than `_seg`'s
+                              // three, so it can right-align from a narrower card.
+                              if (c.maxWidth >= 520) {
+                                return Row(
+                                  children: [
+                                    const Text('Protocol'),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Align(
+                                        alignment: Alignment.centerRight,
+                                        widthFactor: 1,
+                                        child: button,
+                                      ),
+                                    ),
+                                  ],
+                                );
+                              }
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text('Protocol'),
+                                  const SizedBox(height: 10),
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: button,
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          // Host/Port side-by-side on wide cards; stacked on narrow ones
+                          // (the port field only gets ~80px otherwise and its label
+                          // overflows at 1.3x text scale).
+                          LayoutBuilder(
+                            builder: (context, constraints) {
+                              final host = TextField(
+                                controller: _hostCtrl,
+                                decoration: InputDecoration(
+                                  labelText: 'Host',
+                                  hintText: 'example.com',
+                                  hintStyle: _hintSilver,
+                                  prefixIcon: Icon(Icons.dns),
                                 ),
-                                ButtonSegment(
-                                  value: false,
-                                  label: Text('HTTP'),
+                                enabled: !ss.isRunning,
+                              );
+                              final port = TextField(
+                                controller: _portCtrl,
+                                decoration: InputDecoration(
+                                  labelText: 'Port',
+                                  hintText: _cloudHttps ? '443' : '80',
+                                  hintStyle: _hintSilver,
+                                ),
+                                keyboardType: TextInputType.number,
+                                enabled: !ss.isRunning,
+                              );
+                              if (constraints.maxWidth >= 300) {
+                                return Row(
+                                  children: [
+                                    Expanded(flex: 3, child: host),
+                                    const SizedBox(width: 12),
+                                    Expanded(flex: 1, child: port),
+                                  ],
+                                );
+                              }
+                              return Column(
+                                children: [
+                                  host,
+                                  const SizedBox(height: 12),
+                                  port,
+                                ],
+                              );
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _userCtrl,
+                            decoration: InputDecoration(
+                              labelText: 'Username',
+                              hintStyle: _hintSilver,
+                              prefixIcon: Icon(Icons.person),
+                            ),
+                            enabled: !ss.isRunning,
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _passCtrl,
+                            decoration: InputDecoration(
+                              labelText: 'Password',
+                              hintStyle: _hintSilver,
+                              prefixIcon: Icon(Icons.lock),
+                            ),
+                            obscureText: true,
+                            enabled: !ss.isRunning,
+                          ),
+                          const SizedBox(height: 16),
+                          if (ss.isRunning) ...[
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.check_circle,
+                                  color: Theme.of(ctx).colorScheme.primary,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Connected to ${ss.url ?? ""}',
+                                    style: Theme.of(ctx).textTheme.bodyMedium,
+                                  ),
+                                ),
+                                TextButton(
+                                  onPressed: () =>
+                                      ref.read(serverProvider.notifier).stop(),
+                                  child: const Text('Disconnect'),
                                 ),
                               ],
-                              selected: {_cloudHttps},
-                              style: const ButtonStyle(
-                                visualDensity: VisualDensity.compact,
+                            ),
+                          ] else ...[
+                            SizedBox(
+                              width: double.infinity,
+                              child: FilledButton.icon(
+                                onPressed: _isConnecting
+                                    ? null
+                                    : () => _tryConnect(),
+                                icon: _isConnecting
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.link),
+                                label: Text(
+                                  _isConnecting ? 'Connecting…' : 'Connect',
+                                ),
                               ),
-                              onSelectionChanged: ss.isRunning
-                                  ? null
-                                  : (v) {
-                                      setState(() {
-                                        _cloudHttps = v.first;
-                                        if (_portCtrl.text.isEmpty ||
-                                            _portCtrl.text ==
-                                                (_cloudHttps ? '80' : '443')) {
-                                          _portCtrl.text = _cloudHttps
-                                              ? '443'
-                                              : '80';
-                                        }
-                                      });
-                                    },
                             ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    // Host/Port side-by-side on wide cards; stacked on narrow ones
-                    // (the port field only gets ~80px otherwise and its label
-                    // overflows at 1.3x text scale).
-                    LayoutBuilder(
-                      builder: (context, constraints) {
-                        final host = TextField(
-                          controller: _hostCtrl,
-                          decoration: InputDecoration(
-                            labelText: 'Host',
-                            hintText: 'example.com',
-                            hintStyle: _hintSilver,
-                            prefixIcon: Icon(Icons.dns),
-                          ),
-                          enabled: !ss.isRunning,
-                        );
-                        final port = TextField(
-                          controller: _portCtrl,
-                          decoration: InputDecoration(
-                            labelText: 'Port',
-                            hintText: _cloudHttps ? '443' : '80',
-                            hintStyle: _hintSilver,
-                          ),
-                          keyboardType: TextInputType.number,
-                          enabled: !ss.isRunning,
-                        );
-                        if (constraints.maxWidth >= 300) {
-                          return Row(
-                            children: [
-                              Expanded(flex: 3, child: host),
-                              const SizedBox(width: 12),
-                              Expanded(flex: 1, child: port),
-                            ],
-                          );
-                        }
-                        return Column(
-                          children: [host, const SizedBox(height: 12), port],
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _userCtrl,
-                      decoration: InputDecoration(
-                        labelText: 'Username',
-                        hintStyle: _hintSilver,
-                        prefixIcon: Icon(Icons.person),
-                      ),
-                      enabled: !ss.isRunning,
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _passCtrl,
-                      decoration: InputDecoration(
-                        labelText: 'Password',
-                        hintStyle: _hintSilver,
-                        prefixIcon: Icon(Icons.lock),
-                      ),
-                      obscureText: true,
-                      enabled: !ss.isRunning,
-                    ),
-                    const SizedBox(height: 16),
-                    if (ss.isRunning) ...[
-                      Row(
-                        children: [
-                          Icon(
-                            Icons.check_circle,
-                            color: Theme.of(ctx).colorScheme.primary,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Connected to ${ss.url ?? ""}',
-                              style: Theme.of(ctx).textTheme.bodyMedium,
+                          ],
+                          // BAD_CERT has its own untrusted-certificate dialog; don't
+                          // also dump the raw marker string into the error text.
+                          if (ss.error != null && ss.error != 'BAD_CERT') ...[
+                            const SizedBox(height: 12),
+                            Semantics(
+                              liveRegion: true,
+                              child: Text(
+                                ss.error!,
+                                style: Theme.of(ctx).textTheme.bodySmall
+                                    ?.copyWith(
+                                      color: Theme.of(ctx).colorScheme.error,
+                                    ),
+                              ),
                             ),
-                          ),
-                          TextButton(
-                            onPressed: () =>
-                                ref.read(serverProvider.notifier).stop(),
-                            child: const Text('Disconnect'),
-                          ),
+                          ],
                         ],
                       ),
-                    ] else ...[
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton.icon(
-                          onPressed: _isConnecting ? null : () => _tryConnect(),
-                          icon: _isConnecting
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.link),
+                    ),
+                  ]),
+                ],
+                const Divider(),
+                _sectionHeader('Appearance'),
+                const SizedBox(height: 8),
+                _group([
+                  _seg<String>(
+                    title: 'Theme',
+                    subtitle: 'Follow the system, or pin Day / Night',
+                    selected: {ui.appearanceMode},
+                    segments: const [
+                      ButtonSegment(
+                        value: 'system',
+                        label: Text(
+                          'System',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: 'day',
+                        label: Text(
+                          'Day',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: 'night',
+                        label: Text(
+                          'Night',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                    onChanged: (v) {
+                      ref
+                          .read(uiSettingsProvider.notifier)
+                          .setAppearanceMode(v.first);
+                    },
+                  ),
+                ]),
+                const SizedBox(height: 8),
+                _group([
+                  // _group's Column centres shrink-wrapped children; without a full
+                  // width the label and swatches drift to the middle of the card on
+                  // wide screens, out of line with the Theme row above.
+                  SizedBox(
+                    width: double.infinity,
+                    child: _accentRow(
+                      ui.appearanceAccent,
+                      ui.appearanceCustomColor,
+                    ),
+                  ),
+                ]),
+                const SizedBox(height: 8),
+                const Divider(),
+                _sectionHeader('Display'),
+                const SizedBox(height: 8),
+                _group([
+                  SwitchListTile(
+                    title: const Text('Video Hover Preview'),
+                    subtitle: const Text('Show preview clips on hover'),
+                    value: ui.previewEnabled,
+                    onChanged: (v) {
+                      ref
+                          .read(uiSettingsProvider.notifier)
+                          .setPreviewEnabled(v);
+                    },
+                  ),
+                ]),
+                const SizedBox(height: 8),
+                _group([
+                  _seg<String>(
+                    title: 'Image Grouping',
+                    selected: {ui.imageClassification},
+                    segments: const [
+                      ButtonSegment(
+                        value: 'folder',
+                        label: Text(
+                          'Folder',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: 'format',
+                        label: Text(
+                          'Format',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: 'none',
+                        label: Text(
+                          'Ungrouped',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                    onChanged: (v) {
+                      ref
+                          .read(uiSettingsProvider.notifier)
+                          .setImageClassification(v.first);
+                    },
+                  ),
+                  const Divider(height: 1),
+                  // The video tab's Organize menu is the usual door, but a narrow
+                  // toolbar drops it to make room for the Tags chip. This row keeps
+                  // all three arrangements reachable at every window width.
+                  _seg<String>(
+                    key: const Key('video-grouping-seg'),
+                    title: 'Video Grouping',
+                    selected: {ui.videoClassification},
+                    segments: const [
+                      ButtonSegment(
+                        value: 'folder',
+                        label: Text(
+                          'Folder',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: 'format',
+                        label: Text(
+                          'Format',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: 'none',
+                        label: Text(
+                          'Ungrouped',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                    onChanged: (v) {
+                      ref
+                          .read(uiSettingsProvider.notifier)
+                          .setVideoClassification(v.first);
+                    },
+                  ),
+                ]),
+                const SizedBox(height: 8),
+                _group([
+                  _seg<String>(
+                    title: 'Image Layout',
+                    subtitle: 'Masonry or uniform grid',
+                    selected: {ui.imageLayout},
+                    segments: const [
+                      ButtonSegment(
+                        value: 'masonry',
+                        label: Text(
+                          'Masonry',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: 'uniform',
+                        label: Text(
+                          'Uniform',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                    onChanged: (v) {
+                      ref
+                          .read(uiSettingsProvider.notifier)
+                          .setImageLayout(v.first);
+                    },
+                  ),
+                  const Divider(height: 1),
+                  _seg<String>(
+                    title: 'Default Video View',
+                    selected: {ui.videoLayout},
+                    segments: const [
+                      ButtonSegment(
+                        value: 'grid',
+                        label: Text(
+                          'Grid',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: 'list',
+                        label: Text(
+                          'List',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                    onChanged: (v) {
+                      ref
+                          .read(uiSettingsProvider.notifier)
+                          .setVideoLayout(v.first);
+                    },
+                  ),
+                  const Divider(height: 1),
+                  // The list's other dimension. Auto is the responsive answer (two
+                  // columns once the window is wide enough for two readable rows);
+                  // One/Two are what a two-finger pinch on the list commits. The row
+                  // exists so AUTO stays reachable after a pinch has overruled it —
+                  // a gesture can set a value it cannot clear.
+                  _seg<String>(
+                    title: 'Video List Columns',
+                    subtitle:
+                        'Two columns need a window at least 600 dp wide (Auto asks '
+                        'for 840 dp); a two-finger pinch on the list overrules it',
+                    selected: {ui.videoListColumns},
+                    segments: const [
+                      ButtonSegment(
+                        value: 'auto',
+                        label: Text(
+                          'Auto',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: 'one',
+                        label: Text(
+                          'One',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: 'two',
+                        label: Text(
+                          'Two',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                    onChanged: (v) {
+                      ref
+                          .read(uiSettingsProvider.notifier)
+                          .setVideoListColumns(v.first);
+                    },
+                  ),
+                  const Divider(height: 1),
+                  // The toolbar's column button leaves on very narrow windows, and a
+                  // mouse has no pinch. This row is the same setting's other door.
+                  _seg<int>(
+                    key: const Key('video-grid-columns-seg'),
+                    title: 'Video Grid Columns',
+                    subtitle:
+                        'Wide windows show this many; narrow ones show fewer',
+                    // The segments come from the one owner of the range
+                    // (`videoGridChoiceBounds`), not from five literals: the numbers
+                    // here ARE the numbers `videoGridBounds` can return at some width.
+                    // A hand-written 2..6 left a phone's one-column pinch stored with
+                    // no segment to highlight, and put the range in a second place
+                    // that could drift from the toolbar's.
+                    //
+                    // The SELECTED value is the stored choice, not what this window
+                    // resolves it to — the same contract as Video List Columns above:
+                    // narrowing a window must not rewrite the preference, so the row
+                    // keeps naming the number the grid will use once it is wide
+                    // enough. `resolve` only guards a stored value from outside.
+                    selected: {gridChoices.resolve(gridColumns)},
+                    segments: [
+                      for (var c = gridChoices.min; c <= gridChoices.max; c++)
+                        ButtonSegment(
+                          value: c,
                           label: Text(
-                            _isConnecting ? 'Connecting…' : 'Connect',
+                            '$c',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                      ),
                     ],
-                    // BAD_CERT has its own untrusted-certificate dialog; don't
-                    // also dump the raw marker string into the error text.
-                    if (ss.error != null && ss.error != 'BAD_CERT') ...[
-                      const SizedBox(height: 12),
-                      Text(
-                        ss.error!,
-                        style: TextStyle(
-                          color: Theme.of(ctx).colorScheme.error,
-                          fontSize: 12,
+                    onChanged: (v) {
+                      ref.read(videoGridColumnsProvider.notifier).set(v.first);
+                    },
+                  ),
+                ]),
+                const SizedBox(height: 8),
+                _group([
+                  SwitchListTile(
+                    title: const Text('Picture-in-Picture'),
+                    subtitle: const Text(
+                      'Show a floating player when scrolling past the video',
+                    ),
+                    value: ui.pipEnabled,
+                    onChanged: (v) {
+                      ref.read(uiSettingsProvider.notifier).setPipEnabled(v);
+                    },
+                  ),
+                  const Divider(height: 1),
+                  _seg<String>(
+                    title: 'PiP Size',
+                    subtitle: 'Small compact window or full-width overlay',
+                    selected: {ui.pipSize},
+                    segments: const [
+                      ButtonSegment(
+                        value: 'normal',
+                        label: Text(
+                          'Normal',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      ButtonSegment(
+                        value: 'small',
+                        label: Text(
+                          'Small',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
                     ],
+                    onChanged: (v) {
+                      ref.read(uiSettingsProvider.notifier).setPipSize(v.first);
+                    },
+                  ),
+                ]),
+                const SizedBox(height: 8),
+                _group([
+                  _limitSlider(
+                    title: 'Jump History',
+                    subtitle:
+                        'How many previous videos Back returns to; those videos are '
+                        'also kept out of Related',
+                    value: ui.videoJumpHistoryLimit,
+                    min: kVideoJumpHistoryMin,
+                    max: kVideoJumpHistoryMax,
+                    sliderKey: const ValueKey('jump-history-slider'),
+                    // Live state every frame; one SharedPreferences write on release.
+                    onChanged: (v) => ref
+                        .read(uiSettingsProvider.notifier)
+                        .previewVideoJumpHistoryLimit(v),
+                    onCommit: () => ref
+                        .read(uiSettingsProvider.notifier)
+                        .commitVideoJumpHistoryLimit(),
+                  ),
+                  const Divider(height: 1),
+                  // The one control for the automatic keywords. It changes the
+                  // RANKING, not the tags themselves: at 0 the Related list and Home
+                  // keep the folder order they had before keywords existed, at 100 a
+                  // shared tag can pull a video ahead of a folder neighbour.
+                  _limitSlider(
+                    title: 'Keyword Relevance',
+                    subtitle:
+                        'How strongly shared keywords rank Related videos and Home '
+                        'picks. 0 follows folders only; 100 follows tags first',
+                    value: ui.keywordRelevance,
+                    min: kKeywordRelevanceMin,
+                    max: kKeywordRelevanceMax,
+                    sliderKey: const ValueKey('keyword-relevance-slider'),
+                    // Live state every frame; one SharedPreferences write on release.
+                    onChanged: (v) => ref
+                        .read(uiSettingsProvider.notifier)
+                        .previewKeywordRelevance(v),
+                    onCommit: () => ref
+                        .read(uiSettingsProvider.notifier)
+                        .commitKeywordRelevance(),
+                  ),
+                  // A volume row exists only where the app may set the device's media
+                  // stream: on a phone that stream is what the hardware keys and every
+                  // other media app move, while a desktop's mixer is the user's own
+                  // business and its app-local slider is the expected behaviour. The
+                  // switch is read when a player opens (`video_player_screen.dart`), so
+                  // this row states a preference rather than poking a playing video.
+                  if (SystemVolume.supported) ...[
+                    const Divider(height: 1),
+                    _systemVolumeTile(ui.useSystemVolume),
                   ],
-                ),
-              ),
-            ]),
-          ],
-          const Divider(),
-          _sectionHeader('Appearance'),
-          const SizedBox(height: 8),
-          _group([
-            _seg<String>(
-              title: 'Theme',
-              subtitle: 'Follow the system, or pin Day / Night',
-              selected: {ui.appearanceMode},
-              segments: const [
-                ButtonSegment(
-                  value: 'system',
-                  label: Text(
-                    'System',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                ]),
+                // A privacy row exists only where the platform has a capture surface
+                // the app can actually close: a desktop window's pixels are the OS's
+                // business, and the switch would be a dead control there. What the
+                // switch promises differs by platform and the subtitle says which
+                // (`capturePolicyNote`) — iOS cannot refuse a still screenshot, and
+                // claiming otherwise in the UI is the one thing this row must not do.
+                if (ScreenCapture.supported) ...[
+                  const Divider(),
+                  _sectionHeader('Privacy'),
+                  const SizedBox(height: 8),
+                  _group([
+                    SwitchListTile(
+                      title: const Text('Allow Screenshots'),
+                      subtitle: Text(
+                        capturePolicyNote(
+                          canBlockScreenshots:
+                              ScreenCapture.canBlockScreenshots,
+                        ),
+                      ),
+                      value: ui.allowScreenshots,
+                      onChanged: (v) {
+                        ref
+                            .read(uiSettingsProvider.notifier)
+                            .setAllowScreenshots(v);
+                      },
+                    ),
+                  ]),
+                ],
+                const Divider(),
+                _sectionHeader('Casting'),
+                const SizedBox(height: 8),
+                _group([
+                  SwitchListTile(
+                    title: const Text('Cast Auto-Next'),
+                    subtitle: const Text(
+                      'When the TV goes idle (video ended or failed to start), show '
+                      'an up-next strip; untouched for 5s it plays the first one',
+                    ),
+                    value: ui.castAutoNext,
+                    onChanged: (v) {
+                      ref.read(uiSettingsProvider.notifier).setCastAutoNext(v);
+                    },
                   ),
-                ),
-                ButtonSegment(
-                  value: 'day',
-                  label: Text(
-                    'Day',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                ]),
+                const Divider(),
+                _sectionHeader('Cache'),
+                const SizedBox(height: 8),
+                _group([
+                  SwitchListTile(
+                    title: const Text('Thumbnail Cache'),
+                    subtitle: const Text(
+                      'Cache video posters + image thumbnails on disk',
+                    ),
+                    value: ui.thumbCacheEnabled,
+                    onChanged: (v) async {
+                      await ref
+                          .read(uiSettingsProvider.notifier)
+                          .setThumbCacheEnabled(v);
+                      _loadCacheSize();
+                    },
                   ),
-                ),
-                ButtonSegment(
-                  value: 'night',
-                  label: Text(
-                    'Night',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                  // ONE way in. What to do with the cache is a choice made INSIDE that
+                  // flow, not a second button beside it: managing and deleting
+                  // everything are two things the same person decides at the same
+                  // moment, and putting the drastic one on the same level as the
+                  // careful one made the careful one look like the exception.
+                  ListTile(
+                    leading: const Icon(Icons.sd_storage),
+                    title: const Text('Manage Cache'),
+                    subtitle: Text(
+                      _cacheBytes == null
+                          ? 'Calculating…'
+                          : '${ThumbCache.human(_cacheBytes!)} — managed by generation '
+                                'time; the newest entries are kept',
+                    ),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _manageCache,
                   ),
-                ),
-              ],
-              onChanged: (v) {
-                ref
-                    .read(uiSettingsProvider.notifier)
-                    .setAppearanceMode(v.first);
-              },
-            ),
-          ]),
-          const SizedBox(height: 8),
-          _group([
-            // _group's Column centres shrink-wrapped children; without a full
-            // width the label and swatches drift to the middle of the card on
-            // wide screens, out of line with the Theme row above.
-            SizedBox(
-              width: double.infinity,
-              child: _accentRow(ui.appearanceAccent, ui.appearanceCustomColor),
-            ),
-          ]),
-          const SizedBox(height: 8),
-          const Divider(),
-          _sectionHeader('Display'),
-          const SizedBox(height: 8),
-          _group([
-            SwitchListTile(
-              title: const Text('Video Hover Preview'),
-              subtitle: const Text('Show preview clips on hover'),
-              value: ui.previewEnabled,
-              onChanged: (v) {
-                ref.read(uiSettingsProvider.notifier).setPreviewEnabled(v);
-              },
-            ),
-          ]),
-          const SizedBox(height: 8),
-          _group([
-            _seg<String>(
-              title: 'Image Grouping',
-              selected: {ui.imageClassification},
-              segments: const [
-                ButtonSegment(value: 'folder', label: Text('Folder')),
-                ButtonSegment(value: 'format', label: Text('Format')),
-                ButtonSegment(value: 'none', label: Text('Ungrouped')),
-              ],
-              onChanged: (v) {
-                ref
-                    .read(uiSettingsProvider.notifier)
-                    .setImageClassification(v.first);
-              },
-            ),
-            const Divider(height: 1),
-            // The video tab's Organize menu is the usual door, but a narrow
-            // toolbar drops it to make room for the Tags chip. This row keeps
-            // all three arrangements reachable at every window width.
-            _seg<String>(
-              key: const Key('video-grouping-seg'),
-              title: 'Video Grouping',
-              selected: {ui.videoClassification},
-              segments: const [
-                ButtonSegment(value: 'folder', label: Text('Folder')),
-                ButtonSegment(value: 'format', label: Text('Format')),
-                ButtonSegment(value: 'none', label: Text('Ungrouped')),
-              ],
-              onChanged: (v) {
-                ref
-                    .read(uiSettingsProvider.notifier)
-                    .setVideoClassification(v.first);
-              },
-            ),
-          ]),
-          const SizedBox(height: 8),
-          _group([
-            _seg<String>(
-              title: 'Image Layout',
-              subtitle: 'Masonry or uniform grid',
-              selected: {ui.imageLayout},
-              segments: const [
-                ButtonSegment(value: 'masonry', label: Text('Masonry')),
-                ButtonSegment(value: 'uniform', label: Text('Uniform')),
-              ],
-              onChanged: (v) {
-                ref.read(uiSettingsProvider.notifier).setImageLayout(v.first);
-              },
-            ),
-            const Divider(height: 1),
-            _seg<String>(
-              title: 'Default Video View',
-              selected: {ui.videoLayout},
-              segments: const [
-                ButtonSegment(value: 'grid', label: Text('Grid')),
-                ButtonSegment(value: 'list', label: Text('List')),
-              ],
-              onChanged: (v) {
-                ref.read(uiSettingsProvider.notifier).setVideoLayout(v.first);
-              },
-            ),
-            const Divider(height: 1),
-            // The list's other dimension. Auto is the responsive answer (two
-            // columns once the window is wide enough for two readable rows);
-            // One/Two are what a two-finger pinch on the list commits. The row
-            // exists so AUTO stays reachable after a pinch has overruled it —
-            // a gesture can set a value it cannot clear.
-            _seg<String>(
-              title: 'Video List Columns',
-              subtitle:
-                  'Two columns need a window at least 600 dp wide (Auto asks '
-                  'for 840 dp); a two-finger pinch on the list overrules it',
-              selected: {ui.videoListColumns},
-              segments: const [
-                ButtonSegment(value: 'auto', label: Text('Auto')),
-                ButtonSegment(value: 'one', label: Text('One')),
-                ButtonSegment(value: 'two', label: Text('Two')),
-              ],
-              onChanged: (v) {
-                ref
-                    .read(uiSettingsProvider.notifier)
-                    .setVideoListColumns(v.first);
-              },
-            ),
-            const Divider(height: 1),
-            // The toolbar's column button leaves on very narrow windows, and a
-            // mouse has no pinch. This row is the same setting's other door.
-            _seg<int>(
-              key: const Key('video-grid-columns-seg'),
-              title: 'Video Grid Columns',
-              subtitle: 'Wide windows show this many; narrow ones show fewer',
-              // The segments come from the one owner of the range
-              // (`videoGridChoiceBounds`), not from five literals: the numbers
-              // here ARE the numbers `videoGridBounds` can return at some width.
-              // A hand-written 2..6 left a phone's one-column pinch stored with
-              // no segment to highlight, and put the range in a second place
-              // that could drift from the toolbar's.
-              //
-              // The SELECTED value is the stored choice, not what this window
-              // resolves it to — the same contract as Video List Columns above:
-              // narrowing a window must not rewrite the preference, so the row
-              // keeps naming the number the grid will use once it is wide
-              // enough. `resolve` only guards a stored value from outside.
-              selected: {gridChoices.resolve(gridColumns)},
-              segments: [
-                for (var c = gridChoices.min; c <= gridChoices.max; c++)
-                  ButtonSegment(value: c, label: Text('$c')),
-              ],
-              onChanged: (v) {
-                ref.read(videoGridColumnsProvider.notifier).set(v.first);
-              },
-            ),
-          ]),
-          const SizedBox(height: 8),
-          _group([
-            SwitchListTile(
-              title: const Text('Picture-in-Picture'),
-              subtitle: const Text(
-                'Show a floating player when scrolling past the video',
-              ),
-              value: ui.pipEnabled,
-              onChanged: (v) {
-                ref.read(uiSettingsProvider.notifier).setPipEnabled(v);
-              },
-            ),
-            const Divider(height: 1),
-            _seg<String>(
-              title: 'PiP Size',
-              subtitle: 'Small compact window or full-width overlay',
-              selected: {ui.pipSize},
-              segments: const [
-                ButtonSegment(value: 'normal', label: Text('Normal')),
-                ButtonSegment(value: 'small', label: Text('Small')),
-              ],
-              onChanged: (v) {
-                ref.read(uiSettingsProvider.notifier).setPipSize(v.first);
-              },
-            ),
-          ]),
-          const SizedBox(height: 8),
-          _group([
-            _limitSlider(
-              title: 'Jump History',
-              subtitle:
-                  'How many previous videos Back returns to; those videos are '
-                  'also kept out of Related',
-              value: ui.videoJumpHistoryLimit,
-              min: kVideoJumpHistoryMin,
-              max: kVideoJumpHistoryMax,
-              sliderKey: const ValueKey('jump-history-slider'),
-              onChanged: (v) {
-                ref
-                    .read(uiSettingsProvider.notifier)
-                    .setVideoJumpHistoryLimit(v);
-              },
-            ),
-            const Divider(height: 1),
-            // The one control for the automatic keywords. It changes the
-            // RANKING, not the tags themselves: at 0 the Related list and Home
-            // keep the folder order they had before keywords existed, at 100 a
-            // shared tag can pull a video ahead of a folder neighbour.
-            _limitSlider(
-              title: 'Keyword Relevance',
-              subtitle:
-                  'How strongly shared keywords rank Related videos and Home '
-                  'picks. 0 follows folders only; 100 follows tags first',
-              value: ui.keywordRelevance,
-              min: kKeywordRelevanceMin,
-              max: kKeywordRelevanceMax,
-              sliderKey: const ValueKey('keyword-relevance-slider'),
-              onChanged: (v) {
-                ref.read(uiSettingsProvider.notifier).setKeywordRelevance(v);
-              },
-            ),
-            // A volume row exists only where the app may set the device's media
-            // stream: on a phone that stream is what the hardware keys and every
-            // other media app move, while a desktop's mixer is the user's own
-            // business and its app-local slider is the expected behaviour. The
-            // switch is read when a player opens (`video_player_screen.dart`), so
-            // this row states a preference rather than poking a playing video.
-            if (SystemVolume.supported) ...[
-              const Divider(height: 1),
-              _systemVolumeTile(ui.useSystemVolume),
-            ],
-          ]),
-          // A privacy row exists only where the platform has a capture surface
-          // the app can actually close: a desktop window's pixels are the OS's
-          // business, and the switch would be a dead control there. What the
-          // switch promises differs by platform and the subtitle says which
-          // (`capturePolicyNote`) — iOS cannot refuse a still screenshot, and
-          // claiming otherwise in the UI is the one thing this row must not do.
-          if (ScreenCapture.supported) ...[
-            const Divider(),
-            _sectionHeader('Privacy'),
-            const SizedBox(height: 8),
-            _group([
-              SwitchListTile(
-                title: const Text('Allow Screenshots'),
-                subtitle: Text(
-                  capturePolicyNote(
-                    canBlockScreenshots: ScreenCapture.canBlockScreenshots,
+                ]),
+                const Divider(),
+                _sectionHeader('About'),
+                const SizedBox(height: 8),
+                _group([
+                  ListTile(
+                    leading: const Icon(Icons.info),
+                    title: const Text('RCrm Media Library'),
+                    subtitle: const Text('Version 1.0.0'),
                   ),
-                ),
-                value: ui.allowScreenshots,
-                onChanged: (v) {
-                  ref.read(uiSettingsProvider.notifier).setAllowScreenshots(v);
-                },
-              ),
-            ]),
-          ],
-          const Divider(),
-          _sectionHeader('Casting'),
-          const SizedBox(height: 8),
-          _group([
-            SwitchListTile(
-              title: const Text('Cast Auto-Next'),
-              subtitle: const Text(
-                'When the TV goes idle (video ended or failed to start), show '
-                'an up-next strip; untouched for 5s it plays the first one',
-              ),
-              value: ui.castAutoNext,
-              onChanged: (v) {
-                ref.read(uiSettingsProvider.notifier).setCastAutoNext(v);
-              },
+                ]),
+              ],
             ),
-          ]),
-          const Divider(),
-          _sectionHeader('Cache'),
-          const SizedBox(height: 8),
-          _group([
-            SwitchListTile(
-              title: const Text('Thumbnail Cache'),
-              subtitle: const Text(
-                'Cache video posters + image thumbnails on disk',
-              ),
-              value: ui.thumbCacheEnabled,
-              onChanged: (v) async {
-                await ref
-                    .read(uiSettingsProvider.notifier)
-                    .setThumbCacheEnabled(v);
-                _loadCacheSize();
-              },
-            ),
-            // ONE way in. What to do with the cache is a choice made INSIDE that
-            // flow, not a second button beside it: managing and deleting
-            // everything are two things the same person decides at the same
-            // moment, and putting the drastic one on the same level as the
-            // careful one made the careful one look like the exception.
-            ListTile(
-              leading: const Icon(Icons.sd_storage),
-              title: const Text('Thumbnail cache'),
-              subtitle: Text(
-                _cacheBytes == null
-                    ? 'Calculating…'
-                    : '${ThumbCache.human(_cacheBytes!)} — managed by generation '
-                          'time; the newest entries are kept',
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: _manageCache,
-            ),
-          ]),
-          const Divider(),
-          _sectionHeader('About'),
-          const SizedBox(height: 8),
-          _group([
-            ListTile(
-              leading: const Icon(Icons.info),
-              title: const Text('RCrm Media Library'),
-              subtitle: const Text('Version 1.0.0'),
-            ),
-          ]),
-        ],
+          ),
+        ),
       ),
     );
   }
@@ -977,7 +1199,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     return LayoutBuilder(
       key: key,
       builder: (ctx, c) {
-        if (c.maxWidth < 520) {
+        if (c.maxWidth < kSettingsWideRowMin) {
           return Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
             child: Column(
@@ -1009,7 +1231,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     // needs on a 320dp phone ("System" became "Sy…").
                     showSelectedIcon: false,
                     style: ButtonStyle(
-                      visualDensity: VisualDensity.compact,
+                      // The labels were tightened horizontally to fit 320dp;
+                      // do NOT also shrink the height — a 35dp segment is below
+                      // the 44pt / 48dp platform touch minimum.
+                      minimumSize: const WidgetStatePropertyAll(Size(0, 44)),
                       padding: const WidgetStatePropertyAll(
                         EdgeInsets.symmetric(horizontal: 6),
                       ),
@@ -1092,6 +1317,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             .read(uiSettingsProvider.notifier)
             .setAppearanceAccent(accent.key),
         child: Container(
+          // The swatch is a real touch target, not a decoration: 7px padding +
+          // a 16px dot measured ~31dp, under the 44pt / 48dp platform minimum.
+          constraints: const BoxConstraints(minHeight: 44),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(RCrmRadii.sm),
@@ -1119,9 +1347,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const SizedBox(width: 8),
               Text(
                 accent.label,
-                style: TextStyle(
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
                   color: RCrmColors.textPrimary,
-                  fontSize: 13,
                   fontWeight: active ? FontWeight.w600 : FontWeight.w400,
                 ),
               ),
@@ -1169,6 +1396,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           }
         },
         child: Container(
+          constraints: const BoxConstraints(minHeight: 44),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(RCrmRadii.sm),
@@ -1191,9 +1419,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const SizedBox(width: 8),
               Text(
                 'Custom',
-                style: TextStyle(
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
                   color: RCrmColors.textPrimary,
-                  fontSize: 13,
                   fontWeight: active ? FontWeight.w600 : FontWeight.w400,
                 ),
               ),
@@ -1222,6 +1449,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     required int min,
     required int max,
     required ValueChanged<int> onChanged,
+    required Future<void> Function() onCommit,
     Key? sliderKey,
   }) {
     final valueLabel = Text(
@@ -1244,11 +1472,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         // ones here. `divisions` is deliberately left null: 49 subdivisions
         // would draw 49 tick marks across the track.
         onChanged: (v) => onChanged(v.round()),
+        // A drag reports a value every frame; persisting each one would queue
+        // a SharedPreferences write per frame. onChangeEnd fires once for a
+        // drag, a tap and keyboard arrows alike, so the write lands once the
+        // user has finished choosing.
+        onChangeEnd: (_) => onCommit(),
       ),
     );
     return LayoutBuilder(
       builder: (ctx, c) {
-        if (c.maxWidth < 520) {
+        if (c.maxWidth < kSettingsWideRowMin) {
           return Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
             child: Column(
@@ -1316,12 +1549,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     // The editor persists every add/remove itself — the dialog's button is Done,
     // not Save. Closing it (button or system back) still lands here, so the
     // running server is restarted only when the SAVED list really changed.
+    // System back is handled by SmartDialog's binding-level pop monitor, NOT by
+    // a PopScope inside the dialog (no ModalRoute ancestor there). Its default
+    // dismiss carries no result and does not wait for the pending auto-save, so
+    // the caller could re-read the config before the last write landed. Register
+    // the editor's _finish as onBack: it drains _writes then dismisses WITH the
+    // final list, and returning true tells SmartDialog we handled the pop.
+    Future<void> Function()? finishOnBack;
     final newDirs = await SmartDialog.show<List<String>>(
       // A tap outside must not read as "cancel" after a change has already been
       // written; Done or back is the way to leave.
       clickMaskDismiss: false,
-      builder: (ctx) => _DirEditor(
+      onBack: () async {
+        final finish = finishOnBack;
+        if (finish == null) return false;
+        await finish();
+        return true; // _finish already dismissed with the final list
+      },
+      builder: (ctx) => DirEditor(
         initialDirs: c.directories,
+        registerFinish: (f) => finishOnBack = f,
         onChanged: (dirs) async {
           // Re-read first: the dialog may stay open long enough for another
           // setting to change, and this write owns only the directories.
@@ -1343,19 +1590,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 }
 
-class _DirEditor extends StatefulWidget {
+class DirEditor extends StatefulWidget {
   final List<String> initialDirs;
 
   /// Persists the list as it is shown. Called after every add/remove/pick, so
   /// the dialog has no Save step: the view and the stored config never differ.
   final Future<void> Function(List<String> dirs) onChanged;
 
-  const _DirEditor({required this.initialDirs, required this.onChanged});
+  /// Lets the host wire system back to this editor's [DirEditorState._finish]
+  /// via SmartDialog's `onBack` (a PopScope here would be dead code — the dialog
+  /// has no ModalRoute ancestor).
+  final void Function(Future<void> Function()) registerFinish;
+
+  const DirEditor({
+    super.key,
+    required this.initialDirs,
+    required this.onChanged,
+    required this.registerFinish,
+  });
   @override
-  State<_DirEditor> createState() => _DirEditorState();
+  State<DirEditor> createState() => DirEditorState();
 }
 
-class _DirEditorState extends State<_DirEditor> {
+class DirEditorState extends State<DirEditor> {
   late List<String> _dirs;
   final _ctrl = TextEditingController();
   String? _err;
@@ -1372,6 +1629,7 @@ class _DirEditorState extends State<_DirEditor> {
   void initState() {
     super.initState();
     _dirs = List.from(widget.initialDirs);
+    widget.registerFinish(_finish);
   }
 
   @override
@@ -1413,7 +1671,7 @@ class _DirEditorState extends State<_DirEditor> {
     if (_finishing) return;
     _finishing = true;
     await _writes.catchError((_) {});
-    if (mounted) SmartDialog.dismiss(result: List<String>.from(_dirs));
+    if (mounted) SmartDialog.dismiss(status: SmartStatus.dialog, result: List<String>.from(_dirs));
   }
 
   Future<void> _add() async {
@@ -1451,84 +1709,78 @@ class _DirEditorState extends State<_DirEditor> {
   }
 
   @override
-  Widget build(BuildContext ctx) => PopScope(
-    // Back must land the pending save first too; Done and system back are the
-    // two exits, and both go through _finish.
-    canPop: false,
-    onPopInvokedWithResult: (didPop, _) async {
-      if (didPop) return;
-      await _finish();
-    },
-    child: AlertDialog(
-      title: const Text('Managed Directories'),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'Changes are saved as you make them.',
-                  style: Theme.of(ctx).textTheme.bodySmall
-                      ?.copyWith(color: RCrmColors.textSecondary),
-                ),
+  Widget build(BuildContext ctx) => AlertDialog(
+    title: const Text('Managed Directories'),
+    content: SizedBox(
+      width: double.maxFinite,
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Changes are saved as you make them.',
+                style: Theme.of(ctx).textTheme.bodySmall
+                    ?.copyWith(color: RCrmColors.textSecondary),
               ),
-              const SizedBox(height: 8),
-              if (_dirs.isNotEmpty) ...[
-                ..._dirs.map(
-                  (d) => ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.folder),
-                    title: Text(_display(d)),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.close, size: 18),
-                      onPressed: () => _remove(d),
-                    ),
+            ),
+            const SizedBox(height: 8),
+            if (_dirs.isNotEmpty) ...[
+              ..._dirs.map(
+                (d) => ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.folder),
+                  title: Text(_display(d)),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.close, size: 18),
+                    // An unlabelled "button" tells a screen-reader user
+                    // nothing about which directory it would remove.
+                    tooltip: 'Remove ${_display(d)}',
+                    onPressed: () => _remove(d),
                   ),
                 ),
-                const Divider(),
-              ],
-              TextField(
-                controller: _ctrl,
-                decoration: InputDecoration(
-                  labelText: 'Add custom path',
-                  hintText: '/mnt/media or D:\\Media',
-                  hintStyle: _hintSilver,
-                  errorText: _err,
-                ),
-                onChanged: (_) {
-                  if (_err != null) setState(() => _err = null);
-                },
-                onSubmitted: (_) => _add(),
               ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  TextButton.icon(
-                    onPressed: _add,
-                    icon: const Icon(Icons.add, size: 16),
-                    label: const Text('Add'),
-                  ),
-                  const Spacer(),
-                  TextButton.icon(
-                    onPressed: _pick,
-                    icon: const Icon(Icons.folder_open, size: 16),
-                    label: const Text('Browse'),
-                  ),
-                ],
-              ),
+              const Divider(),
             ],
-          ),
+            TextField(
+              controller: _ctrl,
+              decoration: InputDecoration(
+                labelText: 'Add custom path',
+                hintText: '/mnt/media or D:\\Media',
+                hintStyle: _hintSilver,
+                errorText: _err,
+              ),
+              onChanged: (_) {
+                if (_err != null) setState(() => _err = null);
+              },
+              onSubmitted: (_) => _add(),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                TextButton.icon(
+                  onPressed: _add,
+                  icon: const Icon(Icons.add, size: 16),
+                  label: const Text('Add'),
+                ),
+                const Spacer(),
+                TextButton.icon(
+                  onPressed: _pick,
+                  icon: const Icon(Icons.folder_open, size: 16),
+                  label: const Text('Browse'),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
-      actions: [
-        // Done, not Save: every change above has already been persisted. The
-        // button only closes the dialog (and, back in the settings screen, lets
-        // the running server restart against the new list).
-        TextButton(onPressed: _finish, child: const Text('Done')),
-      ],
     ),
+    actions: [
+      // Done, not Save: every change above has already been persisted. The
+      // button only closes the dialog (and, back in the settings screen, lets
+      // the running server restart against the new list).
+      TextButton(onPressed: _finish, child: const Text('Done')),
+    ],
   );
 }

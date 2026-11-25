@@ -73,8 +73,12 @@ class SmartPopupMenuItem<T> extends StatelessWidget {
               // after the exit animation, which reads as "the menu has to be
               // gone before the filter applies".
               final pick = _MenuPickScope.maybeOf(context);
-              SmartDialog.dismiss(result: value);
-              pick?.call(value);
+              SmartDialog.dismiss(
+                status: SmartStatus.attach,
+                tag: pick?.tag,
+                result: value,
+              );
+              pick?.onPick(value);
             }
           : null,
       child: ConstrainedBox(
@@ -101,14 +105,23 @@ class SmartPopupMenuItem<T> extends StatelessWidget {
 class _MenuPickScope extends InheritedWidget {
   final ValueChanged<Object?> onPick;
 
-  const _MenuPickScope({required this.onPick, required super.child});
+  /// The tag of the attach panel this row belongs to, so dismissing a row
+  /// never dismisses a visible notify instead (smart_dialog checks notify
+  /// first). Null only for a bare row outside a panel.
+  final String? tag;
 
-  static ValueChanged<Object?>? maybeOf(BuildContext context) =>
-      context.dependOnInheritedWidgetOfExactType<_MenuPickScope>()?.onPick;
+  const _MenuPickScope({
+    required this.onPick,
+    this.tag,
+    required super.child,
+  });
+
+  static _MenuPickScope? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_MenuPickScope>();
 
   @override
   bool updateShouldNotify(_MenuPickScope oldWidget) =>
-      onPick != oldWidget.onPick;
+      onPick != oldWidget.onPick || tag != oldWidget.tag;
 }
 
 class SmartPopupMenu<T> extends StatelessWidget {
@@ -189,7 +202,13 @@ class SmartPopupMenu<T> extends StatelessWidget {
   Future<void> _open(BuildContext context) async {
     onOpened?.call();
     var delivered = false;
+    // A unique tag keeps this panel's dismiss from ever taking a visible
+    // notify down with it: SmartDialog checks the notify queue BEFORE the
+    // dialog queue, so an untagged dismiss while a "copied" toast is up eats
+    // the toast instead of the menu and the row's action never runs.
+    final tag = 'menu-${Object().hashCode}';
     final result = await SmartDialog.showAttach<T>(
+      tag: tag,
       // The trigger's own context is the anchor.
       targetContext: context,
       // bottomLeft = open downward, left-aligned (native default);
@@ -210,6 +229,7 @@ class SmartPopupMenu<T> extends StatelessWidget {
         elevation: elevation,
         borderRadius: borderRadius ?? _nativeMenuRadius,
         constraints: constraints,
+        tag: tag,
         // A row tap delivers its value itself, one frame after the click.
         // `delivered` is also the one-shot LATCH, not just a note that the
         // future is redundant: the panel stays on screen and hit-testable
@@ -252,7 +272,9 @@ Future<T?> showSmartMenu<T>({
   BoxConstraints? constraints,
   VoidCallback? onClosed,
 }) {
+  final tag = 'menu-${Object().hashCode}';
   return SmartDialog.showAttach<T>(
+    tag: tag,
     // No targetContext: the point is the target, and passing the card's context
     // as well would make AttachWidget offset the menu by that card's height.
     targetContext: null,
@@ -271,6 +293,7 @@ Future<T?> showSmartMenu<T>({
       elevation: elevation,
       borderRadius: borderRadius ?? SmartPopupMenu._nativeMenuRadius,
       constraints: constraints,
+      tag: tag,
     ),
   );
 }
@@ -283,6 +306,10 @@ class _SmartMenuPanel<T> extends StatelessWidget {
   final BorderRadius borderRadius;
   final BoxConstraints? constraints;
 
+  /// The tag of the surrounding attach dialog. A row tap dismisses by tag so
+  /// a visible notify is never dismissed first.
+  final String tag;
+
   /// Called with the chosen row's value the instant it is tapped. Null for the
   /// point-anchored menu, whose caller consumes the dialog's result instead.
   final ValueChanged<Object?>? onPick;
@@ -293,6 +320,7 @@ class _SmartMenuPanel<T> extends StatelessWidget {
     required this.elevation,
     required this.borderRadius,
     required this.constraints,
+    required this.tag,
     this.onPick,
   });
 
@@ -322,9 +350,11 @@ class _SmartMenuPanel<T> extends StatelessWidget {
       textStyle: theme.textTheme.labelLarge,
       child: SingleChildScrollView(
         padding: const EdgeInsets.symmetric(vertical: 8),
-        child: onPick == null
-            ? rows
-            : _MenuPickScope(onPick: onPick!, child: rows),
+        child: _MenuPickScope(
+          onPick: onPick ?? (_) {},
+          tag: tag,
+          child: rows,
+        ),
       ),
     );
     // IntrinsicWidth is what keeps a menu a menu: the anchored surface would

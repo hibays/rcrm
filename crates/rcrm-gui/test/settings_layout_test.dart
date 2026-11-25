@@ -32,22 +32,25 @@ void main() {
   }
 
   /// The Cloud protocol HTTPS/HTTP button must sit flush against the right
-  /// edge of the card (the user-facing requirement), not in the middle.
+  /// edge of the card (the user-facing requirement), not in the middle, and
+  /// must keep its full tap height. The row was restructured (not scaled) to
+  /// get here: a FittedBox used to shrink its 48dp target to ~25dp on a phone.
   void expectProtocolButtonRightAligned(WidgetTester tester) {
-    final btn = tester.widget<FittedBox>(
-      find.ancestor(of: find.text('HTTPS'), matching: find.byType(FittedBox)),
-    );
-    expect(btn.alignment, Alignment.centerRight, reason: 'button alignment');
-    // Measure the button itself (find.text('HTTPS') is just the first
-    // segment label and sits mid-button).
-    final segRect = tester.getRect(find.byType(SegmentedButton<bool>).first);
+    final seg = find.byWidgetPredicate((w) => w is SegmentedButton<bool>);
+    expect(seg, findsOneWidget);
+    final segRect = tester.getRect(seg);
     final screenWidth =
         tester.view.physicalSize.width / tester.view.devicePixelRatio;
-    // ListView has 16px horizontal padding; the button must hug that edge.
+    // 16dp ListView padding + 16dp card padding = 32dp right inset.
     expect(
       segRect.right,
-      closeTo(screenWidth - 16, 24),
+      closeTo(screenWidth - 32, 1),
       reason: 'HTTPS/HTTP button must hug the card right edge',
+    );
+    expect(
+      segRect.height,
+      greaterThanOrEqualTo(44),
+      reason: 'protocol button must keep a 44dp+ touch target (no scaling)',
     );
   }
 
@@ -115,8 +118,8 @@ void main() {
     'settings Cloud mode right-aligns protocol button on wide screens',
     (tester) async {
       // Desktop-width window: the old loose-Flexible layout parked the button
-      // mid-card (Spacer/Flexible split the leftover space and FittedBox stayed
-      // at the left of its slot). Must be flush right at any width.
+      // mid-card (Spacer/Flexible split the leftover space). Must be flush right
+      // at any width.
       tester.view.physicalSize = const Size(800, 600);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);

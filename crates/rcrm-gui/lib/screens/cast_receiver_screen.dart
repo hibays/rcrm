@@ -332,11 +332,11 @@ class _State extends ConsumerState<CastReceiverScreen> {
           content: const Text('Playback stops and the cast connection closes.'),
           actions: [
             TextButton(
-              onPressed: () => SmartDialog.dismiss(result: false),
+              onPressed: () => SmartDialog.dismiss(status: SmartStatus.dialog, result: false),
               child: const Text('Cancel'),
             ),
             FilledButton(
-              onPressed: () => SmartDialog.dismiss(result: true),
+              onPressed: () => SmartDialog.dismiss(status: SmartStatus.dialog, result: true),
               child: const Text('Exit'),
             ),
           ],
